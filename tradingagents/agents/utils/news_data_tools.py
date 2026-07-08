@@ -1,53 +1,241 @@
+# =============================================================================
+# 模块名称：news_data_tools.py
+# 模块功能：新闻数据获取工具集 - 获取公司新闻、全球新闻和内部人交易数据
+# =============================================================================
+#
+# ============================================================================
+# 前置知识（如果你完全没有 Python 和 LangChain 经验，请先阅读本节）
+# ============================================================================
+#
+# 【什么是 @tool 装饰器？它如何工作？】
+#   @tool 是 LangChain 提供的装饰器，把普通 Python 函数变成 LLM 可调用的工具。
+#
+#   工作原理（逐步说明）：
+#   1. @tool 装饰器读取函数信息：
+#      - 函数名 → 作为工具名称（如 "get_news"）
+#      - docstring（三引号文档字符串）→ 作为工具描述
+#      - 参数的 Annotated 描述 → 作为参数说明
+#   2. 自动生成工具描述（JSON schema），发送给 LLM
+#   3. LLM 根据描述决定何时调用、传什么参数
+#   4. LangChain 框架在 LLM 调用工具时执行对应的 Python 函数
+#   5. 函数返回值送回给 LLM，LLM 据此生成回答
+#
+#   【通俗比喻】@tool 就像在餐厅菜单上登记一道菜。
+#   LLM 是顾客，看菜单点菜；你的函数是厨房，做好菜端出来。
+#
+# 【Annotated 如何成为参数 schema？】
+#   参数声明：ticker: Annotated[str, "Ticker symbol"]
+#   - str → 告诉 LLM 参数类型是字符串
+#   - "Ticker symbol" → 告诉 LLM 参数含义是"股票代码"
+#   LangChain 读取这段描述放进工具的参数 schema 中。
+#   LLM 看到 schema 后就知道每个参数该填什么。没有描述，LLM 不知道填什么。
+#
+# 【什么是新闻情绪分析（News Sentiment Analysis）？】
+#   - 通过分析新闻内容来判断市场情绪（正面/负面/中性）
+#   - 新闻是影响短期股价波动的重要因素之一
+#   - 突发新闻（如财报发布、并购公告、监管调查）可能引发剧烈价格波动
+#   - AI 智能体通过获取新闻来了解市场对某只股票的看法
+#
+# 【什么是内部人交易（Insider Transactions）？】
+#   - 公司高管、董事、大股东等"内部人"买卖本公司股票的行为
+#   - 内部人增持通常被视为积极信号（管理层看好公司前景）
+#   - 内部人减持可能是负面信号（但也可能是个人财务需求）
+#   - 内部人交易数据是公开的，受 SEC（美国证监会）监管
+#   【通俗理解】如果公司 CEO 大量买入自家股票，说明他可能觉得股价被低估了，
+#   这是给市场的积极信号。反之如果高管集体抛售，可能预示着坏消息。
+#
+# 【什么是全球新闻（Global News）？】
+#   - 宏观经济事件（利率决策、GDP 数据、贸易政策等）
+#   - 地缘政治事件（国际冲突、制裁、选举等）
+#   - 行业趋势（技术突破、监管变化、市场整合等）
+#   - 全球新闻帮助理解宏观环境对个股的影响
+#   【为什么需要全球新闻？】因为一只股票不只受公司自身因素影响，
+#   还受整体经济环境影响。比如美联储加息，所有股票都可能下跌。
+# ============================================================================
+#
+# ============================================================================
+# 运行时数据流示例
+# ============================================================================
+#
+#   场景：新闻分析智能体想获取特斯拉最近一周的新闻
+#
+#   第 1 步：LLM 决定调用工具
+#     LLM 输出：{tool: "get_news", args: {ticker: "TSLA",
+#       start_date: "2026-06-30", end_date: "2026-07-07"}}
+#
+#   第 2 步：LangChain 框架调用 Python 函数
+#     get_news(ticker="TSLA", start_date="2026-06-30", end_date="2026-07-07")
+#
+#   第 3 步：调用路由层
+#     route_to_vendor("get_news", "TSLA", "2026-06-30", "2026-07-07")
+#     → interface.py 查找分类："get_news" 属于 "news_data"
+#     → 读取配置，确定供应商（如 "yfinance"）
+#     → 调用 get_news_yfinance("TSLA", "2026-06-30", "2026-07-07")
+#     → 返回新闻数据字符串
+#
+#   第 4 步：结果返回给 LLM
+#     LLM 分析新闻内容，判断市场情绪，生成投资建议
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# 导入区：每个导入模块的作用说明
+# ---------------------------------------------------------------------------
+
+# @tool: LangChain 工具装饰器，将普通函数转换为智能体可调用的工具
+# 【详细说明见文件开头的前置知识部分】
 from langchain_core.tools import tool
+
+# Annotated: 类型注解包装器，用于为参数添加元数据描述
+# 【为什么需要 Annotated？】
+# LLM 需要知道每个参数的含义才能正确填写值。
+# Annotated[str, "描述"] 在类型(str)之外附加说明，LLM 据此填写参数。
 from typing import Annotated
+
+# route_to_vendor: 统一的数据供应商路由接口
+# 将数据请求转发到配置的供应商（如 NewsAPI、Alpha Vantage 等）
+# 这是 dataflows/interface.py 中定义的核心函数
 from tradingagents.dataflows.interface import route_to_vendor
 
-@tool
+
+# =============================================================================
+# get_news - 公司新闻数据获取工具
+# =============================================================================
+@tool  # 注册为 LangChain 工具
+# @tool 把这个函数注册为 LLM 可调用的工具
+# LLM 会看到工具名 "get_news" 和下面的 docstring 描述
 def get_news(
+    # ticker 参数：股票代码
+    # Annotated[str, "Ticker symbol"] 告诉 LLM：参数是字符串，含义是"股票代码"
     ticker: Annotated[str, "Ticker symbol"],
+
+    # start_date 参数：起始日期
+    # 格式为 yyyy-mm-dd，用于限定新闻的时间范围
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
+
+    # end_date 参数：结束日期
+    # 格式为 yyyy-mm-dd，与 start_date 一起确定时间范围
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
 ) -> str:
     """
-    Retrieve news data for a given ticker symbol.
-    Uses the configured news_data vendor.
-    Args:
-        ticker (str): Ticker symbol
-        start_date (str): Start date in yyyy-mm-dd format
-        end_date (str): End date in yyyy-mm-dd format
-    Returns:
-        str: A formatted string containing news data
+    获取指定股票代码在指定日期范围内的相关新闻
+
+    此工具获取与特定公司直接相关的新闻，包括：
+    - 公司财报和业绩公告
+    - 分析师评级调整
+    - 产品发布和业务进展
+    - 法律诉讼和监管动态
+    - 行业竞争和合作伙伴关系
+
+    参数：
+        ticker (str): 公司股票代码，例如 "AAPL"、"TSLA"
+        start_date (str): 起始日期，格式为 yyyy-mm-dd，例如 "2024-01-01"
+        end_date (str): 结束日期，格式为 yyyy-mm-dd，例如 "2024-06-30"
+
+    返回：
+        str: 格式化的新闻数据字符串，包含新闻标题、摘要、来源和发布日期
+
+    分析要点：
+        - 新闻频率：大量新闻集中出现可能预示重大事件
+        - 情感倾向：正面新闻 vs 负面新闻的比例
+        - 新闻来源：权威来源（如 Reuters、Bloomberg）的新闻更具影响力
+        - 时效性：最近的新闻对当前决策影响更大
+
+    与 get_global_news 的区别：
+        get_news 聚焦于特定公司，get_global_news 关注宏观环境和全球事件
     """
+    # 调用统一路由接口，将请求转发到配置的新闻数据供应商
+    # route_to_vendor 会：
+    #   1. 查找 "get_news" 所属分类（news_data）
+    #   2. 读取配置决定用哪个供应商
+    #   3. 调用对应供应商的实现函数
+    #   4. 如果主供应商失败，自动降级到备选供应商
+    # 三个参数透传给供应商实现函数：ticker, start_date, end_date
     return route_to_vendor("get_news", ticker, start_date, end_date)
 
-@tool
+
+# =============================================================================
+# get_global_news - 全球宏观新闻数据获取工具
+# =============================================================================
+@tool  # 注册为 LangChain 工具
 def get_global_news(
+    # curr_date 参数：当前日期
+    # 用于确定"回顾窗口"的结束时间
     curr_date: Annotated[str, "Current date in yyyy-mm-dd format"],
+
+    # look_back_days 参数：回顾天数
+    # 默认值为 7，表示获取过去 7 天的全球新闻
+    # 【默认值机制】如果 LLM 不传这个参数，就用 7
     look_back_days: Annotated[int, "Number of days to look back"] = 7,
+
+    # limit 参数：最大返回文章数
+    # 默认值为 5，限制返回的文章数量，避免信息过载
+    # 【为什么需要 limit？】如果不限制，可能返回几百条新闻，
+    # LLM 处理这么多信息会消耗大量 token 且容易遗漏重点
     limit: Annotated[int, "Maximum number of articles to return"] = 5,
 ) -> str:
     """
-    Retrieve global news data.
-    Uses the configured news_data vendor.
-    Args:
-        curr_date (str): Current date in yyyy-mm-dd format
-        look_back_days (int): Number of days to look back (default 7)
-        limit (int): Maximum number of articles to return (default 5)
-    Returns:
-        str: A formatted string containing global news data
+    获取全球宏观新闻数据
+
+    此工具获取不限于特定公司的全球性新闻，涵盖：
+    - 宏观经济数据（GDP、CPI、就业数据等）
+    - 央行政策（利率决议、量化宽松/紧缩）
+    - 地缘政治事件（国际关系、贸易政策、制裁）
+    - 行业趋势和重大事件（技术突破、监管改革）
+    - 市场整体情绪和资金流向
+
+    参数：
+        curr_date (str): 当前日期，格式为 yyyy-mm-dd
+        look_back_days (int): 回顾天数，默认 7 天
+        limit (int): 最大返回文章数，默认 5 条
+
+    返回：
+        str: 格式化的全球新闻数据字符串
+
+    分析要点：
+        - 宏观环境对个股的系统性影响（如利率上升影响所有股票）
+        - 行业特定事件对板块的影响（如新能源政策影响整个清洁能源板块）
+        - 全球风险偏好变化（risk-on vs risk-off）
+        - 跨市场联动（如外汇市场变化对出口企业的影响）
     """
+    # 调用统一路由接口，将请求转发到配置的新闻数据供应商
+    # 三个参数透传给供应商实现函数：curr_date, look_back_days, limit
     return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
 
-@tool
+
+# =============================================================================
+# get_insider_transactions - 内部人交易数据获取工具
+# =============================================================================
+@tool  # 注册为 LangChain 工具
 def get_insider_transactions(
+    # ticker 参数：股票代码
+    # 这个工具只需要股票代码，不需要日期范围
+    # 因为内部人交易数据通常返回最近的记录
     ticker: Annotated[str, "ticker symbol"],
 ) -> str:
     """
-    Retrieve insider transaction information about a company.
-    Uses the configured news_data vendor.
-    Args:
-        ticker (str): Ticker symbol of the company
-    Returns:
-        str: A report of insider transaction data
+    获取指定公司的内部人交易信息
+
+    内部人交易（Insider Trading）指公司高管、董事、大股东等内部人员
+    买卖本公司股票的行为。合法的内部人交易需要向 SEC 报告并公开披露。
+
+    内部人交易的关键信号：
+    - 集群买入（Cluster Buying）：多位内部人同时买入，通常是非常积极的信号
+    - 大额买入：内部人投入大量自有资金购买股票，表明对公司的强烈信心
+    - 首次买入：此前从未买入的内部人开始购买，可能预示积极变化
+    - 持续卖出：内部人持续减持可能是警示信号（但需判断原因）
+
+    参数：
+        ticker (str): 公司股票代码，例如 "AAPL"、"MSFT"
+
+    返回：
+        str: 内部人交易数据报告，包含交易人、交易类型、交易数量、交易价格等信息
+
+    注意事项：
+        - 内部人卖出不一定总是负面信号（可能是个人财务规划、税务原因）
+        - 内部人买入通常比卖出更具信号价值（因为买入的理由更单一：看好公司）
+        - 需要结合交易规模和内部人职位来判断信号强度
+        - CEO/CFO 的交易比普通董事的交易更具参考价值
     """
+    # 调用统一路由接口，将请求转发到配置的新闻数据供应商
+    # 只有一个参数 ticker 透传给供应商实现函数
     return route_to_vendor("get_insider_transactions", ticker)

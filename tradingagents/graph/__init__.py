@@ -1,17 +1,57 @@
+# =============================================================================
 # TradingAgents/graph/__init__.py
+# =============================================================================
+# 模块：Graph 编排层 - 包初始化文件
+# =============================================================================
+#
+# 【文件说明】
+# 这是 graph 包的初始化文件（__init__.py）。
+# 在 Python 中，一个目录要成为"包"（package），必须包含此文件。
+# 当你执行 `from tradingagents.graph import TradingAgentsGraph` 时，
+# Python 会先执行这个文件，从而让外部可以方便地导入包内的类。
+#
+# 【核心概念】
+# 这个包负责整个交易代理系统的"图编排"（Graph Orchestration）。
+# 基于 LangGraph 框架，将多个 AI 代理（分析师、研究员、交易员等）
+# 组织成一个有向图（DAG），按顺序和条件执行各节点。
+#
+# 【暴露的公共接口】
+# 通过 __all__ 列表声明了 6 个核心类，这些是本包对外提供的全部 API。
+# =============================================================================
 
+# ---------------------------------------------------------------------------
+# 从当前包（.）的各个子模块中导入核心类
+# 使用相对导入（以 . 开头），表示从当前包目录下查找
+# ---------------------------------------------------------------------------
+
+# 导入交易图主类 —— 整个系统的入口，负责编排所有代理
 from .trading_graph import TradingAgentsGraph
+
+# 导入条件逻辑类 —— 决定图中"条件边"的路由规则（如：是否继续辩论）
 from .conditional_logic import ConditionalLogic
+
+# 导入图搭建类 —— 负责创建 LangGraph 的 StateGraph 并添加节点和边
 from .setup import GraphSetup
+
+# 导入传播器类 —— 负责初始化图执行的初始状态
 from .propagation import Propagator
+
+# 导入反思器类 —— 负责在交易后对决策进行反思，更新记忆
 from .reflection import Reflector
+
+# 导入信号处理器类 —— 负责从完整的交易信号中提取核心决策（买入/卖出等）
 from .signal_processing import SignalProcessor
 
+# ---------------------------------------------------------------------------
+# __all__ 列表：定义 `from tradingagents.graph import *` 时导出的名称
+# 这是一种"白名单"机制，明确告知外部哪些是公共 API
+# 不在 __all__ 中的名称不会被 `import *` 导出
+# ---------------------------------------------------------------------------
 __all__ = [
-    "TradingAgentsGraph",
-    "ConditionalLogic",
-    "GraphSetup",
-    "Propagator",
-    "Reflector",
-    "SignalProcessor",
+    "TradingAgentsGraph",   # 主编排类
+    "ConditionalLogic",     # 条件路由逻辑
+    "GraphSetup",           # 图结构搭建
+    "Propagator",           # 初始状态传播
+    "Reflector",            # 决策反思
+    "SignalProcessor",      # 信号处理
 ]
