@@ -475,6 +475,45 @@ def route_to_vendor(method: str, *args, **kwargs):
         只有 AlphaVantageRateLimitError（频率限制）会触发降级，
         其他异常（如网络错误）会直接向上传播。
     """
+    # ---------------------------------------------------------------------------
+    # 以下是可视化的流程图：降级链的构建与尝试过程
+    # ---------------------------------------------------------------------------
+    # 该图展示 route_to_vendor 内部的完整流程：
+    # 从方法分类查找、供应商配置读取、降级链构建，到依次尝试各供应商。
+    # 只有 AlphaVantageRateLimitError 才会触发降级，其他异常直接传播。
+    # （参见图解指南.md 附录 A6）
+    # ---------------------------------------------------------------------------
+    # ```mermaid
+    # flowchart TD
+    #     A["调用 route_to_vendor(method='get_stock_data', *args, **kwargs)"]
+    #
+    #     A --> B["1. 查找方法分类<br/>get_category_for_method('get_stock_data')<br/>→ 'core_stock_apis'"]
+    #
+    #     B --> C["2. 获取配置的供应商<br/>get_vendor(category, method)<br/>→ 'alpha_vantage,yfinance'"]
+    #
+    #     C --> D["3. 构建降级链<br/>主供应商在前(按配置顺序)<br/>其他可用供应商追加在后<br/>['alpha_vantage', 'yfinance']"]
+    #
+    #     D --> E["4. 依次尝试降级链中的供应商"]
+    #
+    #     E --> F{"尝试 alpha_vantage"}
+    #
+    #     F -->|"成功返回数据"| G["返回结果 ✅<br/>流程结束"]
+    #     F -->|"AlphaVantageRateLimitError<br/>(频率超限)"| H["降级到下一个供应商"]
+    #
+    #     H --> I{"尝试 yfinance"}
+    #
+    #     I -->|"成功返回数据"| G
+    #     I -->|"AlphaVantageRateLimitError"| J["降级到下一个供应商"]
+    #
+    #     J --> K{"降级链是否还有供应商？"}
+    #
+    #     K -->|"是"| E
+    #     K -->|"否，全部失败"| L["抛出 RuntimeError<br/>No available vendor ❌"]
+    #
+    #     style G fill:#27AE60,color:#fff
+    #     style L fill:#C0392B,color:#fff
+    # ```
+    # ---------------------------------------------------------------------------
     # 步骤1：查找方法所属的分类
     # 例如 method="get_stock_data" → category="core_stock_apis"
     category = get_category_for_method(method)

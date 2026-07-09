@@ -812,6 +812,42 @@ class TradingAgentsGraph:
             # 返回
             return final_state, "BUY"
         """
+        # 以下是可视化的流程图（Mermaid）：propagate 调用链（对应图解指南 6.1 节）
+        """
+```mermaid
+flowchart TD
+    P["propagate(company_name='AAPL',<br/>trade_date='2024-01-15')"]
+
+    P --> S1["步骤1: 创建初始状态"]
+    S1 --> S1a["self.propagator.create_initial_state('AAPL', '2024-01-15')<br/>→ 返回 init_agent_state 字典"]
+
+    P --> S2["步骤2: 获取执行参数"]
+    S2 --> S2a["self.propagator.get_graph_args()<br/>→ 返回 {stream_mode:'values',<br/>config:{recursion_limit:100}}"]
+
+    P --> S3["步骤3: 执行图"]
+    S3 --> S3a{"self.debug?"}
+
+    S3a -->|"True 调试模式"| S3b["self.graph.stream(init_agent_state, **args)<br/>→ 返回生成器，逐块输出"]
+    S3b --> S3c["for chunk in stream:<br/>  pretty_print(chunk['messages'][-1])<br/>  trace.append(chunk)"]
+    S3c --> S3d["final_state = trace[-1]"]
+
+    S3a -->|"False 正常模式"| S3e["self.graph.invoke(init_agent_state, **args)<br/>→ 一次性执行完毕，返回最终状态"]
+
+    S3d & S3e --> S4["步骤4: 保存状态"]
+    S4 --> S4a["self.curr_state = final_state<br/>（供后续 reflect_and_remember 使用）"]
+
+    S4 --> S5["步骤5: 记录日志"]
+    S5 --> S5a["self._log_state(trade_date, final_state)<br/>→ 写入 JSON 文件"]
+
+    S5 --> S6["步骤6: 返回结果"]
+    S6 --> S6a["return final_state,<br/>self.process_signal(final_state['final_trade_decision'])"]
+
+    style P fill:#2C3E50,color:#fff
+    style S3a fill:#E74C3C,color:#fff
+    style S6a fill:#27AE60,color:#fff
+```
+以上是可视化的流程图：propagate 调用链。
+        """
         # 记录当前分析的股票代码
         self.ticker = company_name
 
@@ -1035,6 +1071,30 @@ class TradingAgentsGraph:
             # 4. 存入记忆
             #    bull_memory.add_situations([("RSI: 72.3...\n\n...", "反思报告...")])
             #    → 下次分析时，BM25 会根据当前市场状况检索这条反思
+        """
+        # 以下是可视化的流程图（Mermaid）：反思调用链（对应图解指南 6.2 节）
+        """
+```mermaid
+flowchart TD
+    R["reflect_and_remember(returns_losses=0.05)"]
+
+    R --> R1["self.reflector.reflect_bull_researcher(<br/>curr_state, returns, bull_memory)"]
+    R --> R2["self.reflector.reflect_bear_researcher(<br/>curr_state, returns, bear_memory)"]
+    R --> R3["self.reflector.reflect_trader(<br/>curr_state, returns, trader_memory)"]
+    R --> R4["self.reflector.reflect_invest_judge(<br/>curr_state, returns, invest_judge_memory)"]
+    R --> R5["self.reflector.reflect_portfolio_manager(<br/>curr_state, returns, portfolio_manager_memory)"]
+
+    R1 --> C1["每个 reflect_xxx 内部："]
+    C1 --> C1a["1. 提取市场状况（合并4份报告）"]
+    C1 --> C1b["2. 提取该角色的决策内容"]
+    C1 --> C1c["3. 调用 LLM 反思<br/>输入：市场状况+决策+收益<br/>输出：反思报告"]
+    C1 --> C1d["4. memory.add_situations(<br/>[(市场状况, 反思报告)])"]
+    C1 --> C1e["→ 存入记忆，供下次 BM25 检索"]
+
+    style R fill:#8E44AD,color:#fff
+    style C1 fill:#3498DB,color:#fff
+```
+以上是可视化的流程图：反思调用链。
         """
         # 反思牛市研究员的分析
         self.reflector.reflect_bull_researcher(

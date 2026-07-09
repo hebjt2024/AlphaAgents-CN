@@ -120,6 +120,78 @@ from langchain_openai import ChatOpenAI     # OpenAI 兼容的聊天模型接口
 # =============================================================================
 # 类：Reflector
 # =============================================================================
+#
+# ---------------------------------------------------------------------------
+# 以下是可视化的流程图：反思流程完整时序图
+# ---------------------------------------------------------------------------
+# 该图展示从"提取市场状况"到"存储记忆"的完整反思流程，
+# 以牛市研究员为例，其他角色的流程结构相同，仅数据来源不同。
+# ---------------------------------------------------------------------------
+# ```mermaid
+# sequenceDiagram
+#     participant Caller as 调用方(propagate)
+#     participant Reflector as Reflector
+#     participant State as current_state
+#     participant LLM as quick_thinking_llm
+#     participant Memory as 角色记忆(BM25)
+#
+#     Caller->>Reflector: reflect_bull_researcher(state, returns, bull_memory)
+#
+#     Note over Reflector: 步骤1：提取市场状况
+#     Reflector->>State: _extract_current_situation(state)
+#     State-->>Reflector: market_report + sentiment_report<br/>+ news_report + fundamentals_report
+#     Reflector->>Reflector: 拼接四份报告为<br/>市场状况文本situation
+#
+#     Note over Reflector: 步骤2：提取角色决策内容
+#     Reflector->>State: 读取 state["investment_debate_state"]["bull_history"]
+#     State-->>Reflector: 牛市研究员的辩论历史report
+#
+#     Note over Reflector: 步骤3：调用LLM进行反思
+#     Reflector->>LLM: invoke([("system", 反思提示词),<br/>("human", 收益+决策+市场状况)])
+#     LLM->>LLM: 分析决策正确性<br/>提出改进建议<br/>总结经验教训
+#     LLM-->>Reflector: 返回反思报告result
+#
+#     Note over Reflector: 步骤4：存储记忆
+#     Reflector->>Memory: add_situations([(situation, result)])
+#     Memory->>Memory: 分词 + 重建BM25索引
+#     Memory-->>Reflector: 存储完成
+#     Note over Memory: 下次分析时<br/>BM25会检索相似的历史反思
+# ```
+#
+# ---------------------------------------------------------------------------
+# 以下是可视化的流程图：5个角色反思数据来源对比图
+# ---------------------------------------------------------------------------
+# 该图对比5个角色在反思时，各自从 current_state 中提取的决策内容来源。
+# 所有角色共享相同的市场状况提取流程，但决策内容来源各不相同。
+# ---------------------------------------------------------------------------
+# ```mermaid
+# flowchart LR
+#     subgraph 共享市场状况["共享：市场状况提取<br/>_extract_current_situation()"]
+#         MS["market_report<br/>+ sentiment_report<br/>+ news_report<br/>+ fundamentals_report"]
+#     end
+#
+#     subgraph 角色决策来源["各角色反思的决策数据来源"]
+#         B["牛市研究员<br/>investment_debate_state<br/>.bull_history"]
+#         Be["熊市研究员<br/>investment_debate_state<br/>.bear_history"]
+#         T["交易员<br/>trader_investment_plan"]
+#         IJ["投资裁判<br/>investment_debate_state<br/>.judge_decision"]
+#         PM["投资组合经理<br/>risk_debate_state<br/>.judge_decision"]
+#     end
+#
+#     subgraph 反思输出["共享：反思输出与存储"]
+#         R["_reflect_on_component()<br/>→ LLM生成反思报告"]
+#         M["memory.add_situations()<br/>→ 存入角色专属记忆"]
+#     end
+#
+#     MS --> R
+#     B --> R
+#     Be --> R
+#     T --> R
+#     IJ --> R
+#     PM --> R
+#     R --> M
+# ```
+# ---------------------------------------------------------------------------
 class Reflector:
     """
     处理决策反思和记忆更新。

@@ -193,6 +193,91 @@ class ConditionalLogic:
         - 如果没有 tool_calls → 返回 "Msg Clear Market" → 路由到消息清除节点
     """
 
+    # =====================================================================
+    # 以下是可视化的流程图（Mermaid）—— 三张决策树
+    # 对应图解指南 3.1.2（分析师工具循环）、3.2.2（牛熊辩论轮转）、3.3.2（三方辩论轮转）
+    # =====================================================================
+
+    # 以下是可视化的流程图：分析师工具循环决策树（对应图解指南 3.1.2 节）
+    """
+```mermaid
+flowchart TD
+    A["分析师节点执行完毕<br/>LLM 输出 AIMessage"]
+    B{"检查 last_message.tool_calls<br/>是否非空？"}
+    C["返回 'tools_xxx'<br/>路由到 ToolNode"]
+    D["返回 'Msg Clear xxx'<br/>路由到消息清除节点"]
+    E["ToolNode 执行工具函数<br/>返回 ToolMessage"]
+    F["回到分析师节点<br/>LLM 看到工具数据"]
+    G["消息清除节点<br/>清除历史消息"]
+    H["进入下一个分析师<br/>或进入辩论阶段"]
+
+    A --> B
+    B -->|"有 tool_calls（LLM 想要数据）"| C
+    B -->|"无 tool_calls（分析完成）"| D
+    C --> E
+    E --> F
+    F --> A
+    D --> G
+    G --> H
+
+    style B fill:#F39C12,color:#fff
+    style C fill:#E74C3C,color:#fff
+    style D fill:#27AE60,color:#fff
+```
+以上是可视化的流程图：分析师工具循环决策树。
+    """
+
+    # 以下是可视化的流程图：牛熊辩论轮转决策树（对应图解指南 3.2.2 节）
+    """
+```mermaid
+flowchart TD
+    A["研究员节点执行完毕"]
+    B{"count >= 2 × max_debate_rounds?<br/>已达辩论轮数上限？"}
+    C["返回 'Research Manager'<br/>结束辩论，进入裁决"]
+    D{"current_response<br/>以 'Bull' 开头？"}
+    E["返回 'Bear Researcher'<br/>让空头回应"]
+    F["返回 'Bull Researcher'<br/>让多头回应"]
+
+    A --> B
+    B -->|"是——辩论结束"| C
+    B -->|"否——继续辩论"| D
+    D -->|"是——多头刚发言"| E
+    D -->|"否——空头刚发言"| F
+
+    style B fill:#E74C3C,color:#fff
+    style D fill:#3498DB,color:#fff
+```
+以上是可视化的流程图：牛熊辩论轮转决策树。
+    """
+
+    # 以下是可视化的流程图：三方辩论轮转决策树（对应图解指南 3.3.2 节）
+    """
+```mermaid
+flowchart TD
+    A["风险分析师节点执行完毕"]
+    B{"count >= 3 × max_risk_discuss_rounds?<br/>已达讨论轮数上限？"}
+    C["返回 'Portfolio Manager'<br/>结束讨论，最终决策"]
+    D{"latest_speaker<br/>以 'Aggressive' 开头？"}
+    E["返回 'Conservative Analyst'<br/>保守方回应"]
+    F{"latest_speaker<br/>以 'Conservative' 开头？"}
+    G["返回 'Neutral Analyst'<br/>中立方回应"]
+    H["返回 'Aggressive Analyst'<br/>激进方发言（新一轮循环）"]
+
+    A --> B
+    B -->|"是"| C
+    B -->|"否"| D
+    D -->|"是"| E
+    D -->|"否"| F
+    F -->|"是"| G
+    F -->|"否（Neutral或空）"| H
+
+    style B fill:#E74C3C,color:#fff
+    style D fill:#3498DB,color:#fff
+    style F fill:#9B59B6,color:#fff
+```
+以上是可视化的流程图：三方辩论轮转决策树。
+    """
+
     # -------------------------------------------------------------------------
     # 构造函数
     # -------------------------------------------------------------------------

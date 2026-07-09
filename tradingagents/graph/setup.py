@@ -315,6 +315,36 @@ class GraphSetup:
             # self.tool_nodes = tool_nodes
             # ...
             # 这些属性后续在 setup_graph 方法中使用
+
+        以下是可视化的流程图（Mermaid），展示 GraphSetup 的组件依赖关系
+        （构造函数接收的依赖如何组装成可执行图）：
+        ```mermaid
+        flowchart LR
+            LLM1["quick_thinking_llm<br/>快速思考 LLM<br/>（分析师/研究员/交易员/风险分析师）"]
+            LLM2["deep_thinking_llm<br/>深度思考 LLM<br/>（研究经理/组合经理）"]
+            TN["tool_nodes<br/>工具节点字典<br/>market/social/news/fundamentals"]
+            MEM1["bull_memory<br/>多头研究员记忆"]
+            MEM2["bear_memory<br/>空头研究员记忆"]
+            MEM3["trader_memory<br/>交易员记忆"]
+            MEM4["invest_judge_memory<br/>投资裁判记忆"]
+            MEM5["portfolio_manager_memory<br/>组合经理记忆"]
+            CL["conditional_logic<br/>条件路由逻辑<br/>（辩论轮数/工具循环判断）"]
+
+            GS["GraphSetup<br/>图搭建器"]
+
+            LLM1 --> GS
+            LLM2 --> GS
+            TN --> GS
+            MEM1 --> GS
+            MEM2 --> GS
+            MEM3 --> GS
+            MEM4 --> GS
+            MEM5 --> GS
+            CL --> GS
+
+            GS -->|"setup_graph(selected_analysts)"| CG["CompiledGraph<br/>编译后的可执行图<br/>（可 invoke/stream）"]
+        ```
+        以上是可视化的流程图：GraphSetup 组件依赖关系。
         """
         # 将所有传入的依赖保存为实例属性
         # self.xxx = xxx 表示把参数值保存到对象的属性中
@@ -361,6 +391,33 @@ class GraphSetup:
 
         阶段 5 - 最终决策：
         - 投资组合经理综合所有信息，做出最终决策
+
+        以下是可视化的流程图（Mermaid），完整展示 setup_graph() 构建的工作流拓扑与条件边路由：
+        ```mermaid
+        flowchart TD
+            START(["START"])
+            MA["Market Analyst"] <-->|"条件边"| TM["tools_market"]
+            MA -->|"条件边"| CMA["Msg Clear Market"]
+            CMA --> SA["Social Analyst"]
+            SA <-->|"条件边"| TS["tools_social"]
+            SA -->|"条件边"| CSA["Msg Clear Social"]
+            CSA --> NA["News Analyst"]
+            NA <-->|"条件边"| TN["tools_news"]
+            NA -->|"条件边"| CNA["Msg Clear News"]
+            CNA --> FA["Fundamentals Analyst"]
+            FA <-->|"条件边"| TF["tools_fundamentals"]
+            FA -->|"条件边"| CFA["Msg Clear Fundamentals"]
+            CFA --> BR["Bull Researcher"]
+            BR <-->|"条件边"| RR["Bear Researcher"]
+            BR & RR -->|"条件边"| RM["Research Manager"]
+            RM --> TR["Trader"]
+            TR --> AA["Aggressive"]
+            AA <-->|"条件边"| CA["Conservative"]
+            CA <-->|"条件边"| NA2["Neutral"]
+            AA & CA & NA2 -->|"条件边"| PM["Portfolio Manager"]
+            PM --> END(["END"])
+        ```
+        以上是可视化的流程图。
 
         参数:
             selected_analysts (list): 要启用的分析师类型列表

@@ -364,6 +364,24 @@ def build_instrument_context(ticker: str) -> str:
 #       HumanMessage(content="Continue")   # 只剩一条占位消息
 #   ]
 # =============================================================================
+#
+# ---------------------------------------------------------------------------
+# 以下是可视化的流程图：消息删除的完整流程时序图
+# ---------------------------------------------------------------------------
+# ```mermaid
+# sequenceDiagram
+#     participant Node as delete_messages节点
+#     participant State as 共享状态messages
+#     participant Reducer as add_messages reducer
+#     Node->>State: 读取当前messages列表
+#     Node->>Node: 为每条消息创建RemoveMessage(id=m.id)
+#     Node->>Node: 添加占位消息HumanMessage("Continue")
+#     Node->>Reducer: 返回 {messages: removal_operations + [placeholder]}
+#     Reducer->>Reducer: 识别RemoveMessage，按id删除对应消息
+#     Reducer->>State: 追加占位消息
+#     Note over State: 最终messages = [HumanMessage("Continue")]
+# ```
+# ---------------------------------------------------------------------------
 def create_msg_delete():
     """
     创建消息删除函数（工厂函数 / 闭包模式）

@@ -599,3 +599,28 @@ class AgentState(MessagesState):
     #   "FINAL TRANSACTION PROPOSAL: **SELL**" 或
     #   "FINAL TRANSACTION PROPOSAL: **HOLD**"
     final_trade_decision: Annotated[str, "Final decision made by the Risk Analysts"]
+
+
+# =============================================================================
+# 状态字段读写矩阵（参见图解指南.md 第四章 4.2 节）
+# =============================================================================
+# 以下矩阵展示每个节点对 AgentState 状态字段的读（R）和写（W）操作。
+# 这有助于理解数据在整个工作流中的流转关系。
+#
+# R = 读取    W = 写入    RW = 读写
+#
+# | 节点                   | messages | company_of_interest | market_report | sentiment_report | news_report | fundamentals_report | investment_debate_state | investment_plan | trader_investment_plan | risk_debate_state | final_trade_decision |
+# |------------------------|----------|---------------------|---------------|------------------|-------------|---------------------|------------------------|-----------------|------------------------|-------------------|----------------------|
+# | Market Analyst          | RW       | R                   | W             |                  |             |                     |                        |                 |                        |                   |                      |
+# | Social Analyst          | RW       | R                   |               | W                |             |                     |                        |                 |                        |                   |                      |
+# | News Analyst            | RW       | R                   |               |                  | W           |                     |                        |                 |                        |                   |                      |
+# | Fundamentals Analyst    | RW       | R                   |               |                  |             | W                   |                        |                 |                        |                   |                      |
+# | Bull Researcher         |          | R                   | R             | R                | R           | R                   | W                      |                 |                        |                   |                      |
+# | Bear Researcher         |          | R                   | R             | R                | R           | R                   | W                      |                 |                        |                   |                      |
+# | Research Manager        |          | R                   | R             | R                | R           | R                   | W                      | W               |                        |                   |                      |
+# | Trader                  |          | R                   | R             | R                | R           | R                   | R                      | R               | W                      |                   |                      |
+# | Aggressive Analyst      |          | R                   |               |                  |             |                     | R                      |                 | R                      | W                 |                      |
+# | Conservative Analyst    |          | R                   |               |                  |             |                     | R                      |                 | R                      | W                 |                      |
+# | Neutral Analyst         |          | R                   |               |                  |             |                     | R                      |                 | R                      | W                 |                      |
+# | Portfolio Manager       |          | R                   | R             | R                | R           | R                   | R                      | R               | R                      | W                 | W                    |
+# =============================================================================

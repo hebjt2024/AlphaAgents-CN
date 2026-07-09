@@ -147,6 +147,71 @@ import re
 # =============================================================================
 # FinancialSituationMemory 类 - 金融情景记忆系统
 # =============================================================================
+#
+# ---------------------------------------------------------------------------
+# 以下是可视化的流程图：BM25 检索数据流图
+# ---------------------------------------------------------------------------
+# 该图展示从"添加经验"到"检索经验"的完整数据流，
+# 包括分词、索引构建、查询计算、得分排序和归一化等步骤。
+# ---------------------------------------------------------------------------
+# ```mermaid
+# flowchart LR
+#     subgraph 存储阶段
+#         S1["add_situations()<br/>传入[(情景, 建议)]列表"]
+#         S2["documents.append(情景)<br/>recommendations.append(建议)"]
+#         S3["_rebuild_index()<br/>重建BM25索引"]
+#         S3a["_tokenize()<br/>对每篇文档分词<br/>re.findall + lower"]
+#         S3b["BM25Okapi(tokenized_docs)<br/>构建倒排索引<br/>计算DF/文档长度/平均长度"]
+#         S1 --> S2 --> S3 --> S3a --> S3b
+#     end
+#
+#     subgraph 检索阶段
+#         Q1["get_memories()<br/>传入当前情景查询"]
+#         Q2["_tokenize()<br/>对查询文本分词"]
+#         Q3["bm25.get_scores()<br/>计算每篇文档的BM25得分"]
+#         Q4["sorted + reverse=True<br/>按得分降序排列"]
+#         Q5["取前n_matches条<br/>计算归一化得分<br/>score / max_score"]
+#         Q6["返回结果列表<br/>[{matched_situation,<br/>recommendation,<br/>similarity_score}]"]
+#         Q1 --> Q2 --> Q3 --> Q4 --> Q5 --> Q6
+#     end
+#
+#     S3b -.->|"索引就绪，可被检索"| Q3
+# ```
+#
+# ---------------------------------------------------------------------------
+# 以下是可视化的流程图：反思存储与检索的闭环时序图
+# ---------------------------------------------------------------------------
+# 该图展示反思结果存入记忆、下次决策时检索记忆的完整闭环流程。
+# 体现了"存储经验 → 检索经验 → 辅助决策"的学习循环。
+# ---------------------------------------------------------------------------
+# ```mermaid
+# sequenceDiagram
+#     participant Agent as 智能体(如牛市研究员)
+#     participant Reflector as Reflector反思器
+#     participant Memory as FinancialSituationMemory
+#     participant BM25 as BM25索引
+#     participant LLM as 大语言模型
+#
+#     Note over Agent,BM25: 阶段1：交易完成后的反思与存储
+#     Agent->>Reflector: 交易完成，传入current_state和returns_losses
+#     Reflector->>Reflector: _extract_current_situation()<br/>提取市场状况文本
+#     Reflector->>LLM: _reflect_on_component()<br/>发送收益+决策+市场状况
+#     LLM-->>Reflector: 返回反思报告文本
+#     Reflector->>Memory: add_situations([(市场状况, 反思报告)])
+#     Memory->>Memory: documents.append(情景)<br/>recommendations.append(建议)
+#     Memory->>BM25: _rebuild_index()<br/>分词并重建倒排索引
+#     BM25-->>Memory: 索引更新完成
+#     Memory-->>Reflector: 存储成功
+#
+#     Note over Agent,BM25: 阶段2：下次交易时的记忆检索
+#     Agent->>Memory: get_memories(当前市场状况, n_matches)
+#     Memory->>BM25: get_scores(分词后的查询)
+#     BM25-->>Memory: 返回各文档得分数组
+#     Memory->>Memory: 排序 + 取前N条 + 归一化
+#     Memory-->>Agent: 返回最相似的历史反思记录
+#     Agent->>Agent: 参考历史反思，结合当前分析做出更优决策
+# ```
+# ---------------------------------------------------------------------------
 class FinancialSituationMemory:
     """
     金融情景记忆系统 - 使用 BM25 算法进行词法相似度匹配
