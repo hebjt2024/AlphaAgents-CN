@@ -120,7 +120,7 @@ DEFAULT_CONFIG = {
     # ====== LLM（大语言模型）配置 ======
     # LLM 服务提供商：可选 "openai"、"anthropic"、"google"
     # 不同提供商使用不同的 API 和模型
-    "llm_provider": "openai",
+    "llm_provider": "anthropic",
 
     # 深度思考模型：用于需要复杂推理的任务（如撰写分析报告、制定策略）
     # 这里使用 OpenAI 的 GPT-5.2 模型，推理能力强但速度较慢、成本较高
@@ -129,7 +129,7 @@ DEFAULT_CONFIG = {
     #   - 多头/空头研究员的深度分析
     #   - 风险管理者的风险评估
     #   - 交易员的最终决策
-    "deep_think_llm": "gpt-5.2",
+    "deep_think_llm": "MiniMax-M3",
 
     # 快速思考模型：用于简单、快速响应的任务（如数据格式化、简单判断）
     # 使用 GPT-5-mini，速度快、成本低，适合高频调用
@@ -137,13 +137,14 @@ DEFAULT_CONFIG = {
     #   - 工具调用的参数解析
     #   - 数据格式转换
     #   - 简单的条件判断
-    "quick_think_llm": "gpt-5-mini",
+    "quick_think_llm": "MiniMax-M2.5",
 
     # 后端 API 地址：LLM 服务的 API 端点
     # 默认使用 OpenAI 官方 API，也可以替换为兼容的代理地址
     # 替换示例（使用代理）：
     #   "backend_url": "https://your-proxy.com/v1"
-    "backend_url": "https://api.openai.com/v1",
+    #"backend_url": "https://api.openai.com/v1",
+    "backend_url": "https://api.minimaxi.com/anthropic",
 
     # ====== 各供应商特有的思考配置 ======
     # 这些参数控制 LLM 在推理时投入的"思考"量
@@ -192,10 +193,10 @@ DEFAULT_CONFIG = {
     # 类别级别的数据源配置：为每类数据指定默认供应商
     # 每个键对应的值可以是 "yfinance"（免费，无需 API 密钥）或 "alpha_vantage"（需要免费 API 密钥）
     "data_vendors": {
-        "core_stock_apis": "yfinance",       # 核心股票数据（价格、成交量、公司信息等）
-        "technical_indicators": "yfinance",  # 技术指标（MACD、RSI、布林带、移动平均线等）
-        "fundamental_data": "yfinance",      # 基本面数据（财务报表、估值指标等）
-        "news_data": "yfinance",             # 新闻数据（公司新闻、市场动态等）
+        "core_stock_apis": "akshare",       # 核心股票数据（价格、成交量、公司信息等）
+        "technical_indicators": "akshare",  # 技术指标（MACD、RSI、布林带、移动平均线等）
+        "fundamental_data": "akshare",      # 基本面数据（财务报表、估值指标等）
+        "news_data": "akshare",             # 新闻数据（公司新闻、市场动态等）
     },
 
     # ====== 工具级别的数据源配置 ======

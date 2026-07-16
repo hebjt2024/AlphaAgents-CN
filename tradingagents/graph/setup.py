@@ -606,7 +606,7 @@ class GraphSetup:
         #   → LLM 返回："Based on the BUY recommendation, buy 100 shares of AAPL
         #      at current price of $185 with stop loss at $175..."
         #   → 更新 state["trader_investment_plan"]
-        trader_node = create_trader(self.quick_thinking_llm, self.trader_memory)
+        trader_node = create_trader(self.quick_thinking_llm)
 
         # 创建风险分析三方辩论节点
         # 激进分析师：主张高风险高回报策略（如加杠杆、全仓买入）
@@ -619,9 +619,9 @@ class GraphSetup:
         #   → 更新 state["risk_debate_state"]["aggressive_history"]
         #   → 更新 state["risk_debate_state"]["latest_speaker"] = "Aggressive"
         #   → 更新 state["risk_debate_state"]["count"] += 1
-        aggressive_analyst = create_aggressive_debator(self.quick_thinking_llm)
-        neutral_analyst = create_neutral_debator(self.quick_thinking_llm)
-        conservative_analyst = create_conservative_debator(self.quick_thinking_llm)
+        aggressive_analyst = create_risk_aggressive(self.quick_thinking_llm)
+        neutral_analyst = create_risk_neutral(self.quick_thinking_llm)
+        conservative_analyst = create_risk_conservative(self.quick_thinking_llm)
 
         # 创建投资组合经理节点
         # 使用深度思考 LLM，综合风险分析辩论结果，做出最终交易决策

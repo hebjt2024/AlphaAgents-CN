@@ -227,12 +227,18 @@ class AnthropicClient(BaseLLMClient):
 
         数据流：
             1. 创建 llm_kwargs 字典，包含 model 参数
-            2. 遍历 _PASSTHROUGH_KWARGS，从 self.kwargs 中提取存在的参数
-            3. 使用提取的参数创建 NormalizedChatAnthropic 实例
-            4. 返回实例给调用者（通常是 factory.py 或分析引擎）
+            2. 如果配置了 base_url，传入 base_url 参数（用于代理/兼容API）
+            3. 遍历 _PASSTHROUGH_KWARGS，从 self.kwargs 中提取存在的参数
+            4. 使用提取的参数创建 NormalizedChatAnthropic 实例
+            5. 返回实例给调用者（通常是 factory.py 或分析引擎）
         """
         # 初始化参数字典，始终包含 model 参数
         llm_kwargs = {"model": self.model}
+
+        # 如果配置了 base_url（自定义 API 地址），传入 ChatAnthropic
+        # 这是使用 MiniMax 等兼容协议代理时的关键配置
+        if self.base_url:
+            llm_kwargs["base_url"] = self.base_url
 
         # 遍历需要转发的参数名列表
         for key in _PASSTHROUGH_KWARGS:
@@ -244,7 +250,7 @@ class AnthropicClient(BaseLLMClient):
 
         # 使用收集的参数创建 NormalizedChatAnthropic 实例
         # **llm_kwargs 解包字典为关键字参数
-        # 等价于：NormalizedChatAnthropic(model="claude-sonnet-4-6", api_key="...", effort="high", ...)
+        # 等价于：NormalizedChatAnthropic(model="claude-sonnet-4-6", base_url="https://api.minimaxi.com/anthropic", api_key="...", ...)
         return NormalizedChatAnthropic(**llm_kwargs)
 
     def validate_model(self) -> bool:

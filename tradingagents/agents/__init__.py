@@ -167,17 +167,17 @@ from .researchers.bull_researcher import create_bull_researcher
 # create_aggressive_debator: 创建激进型风险分析师
 # 倾向于承担更高风险以追求更高回报
 # 会关注收益潜力而非下行风险
-from .risk_mgmt.aggressive_debator import create_aggressive_debator
+from .risk_mgmt.aggressive_debator import create_risk_aggressive
 
 # create_conservative_debator: 创建保守型风险分析师
 # 注重本金安全，偏好低风险投资
 # 会关注下行风险和资本保护
-from .risk_mgmt.conservative_debator import create_conservative_debator
+from .risk_mgmt.conservative_debator import create_risk_conservative
 
 # create_neutral_debator: 创建中立型风险分析师
 # 在风险和回报之间寻求平衡
 # 会综合考虑上行潜力和下行风险
-from .risk_mgmt.neutral_debator import create_neutral_debator
+from .risk_mgmt.neutral_debator import create_risk_neutral
 
 # ---------------------------------------------------------------------------
 # 管理智能体（Managers）导入
@@ -235,11 +235,11 @@ __all__ = [
     # 分析智能体
     "create_fundamentals_analyst",    # 创建基本面分析智能体
     "create_market_analyst",          # 创建市场分析智能体
-    "create_neutral_debator",         # 创建中立型风险分析师
+    "create_risk_neutral",         # 创建中立型风险分析师
     "create_news_analyst",            # 创建新闻分析智能体
-    "create_aggressive_debator",      # 创建激进型风险分析师
+    "create_risk_aggressive",      # 创建激进型风险分析师
     "create_portfolio_manager",       # 创建投资组合管理智能体
-    "create_conservative_debator",    # 创建保守型风险分析师
+    "create_risk_conservative",    # 创建保守型风险分析师
     "create_social_media_analyst",    # 创建社交媒体分析智能体
 
     # 交易智能体

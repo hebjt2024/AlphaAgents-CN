@@ -156,7 +156,7 @@ ta = TradingAgentsGraph(debug=True, config=config)
 # Python 的多返回值解包：_, decision = ta.propagate(...)
 #   _ 是 Python 惯例，表示"不关心这个返回值"
 #   decision 是最终的投资决策文本
-_, decision = ta.propagate("NVDA", "2024-05-10")
+_, decision = ta.propagate("海南橡胶", "2026-07-15")
 
 # 打印最终的投资决策
 # decision 通常包含：

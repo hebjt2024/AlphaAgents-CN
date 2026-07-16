@@ -196,12 +196,11 @@ from .yfinance_news import get_news_yfinance, get_global_news_yfinance
 # 同样使用 as 重命名，便于后续统一管理。
 from .alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
-    get_indicator as get_alpha_vantage_indicator,
+    get_technical_indicator as get_alpha_vantage_indicator,
     get_fundamentals as get_alpha_vantage_fundamentals,
     get_balance_sheet as get_alpha_vantage_balance_sheet,
-    get_cashflow as get_alpha_vantage_cashflow,
+    get_cash_flow as get_alpha_vantage_cashflow,
     get_income_statement as get_alpha_vantage_income_statement,
-    get_insider_transactions as get_alpha_vantage_insider_transactions,
     get_news as get_alpha_vantage_news,
     get_global_news as get_alpha_vantage_global_news,
 )
@@ -211,6 +210,19 @@ from .alpha_vantage import (
 # AlphaVantageRateLimitError 是一种自定义异常，表示"调用太频繁，被限流了"。
 # route_to_vendor 会捕获这个特定异常来触发降级。
 from .alpha_vantage_common import AlphaVantageRateLimitError
+
+# 从 akshare_adapter 模块导入 AkShare 供应商的具体实现函数
+from .akshare_adapter import (
+    get_akshare_stock,
+    get_akshare_indicators,
+    get_akshare_fundamentals,
+    get_akshare_balance_sheet,
+    get_akshare_cashflow,
+    get_akshare_income_statement,
+    get_akshare_insider_transactions,
+    get_akshare_news,
+    get_akshare_global_news,
+)
 
 # 从 config 模块导入配置获取函数
 # get_config() 返回当前的全局配置字典（详见 config.py 的注释）
@@ -296,42 +308,50 @@ VENDOR_LIST = [
 VENDOR_METHODS = {
     # ---- 核心股票数据 API ----
     "get_stock_data": {
+        "akshare": get_akshare_stock,               # AkShare 的股价获取（A股）
         "alpha_vantage": get_alpha_vantage_stock,   # Alpha Vantage 的股价获取实现
         "yfinance": get_YFin_data_online,           # Yahoo Finance 的股价获取实现
     },
     # ---- 技术指标 ----
     "get_indicators": {
+        "akshare": get_akshare_indicators,
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
     },
     # ---- 基本面数据 ----
     "get_fundamentals": {
+        "akshare": get_akshare_fundamentals,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
     },
     "get_balance_sheet": {
+        "akshare": get_akshare_balance_sheet,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
     },
     "get_cashflow": {
+        "akshare": get_akshare_cashflow,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
     },
     "get_income_statement": {
+        "akshare": get_akshare_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
     },
     # ---- 新闻数据 ----
     "get_news": {
+        "akshare": get_akshare_news,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
     },
     "get_global_news": {
+        "akshare": get_akshare_global_news,
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
     },
     "get_insider_transactions": {
-        "alpha_vantage": get_alpha_vantage_insider_transactions,
+        "akshare": get_akshare_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
     },
 }
@@ -584,11 +604,14 @@ def route_to_vendor(method: str, *args, **kwargs):
             return impl_func(*args, **kwargs)
         except AlphaVantageRateLimitError:
             # Alpha Vantage 频率限制，继续尝试下一个供应商
-            # 【为什么只捕获这个异常？】
-            # 因为只有"频率限制"是换一个供应商能解决的问题。
-            # 如果是网络错误、参数错误等，换供应商也大概率不行，
-            # 所以让这些异常直接传播给调用者。
-            continue  # 只有频率限制才触发降级
+            continue
+        except Exception as e:
+            # 其他异常（网络错误、数据不可用等）也尝试降级
+            # 多供应商设计就是为了容错——一个供应商挂了，自动切换下一个
+            # 只有当这是最后一个供应商时才抛出异常
+            if vendor == fallback_vendors[-1]:
+                raise
+            continue
 
     # 步骤6：所有供应商都失败
     # 如果循环走完了都没有 return（所有供应商都失败），抛出异常
