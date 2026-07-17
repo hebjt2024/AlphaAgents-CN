@@ -240,6 +240,13 @@ class AnthropicClient(BaseLLMClient):
         if self.base_url:
             llm_kwargs["base_url"] = self.base_url
 
+        # 设置默认超时时间（5分钟），避免长报告生成时超时
+        # 用户可以通过 kwargs 传入自定义 timeout 覆盖此默认值
+        if "timeout" not in self.kwargs:
+            llm_kwargs["timeout"] = 300.0  # 5分钟超时
+        if "max_retries" not in self.kwargs:
+            llm_kwargs["max_retries"] = 2  # 默认重试2次
+
         # 遍历需要转发的参数名列表
         for key in _PASSTHROUGH_KWARGS:
             # 检查 self.kwargs（用户提供的额外参数）中是否有该参数

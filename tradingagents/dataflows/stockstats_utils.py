@@ -244,9 +244,67 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# 函数：reset_yfinance_session（重置 yfinance 单例会话）
+# ---------------------------------------------------------------------------
+def reset_yfinance_session():
+    """
+    重置 yfinance 的全局单例会话，解决限流状态缓存问题。
+
+    yfinance 内部使用 YfData 单例（SingletonMeta），持有全局唯一的
+    HTTP 会话（session）和 cookie。当触发 Yahoo Finance 的限流后，
+    这个会话会缓存限流状态，导致后续所有请求都返回限流错误。
+
+    此函数通过清除单例实例来强制创建新的会话，从而绕过之前的限流状态。
+
+    调用时机：
+      - 分析开始前（main.py 或 run_webui.py）
+      - 连续多次限流后
+    """
+    try:
+        # 清除 YfData 单例实例
+        # yfinance 的 YfData 类使用 SingletonMeta 元类，
+        # _instances 字典存储了所有单例实例
+        from yfinance.data import YfData
+        YfData._instances.clear()
+        logger.info("yfinance session reset successfully")
+    except Exception as e:
+        logger.debug(f"Failed to reset yfinance session: {e}")
+
+
+# ---------------------------------------------------------------------------
+# 函数：configure_yfinance_proxy（配置 yfinance 代理）
+# ---------------------------------------------------------------------------
+def configure_yfinance_proxy(proxy_url: str = None):
+    """
+    为 yfinance 配置 HTTP 代理。
+
+    当在中国大陆网络环境下访问 Yahoo Finance 时，通常需要代理。
+    此函数通过 yfinance 内置的 YfConfig 接口设置代理。
+
+    参数：
+      proxy_url: 代理地址，如 "http://127.0.0.1:7890"
+                 如果为 None，则从环境变量 HTTPS_PROXY 或 HTTP_PROXY 读取
+
+    调用时机：
+      - 分析开始前（main.py 或 run_webui.py）
+    """
+    if proxy_url is None:
+        proxy_url = os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or os.environ.get("YFINANCE_PROXY")
+
+    if proxy_url:
+        try:
+            from yfinance.config import YfConfig
+            YfConfig.network.proxy = proxy_url
+            reset_yfinance_session()  # 代理变更后需要重置会话
+            logger.info(f"yfinance proxy configured: {proxy_url}")
+        except Exception as e:
+            logger.warning(f"Failed to configure yfinance proxy: {e}")
+
+
+# ---------------------------------------------------------------------------
 # 函数：yf_retry（指数退避重试包装器）
 # ---------------------------------------------------------------------------
-def yf_retry(func, max_retries=3, base_delay=2.0):
+def yf_retry(func, max_retries=1, base_delay=2.0):
     """
     为 Yahoo Finance API 调用添加指数退避重试机制。
 
@@ -304,33 +362,44 @@ def yf_retry(func, max_retries=3, base_delay=2.0):
     # range(max_retries + 1) 生成从 0 到 max_retries 的整数序列
     # 例如 max_retries=3 时，range(4) 生成 [0, 1, 2, 3]
     # attempt 变量在每次循环中依次取这些值
-    for attempt in range(max_retries + 1):  # attempt 从 0 到 max_retries
+    for attempt in range(max_retries + 1):
         try:
-            # func() 调用传入的 lambda 函数，触发真正的 API 请求
-            # 如果成功，直接 return 返回结果，函数结束
-            # 如果抛出 YFRateLimitError，跳到下面的 except 块
-            return func()  # 尝试执行 API 调用
-        except YFRateLimitError:  # 只捕获频率限制异常
-            # 如果是其他异常（如网络错误），不会被这个 except 捕获，会直接向上传播
-            if attempt < max_retries:  # 还有重试机会（还没到最后一次）
-                # 计算指数退避等待时间
-                # ** 是 Python 的幂运算符：2 ** 0 = 1, 2 ** 1 = 2, 2 ** 2 = 4
-                # 所以 delay 依次为：2*1=2, 2*2=4, 2*4=8 ...
+            return func()
+        except YFRateLimitError:
+            if attempt < max_retries:
                 delay = base_delay * (2 ** attempt)
-                # 记录警告日志，包含等待时间和当前重试次数
-                # f"..." 是 f-string 格式化字符串，{变量} 会被替换为实际值
-                # {delay:.0f} 表示浮点数保留 0 位小数（2.0 → "2"）
                 logger.warning(
                     f"Yahoo Finance rate limited, retrying in {delay:.0f}s "
                     f"(attempt {attempt + 1}/{max_retries})"
                 )
-                # time.sleep(秒数)：让程序暂停执行指定的秒数
-                # 这是指数退避的核心：等待一段时间后再重试
+                reset_yfinance_session()
                 time.sleep(delay)
             else:
-                # 重试次数已用完（attempt == max_retries，即最后一次也失败了）
-                # raise 关键字重新抛出异常，让调用方处理
-                # 注意：这里单独写 raise（不带参数）表示重新抛出当前捕获的异常
+                raise
+        except (ConnectionError, TimeoutError, OSError) as e:
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Yahoo Finance network error ({type(e).__name__}), "
+                    f"retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})"
+                )
+                reset_yfinance_session()
+                time.sleep(delay)
+            else:
+                raise
+        except Exception as e:
+            # yfinance 可能将 DNS 解析失败等错误包装为 YFRateLimitError
+            # 但某些版本也会直接抛出其他异常类型
+            # 这里的兜底捕获确保任何异常都触发重试和降级
+            if attempt < max_retries:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    f"Yahoo Finance error ({type(e).__name__}: {e}), "
+                    f"retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})"
+                )
+                reset_yfinance_session()
+                time.sleep(delay)
+            else:
                 raise
 
 

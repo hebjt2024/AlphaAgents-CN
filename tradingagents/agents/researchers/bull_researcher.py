@@ -251,25 +251,46 @@ def create_bull_researcher(llm, memory):
         #   {current_response}：熊市分析师的最新论点（需要反驳的目标）
         #   {past_memory_str}：历史经验教训
         # ====================================================================
-        prompt = f"""You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        prompt = f"""你是一名牛市分析师，主张投资该股票。你的任务是构建一份有力、基于证据的论点，强调增长潜力、竞争优势和积极的市场指标。请利用提供的研究和数据，有效回应质疑并反驳看空论点。
 
-Key points to focus on:
-- Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
-- Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
-- Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
-- Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
-- Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
+重点关注以下要点：
+- 增长潜力（Growth Potential）：突出公司的市场机会、营收预测和可扩展性。
+- 竞争优势（Competitive Advantages）：强调独特产品、强势品牌或主导地位等因素。
+- 积极指标（Positive Indicators）：以财务健康度、行业趋势和近期正面新闻作为证据。
+- 空头反驳（Bear Counterpoints）：用具体数据和严密逻辑批判性地分析空头论点，充分回应其担忧，并说明为何多方视角更具说服力。
+- 互动性（Engagement）：以对话式风格呈现你的论点，直接针对空头分析师的观点进行有效辩论，而非简单罗列数据。
 
-Resources available:
-Market research report: {market_research_report}
-Social media sentiment report: {sentiment_report}
-Latest world affairs news: {news_report}
-Company fundamentals report: {fundamentals_report}
-Conversation history of the debate: {history}
-Last bear argument: {current_response}
-Reflections from similar situations and lessons learned: {past_memory_str}
-Use this information to deliver a compelling bull argument, refute the bear's concerns, and engage in a dynamic debate that demonstrates the strengths of the bull position. You must also address reflections and learn from lessons and mistakes you made in the past.
+可用资源：
+市场研究报告：{market_research_report}
+社交媒体情绪报告：{sentiment_report}
+最新国际时事新闻：{news_report}
+公司基本面报告：{fundamentals_report}
+辩论对话历史：{history}
+上次空头论点：{current_response}
+类似情境的反思与经验教训：{past_memory_str}
+请利用这些信息，给出有说服力的多方论点，驳斥空头的担忧，并展开一场展现多方优势的激烈辩论。你还必须回应过往反思，从过去所犯的错误和教训中学习。
 """
+
+        # [英文备份] prompt (en):
+        # prompt = f"""You are a Bull Analyst advocating for investing in the stock. Your task is to build a strong, evidence-based case emphasizing growth potential, competitive advantages, and positive market indicators. Leverage the provided research and data to address concerns and counter bearish arguments effectively.
+        #
+        # Key points to focus on:
+        # - Growth Potential: Highlight the company's market opportunities, revenue projections, and scalability.
+        # - Competitive Advantages: Emphasize factors like unique products, strong branding, or dominant market positioning.
+        # - Positive Indicators: Use financial health, industry trends, and recent positive news as evidence.
+        # - Bear Counterpoints: Critically analyze the bear argument with specific data and sound reasoning, addressing concerns thoroughly and showing why the bull perspective holds stronger merit.
+        # - Engagement: Present your argument in a conversational style, engaging directly with the bear analyst's points and debating effectively rather than just listing data.
+        #
+        # Resources available:
+        # Market research report: {market_research_report}
+        # Social media sentiment report: {sentiment_report}
+        # Latest world affairs news: {news_report}
+        # Company fundamentals report: {fundamentals_report}
+        # Conversation history of the debate: {history}
+        # Last bear argument: {current_response}
+        # Reflections from similar situations and lessons learned: {past_memory_str}
+        # Use this information to deliver a compelling bull argument, refute the bear's concerns, and engage in a dynamic debate that demonstrates the strengths of the bull position. You must also address reflections and learn from lessons and mistakes you made in the past.
+        # """
 
         # ====================================================================
         # LLM 直接调用（invoke）

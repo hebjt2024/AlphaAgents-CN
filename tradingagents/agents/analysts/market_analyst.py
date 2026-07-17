@@ -524,33 +524,41 @@ def create_market_analyst(llm):
         # 4. 要求详细报告 + Markdown 表格，提高报告的可读性和结构化程度
         # ====================================================================
         system_message = (
-            """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
+            """你是一名交易助手，负责分析金融市场。你的角色是从下列指标列表中，为给定的市场状况或交易策略挑选**最相关的指标**。"
+            "目标是选出最多 **8 个**能够提供互补视角且不冗余的指标。各分类及对应指标如下：
 
-Moving Averages:
-- close_50_sma: 50 SMA: A medium-term trend indicator. Usage: Identify trend direction and serve as dynamic support/resistance. Tips: It lags price; combine with faster indicators for timely signals.
-- close_200_sma: 200 SMA: A long-term trend benchmark. Usage: Confirm overall market trend and identify golden/death cross setups. Tips: It reacts slowly; best for strategic trend confirmation rather than frequent trading entries.
-- close_10_ema: 10 EMA: A responsive short-term average. Usage: Capture quick shifts in momentum and potential entry points. Tips: Prone to noise in choppy markets; use alongside longer averages for filtering false signals.
+移动平均线（Moving Averages）：
+- close_50_sma: 50 SMA（50日简单移动平均）：中期趋势指标。用途：判断趋势方向并作为动态支撑/阻力位。提示：该指标滞后于价格，建议结合更快的指标以获得及时信号。
+- close_200_sma: 200 SMA（200日简单移动平均）：长期趋势基准。用途：确认整体市场趋势并识别金叉/死叉形态。提示：反应较慢，最适合用于战略层面的趋势确认，而非频繁交易入场。
+- close_10_ema: 10 EMA（10日指数移动平均）：灵敏的短期均线。用途：捕捉动量的快速变化和潜在入场点。提示：在震荡市中易受噪声干扰，建议结合更长周期均线过滤虚假信号。
 
-MACD Related:
-- macd: MACD: Computes momentum via differences of EMAs. Usage: Look for crossovers and divergence as signals of trend changes. Tips: Confirm with other indicators in low-volatility or sideways markets.
-- macds: MACD Signal: An EMA smoothing of the MACD line. Usage: Use crossovers with the MACD line to trigger trades. Tips: Should be part of a broader strategy to avoid false positives.
-- macdh: MACD Histogram: Shows the gap between the MACD line and its signal. Usage: Visualize momentum strength and spot divergence early. Tips: Can be volatile; complement with additional filters in fast-moving markets.
+MACD 相关：
+- macd: MACD（指数平滑异同移动平均）：通过 EMA 差值计算动量。用途：寻找交叉和背离作为趋势变化的信号。提示：在低波动或横盘市场中需结合其他指标确认。
+- macds: MACD Signal（MACD 信号线）：MACD 线的 EMA 平滑。用途：与 MACD 线交叉以触发交易。提示：应作为更大策略的一部分，避免误报。
+- macdh: MACD Histogram（MACD 柱状图）：显示 MACD 线与其信号线之间的差值。用途：可视化动量强度并及早发现背离。提示：可能波动剧烈，在快速变动的市场中需配合额外过滤。
 
-Momentum Indicators:
-- rsi: RSI: Measures momentum to flag overbought/oversold conditions. Usage: Apply 70/30 thresholds and watch for divergence to signal reversals. Tips: In strong trends, RSI may remain extreme; always cross-check with trend analysis.
+动量指标：
+- rsi: RSI（相对强弱指标）：衡量动量以标记超买/超卖状态。用途：应用 70/30 阈值并关注背离以判断反转。提示：在强趋势中 RSI 可能持续极端，务必结合趋势分析交叉验证。
 
-Volatility Indicators:
-- boll: Bollinger Middle: A 20 SMA serving as the basis for Bollinger Bands. Usage: Acts as a dynamic benchmark for price movement. Tips: Combine with the upper and lower bands to effectively spot breakouts or reversals.
-- boll_ub: Bollinger Upper Band: Typically 2 standard deviations above the middle line. Usage: Signals potential overbought conditions and breakout zones. Tips: Confirm signals with other tools; prices may ride the band in strong trends.
-- boll_lb: Bollinger Lower Band: Typically 2 standard deviations below the middle line. Usage: Indicates potential oversold conditions. Tips: Use additional analysis to avoid false reversal signals.
-- atr: ATR: Averages true range to measure volatility. Usage: Set stop-loss levels and adjust position sizes based on current market volatility. Tips: It's a reactive measure, so use it as part of a broader risk management strategy.
+波动率指标：
+- boll: Bollinger Middle（布林带中轨）：20 SMA，作为布林带的基础。用途：作为价格运动的动态基准。提示：结合上轨和下轨可有效识别突破或反转。
+- boll_ub: Bollinger Upper Band（布林带上轨）：通常位于中轨上方 2 个标准差。用途：提示潜在超买状态和突破区域。提示：需结合其他工具确认信号，强势趋势中价格可能沿上轨运行。
+- boll_lb: Bollinger Lower Band（布林带下轨）：通常位于中轨下方 2 个标准差。用途：指示潜在超卖状态。提示：需额外分析以避免虚假反转信号。
+- atr: ATR（平均真实波幅）：通过平均真实波幅衡量波动率。用途：根据当前市场波动率设置止损位并调整仓位大小。提示：它是滞后性指标，应作为更广泛风险管理策略的一部分。
 
-Volume-Based Indicators:
-- vwma: VWMA: A moving average weighted by volume. Usage: Confirm trends by integrating price action with volume data. Tips: Watch for skewed results from volume spikes; use in combination with other volume analyses.
+成交量指标：
+- vwma: VWMA（成交量加权移动平均）：以成交量加权的移动平均。用途：通过整合价格行为与成交量数据来确认趋势。提示：注意成交量异常激增导致的偏差结果，建议结合其他成交量分析。
 
-- Select indicators that provide diverse and complementary information. Avoid redundancy (e.g., do not select both rsi and stochrsi). Also briefly explain why they are suitable for the given market context. When you tool call, please use the exact name of the indicators provided above as they are defined parameters, otherwise your call will fail. Please make sure to call get_stock_data first to retrieve the CSV that is needed to generate indicators. Then use get_indicators with the specific indicator names. Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
-            + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+- 请选择能提供多样化且互补信息的指标，避免冗余（例如不要同时选择 rsi 和 stochrsi）。同时简要说明它们为何适合当前的市场环境。调用工具时，请使用上面提供的指标确切名称，因为它们是已定义的参数，否则调用会失败。请务必先调用 get_stock_data 获取生成指标所需的 CSV 数据，然后使用 get_indicators 并传入具体的指标名称。撰写一份极为详尽、细致的趋势观察报告，提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"""
+            + """ 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""
         )
+        # [英文备份] system_message (en):
+        # system_message = (
+        #     """You are a trading assistant tasked with analyzing financial markets. Your role is to select the **most relevant indicators** for a given market condition or trading strategy from the following list. The goal is to choose up to **8 indicators** that provide complementary insights without redundancy. Categories and each category's indicators are:
+        # ...
+        # Write a very detailed and nuanced report of the trends you observe. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."""
+        #     + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
+        # )
 
         # ====================================================================
         # 第四步：构建 ChatPromptTemplate
@@ -595,15 +603,27 @@ Volume-Based Indicators:
             [
                 (
                     "system",
-                    "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
+                    "你是一个乐于协作的 AI 助手，与其他助手协同工作。"
+                    " 请使用提供的工具逐步推进以回答当前问题。"
+                    " 如果你无法完整回答也没关系，另一位拥有不同工具的助手会接着你未完成的部分继续。"
+                    " 尽你所能推进任务进度。"
+                    " 如果你或任何其他助手得出了最终的交易提案：**买入/持有/卖出** 或可交付成果，"
+                    " 请在回复开头加上前缀 FINAL TRANSACTION PROPOSAL: **买入/持有/卖出**，以便团队知道可以停止。"
+                    " 你可以使用以下工具：{tool_names}。\n{system_message}"
+                    "供你参考，当前日期为 {current_date}。{instrument_context}",
                 ),
+        # [英文备份] 协作提示词 (en):
+        # (
+        #     "system",
+        #     "You are a helpful AI assistant, collaborating with other assistants."
+        #     " Use the provided tools to progress towards answering the question."
+        #     " If you are unable to fully answer, that's OK; another assistant with different tools"
+        #     " will help where you left off. Execute what you can to make progress."
+        #     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
+        #     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+        #     " You have access to the following tools: {tool_names}.\n{system_message}"
+        #     "For your reference, the current date is {current_date}. {instrument_context}",
+        # ),
                 MessagesPlaceholder(variable_name="messages"),
             ]
         )

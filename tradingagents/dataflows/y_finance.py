@@ -192,6 +192,40 @@ from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry
 # =============================================================================
 # 函数：get_YFin_data_online
 # =============================================================================
+# A 股代码转换工具
+# =============================================================================
+
+def to_yfinance_symbol(symbol: str) -> str:
+    """
+    将 A 股代码转换为 Yahoo Finance 格式。
+
+    Yahoo Finance 对 A 股使用以下格式：
+      - 上海交易所 (60xxxx, 68xxxx): 加 ".SS" 后缀，如 "601118.SS"
+      - 深圳交易所 (00xxxx, 30xxxx): 加 ".SZ" 后缀，如 "000001.SZ"
+      - 美股代码: 原样返回，如 "AAPL", "NVDA"
+
+    参数：
+      symbol: 原始股票代码
+
+    返回：
+      Yahoo Finance 格式的股票代码
+    """
+    symbol = symbol.strip().upper()
+
+    # 已经是 Yahoo Finance 格式（包含 .SS / .SZ 后缀）
+    if "." in symbol:
+        return symbol
+
+    # A 股 6 位数字代码
+    if symbol.isdigit() and len(symbol) == 6:
+        if symbol.startswith("60") or symbol.startswith("68"):
+            return f"{symbol}.SS"  # 上海交易所
+        else:
+            return f"{symbol}.SZ"  # 深圳交易所
+
+    return symbol
+
+# =============================================================================
 def get_YFin_data_online(
     symbol: Annotated[str, "ticker symbol of the company"],
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
@@ -258,7 +292,7 @@ def get_YFin_data_online(
     # yf.Ticker(代码) 创建一个代表该股票的对象
     # .upper() 将代码转为大写，符合金融数据惯例
     # 例如：symbol="aapl" → "AAPL"
-    ticker = yf.Ticker(symbol.upper())
+    ticker = yf.Ticker(to_yfinance_symbol(symbol))
 
     # 获取指定日期范围的历史数据
     # lambda 表达式创建延迟执行的可调用对象，供 yf_retry 控制重试
@@ -840,7 +874,7 @@ def get_fundamentals(
     """
     try:
         # 创建 Ticker 对象（股票代码转为大写）
-        ticker_obj = yf.Ticker(ticker.upper())
+        ticker_obj = yf.Ticker(to_yfinance_symbol(ticker))
         # 获取公司信息字典（带重试机制）
         # ticker_obj.info 返回一个字典，包含大量公司信息
         # lambda 包装延迟执行，让 yf_retry 控制重试
@@ -960,7 +994,7 @@ def get_balance_sheet(
     """
     try:
         # 创建 Ticker 对象
-        ticker_obj = yf.Ticker(ticker.upper())
+        ticker_obj = yf.Ticker(to_yfinance_symbol(ticker))
 
         # 根据频率参数选择季度或年度数据
         # .lower() 实现不区分大小写：'Quarterly'、'QUARTERLY' 都能正确匹配
@@ -1024,7 +1058,7 @@ def get_cashflow(
       - 现金流量表反映公司现金的流入和流出，分为经营活动、投资活动和筹资活动三部分。
     """
     try:
-        ticker_obj = yf.Ticker(ticker.upper())
+        ticker_obj = yf.Ticker(to_yfinance_symbol(ticker))
 
         # 根据频率参数选择季度或年度数据
         if freq.lower() == "quarterly":
@@ -1079,7 +1113,7 @@ def get_income_statement(
       - 利润表反映公司在一定时期内的经营成果，包括收入、成本、费用和利润。
     """
     try:
-        ticker_obj = yf.Ticker(ticker.upper())
+        ticker_obj = yf.Ticker(to_yfinance_symbol(ticker))
 
         # 根据频率参数选择季度或年度数据
         if freq.lower() == "quarterly":
@@ -1147,7 +1181,7 @@ def get_insider_transactions(
       - 或运算符 or：两边只要有一个为 True 就返回 True
     """
     try:
-        ticker_obj = yf.Ticker(ticker.upper())
+        ticker_obj = yf.Ticker(to_yfinance_symbol(ticker))
         # 获取内部交易数据（带重试机制）
         data = yf_retry(lambda: ticker_obj.insider_transactions)
 

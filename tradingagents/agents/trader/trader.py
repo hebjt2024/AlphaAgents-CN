@@ -195,9 +195,18 @@ def create_trader(llm):
         #          与其他分析师 Agent 的提示词结构一致。
         # ====================================================================
         system_message = (
-            "You are a trading assistant that makes specific trading decisions based on the investment plan provided by the research manager. Your task is to execute the plan by providing specific actionable trading instructions. Use the investment plan to guide your decisions, ensuring that your trades align with the plan's strategic direction. Clearly communicate each trade, including rationale and any risks you identify."
-            + " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable, prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+            "你是一名交易助手，根据研究经理提供的投资计划做出具体的交易决策。"
+            "你的任务是通过提供具体、可操作的交易指令来执行该计划。"
+            "请使用投资计划来指导你的决策，确保你的交易与计划的战略方向一致。"
+            "清晰沟通每一笔交易，包括理由以及你识别出的任何风险。"
+            + " 如果你或任何其他助手得出了最终的交易提案：**买入/持有/卖出** 或可交付成果，"
+            "请在回复开头加上前缀 FINAL TRANSACTION PROPOSAL: **买入/持有/卖出**，以便团队知道可以停止。"
         )
+        # [英文备份] system_message (en):
+        # system_message = (
+        #     "You are a trading assistant that makes specific trading decisions based on the investment plan provided by the research manager. Your task is to execute the plan by providing specific actionable trading instructions. Use the investment plan to guide your decisions, ensuring that your trades align with the plan's strategic direction. Clearly communicate each trade, including rationale and any risks you identify."
+        #     + " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable, prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+        # )
 
         # ====================================================================
         # 构建 ChatPromptTemplate（聊天提示词模板）
@@ -249,15 +258,15 @@ def create_trader(llm):
             [
                 (
                     "system",
-                    "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}"
-                    "Investment plan from research manager: {investment_plan}",
+                    "你是一个乐于协作的 AI 助手，与其他助手协同工作。"
+                    " 请使用提供的工具逐步推进以回答当前问题。"
+                    " 如果你无法完整回答也没关系，另一位拥有不同工具的助手会接着你未完成的部分继续。"
+                    " 尽你所能推进任务进度。"
+                    " 如果你或任何其他助手得出了最终的交易提案：**买入/持有/卖出** 或可交付成果，"
+                    " 请在回复开头加上前缀 FINAL TRANSACTION PROPOSAL: **买入/持有/卖出**，以便团队知道可以停止。"
+                    " 你可以使用以下工具：{tool_names}。\n{system_message}"
+                    "供你参考，当前日期为 {current_date}。{instrument_context}"
+                    "研究经理提供的投资计划：{investment_plan}",
                 ),
                 # ==================================================================
                 # MessagesPlaceholder：运行时插入历史消息
@@ -358,13 +367,13 @@ def create_trader(llm):
         #     包装成列表 [result] 是因为 LangGraph 的 messages reducer
         #     期望接收消息列表。
         #
-        # - "trader_plan": report
+        # - "trader_investment_plan": report
         #   → 交易执行方案文本。包含具体的交易指令、理由和风险。
         #     供后续的风险分析师（激进/保守/中性）评估和辩论。
         # ====================================================================
         return {
             "messages": [result],
-            "trader_plan": report,
+            "trader_investment_plan": report,
         }
 
     # ========================================================================

@@ -119,28 +119,8 @@
 #   - yf.Search(query="关键词")：按关键词搜索新闻
 # ---------------------------------------------------------------------------
 import yfinance as yf
-
-# ---------------------------------------------------------------------------
-# 导入 datetime 模块中的 datetime 类
-# 功能：处理日期和时间，如将字符串解析为日期对象、格式化日期输出
-# 常用方法：
-#   - datetime.strptime(str, format) : 将字符串按指定格式解析为日期对象
-#     例如：datetime.strptime("2024-01-15", "%Y-%m-%d") → datetime(2024, 1, 15)
-#   - datetime.fromisoformat(str)    : 将 ISO 8601 格式字符串解析为日期对象
-#     例如：datetime.fromisoformat("2024-01-15T10:30:00+00:00")
-#   - dt.strftime(format)            : 将日期对象格式化为字符串
-#     例如：dt.strftime("%Y-%m-%d") → "2024-01-15"
-# ---------------------------------------------------------------------------
 from datetime import datetime
-
-# ---------------------------------------------------------------------------
-# 导入 relativedelta 类（来自 dateutil 库）
-# 功能：进行基于日历的日期计算（如"加一个月"、"减 N 天"）
-# 与 timedelta 的区别：
-#   - timedelta 只能做绝对天数/秒数计算
-#   - relativedelta 可以做"一个月后"、"一年前"等基于日历的加减
-# 示例：datetime(2024,1,31) + relativedelta(months=1) → 2024-02-28
-# ---------------------------------------------------------------------------
+from .y_finance import to_yfinance_symbol
 from dateutil.relativedelta import relativedelta
 
 
@@ -323,7 +303,7 @@ def get_news_yfinance(
     try:
         # yf.Ticker(symbol) 创建一个 Ticker 对象，代表一支股票
         # Ticker 对象可以调用各种方法获取股票数据
-        stock = yf.Ticker(ticker)
+        stock = yf.Ticker(to_yfinance_symbol(ticker))
 
         # .get_news(count=20) 获取最近 20 条新闻
         # 返回一个列表（list），每个元素是一个文章字典

@@ -211,7 +211,7 @@ from .alpha_vantage import (
 # route_to_vendor 会捕获这个特定异常来触发降级。
 from .alpha_vantage_common import AlphaVantageRateLimitError
 
-# 从 akshare_adapter 模块导入 AkShare 供应商的具体实现函数
+# 从 akshare_adapter 模块导入 AkShare 供应商的具体实现函数和异常类
 from .akshare_adapter import (
     get_akshare_stock,
     get_akshare_indicators,
@@ -222,6 +222,21 @@ from .akshare_adapter import (
     get_akshare_insider_transactions,
     get_akshare_news,
     get_akshare_global_news,
+    AkShareRateLimitError,
+    AkShareTimeoutError,
+)
+
+# 从 cache_provider 模块导入缓存数据供应商（网络不可用时的降级方案）
+from .cache_provider import (
+    get_cached_stock_data,
+    get_cached_indicators,
+    get_cached_fundamentals,
+    get_cached_balance_sheet,
+    get_cached_cashflow,
+    get_cached_income_statement,
+    get_cached_insider_transactions,
+    get_cached_news,
+    get_cached_global_news,
 )
 
 # 从 config 模块导入配置获取函数
@@ -311,48 +326,57 @@ VENDOR_METHODS = {
         "akshare": get_akshare_stock,               # AkShare 的股价获取（A股）
         "alpha_vantage": get_alpha_vantage_stock,   # Alpha Vantage 的股价获取实现
         "yfinance": get_YFin_data_online,           # Yahoo Finance 的股价获取实现
+        "cache": get_cached_stock_data,             # 内置缓存数据（网络不可用时的降级方案）
     },
     # ---- 技术指标 ----
     "get_indicators": {
         "akshare": get_akshare_indicators,
         "alpha_vantage": get_alpha_vantage_indicator,
         "yfinance": get_stock_stats_indicators_window,
+        "cache": get_cached_indicators,
     },
     # ---- 基本面数据 ----
     "get_fundamentals": {
         "akshare": get_akshare_fundamentals,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
+        "cache": get_cached_fundamentals,
     },
     "get_balance_sheet": {
         "akshare": get_akshare_balance_sheet,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
+        "cache": get_cached_balance_sheet,
     },
     "get_cashflow": {
         "akshare": get_akshare_cashflow,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
+        "cache": get_cached_cashflow,
     },
     "get_income_statement": {
         "akshare": get_akshare_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
+        "cache": get_cached_income_statement,
     },
     # ---- 新闻数据 ----
     "get_news": {
         "akshare": get_akshare_news,
         "alpha_vantage": get_alpha_vantage_news,
         "yfinance": get_news_yfinance,
+        "cache": get_cached_news,
     },
     "get_global_news": {
         "akshare": get_akshare_global_news,
         "yfinance": get_global_news_yfinance,
         "alpha_vantage": get_alpha_vantage_global_news,
+        "cache": get_cached_global_news,
     },
     "get_insider_transactions": {
         "akshare": get_akshare_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
+        "cache": get_cached_insider_transactions,
     },
 }
 
@@ -574,6 +598,15 @@ def route_to_vendor(method: str, *args, **kwargs):
         if vendor not in fallback_vendors:  # 如果这个供应商还不在降级链中
             fallback_vendors.append(vendor)  # 追加到末尾
 
+    # 确保 cache（内置缓存）始终作为最后降级选项
+    # 当所有外部数据源都不可用时，使用缓存/模拟数据确保流水线可运行
+    if "cache" in all_available_vendors and "cache" not in fallback_vendors:
+        fallback_vendors.append("cache")
+    # 如果 cache 已经在列表中但不在最后，移到末尾
+    elif "cache" in fallback_vendors and fallback_vendors[-1] != "cache":
+        fallback_vendors.remove("cache")
+        fallback_vendors.append("cache")
+
     # 步骤5：按降级链依次尝试
     # 遍历降级链中的每一个供应商
     for vendor in fallback_vendors:
@@ -596,14 +629,38 @@ def route_to_vendor(method: str, *args, **kwargs):
         try:
             # 调用供应商实现函数，传递所有参数
             # *args 和 **kwargs 将参数原封不动地传递给实现函数
-            # 【拆包原理】
-            #   假设 args = ("AAPL", "2026-07-07"), kwargs = {"freq": "quarterly"}
-            #   impl_func(*args, **kwargs) 等价于：
-            #   impl_func("AAPL", "2026-07-07", freq="quarterly")
-            # 这就是 * 和 ** 在"调用时"的拆包作用。
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+
+            # 检查返回值是否为错误/空数据
+            # 某些供应商实现会将错误以字符串形式返回
+            # 这些情况下需要触发降级，而不是将其当作正常结果
+            if isinstance(result, str):
+                is_error = (
+                    result.startswith("Error") or
+                    result.startswith("No ") or
+                    result.startswith("News API temporarily unavailable") or
+                    len(result.strip()) == 0
+                )
+                if is_error:
+                    # 若当前供应商不是降级链中的最后一个，则降级到下一个供应商
+                    if vendor != fallback_vendors[-1]:
+                        continue
+                    # 若是最后一个兜底供应商（cache），则不再抛错崩溃，
+                    # 直接返回其结果（可能是模拟/缓存数据），确保流水线可运行
+                    return result
+
+            return result
         except AlphaVantageRateLimitError:
             # Alpha Vantage 频率限制，继续尝试下一个供应商
+            continue
+        except AkShareRateLimitError:
+            # AkShare 频率限制（东方财富 API 限流），继续尝试下一个供应商
+            # 东方财富 API 限流时，等待一段时间后重试可能有效，
+            # 但为了快速响应，这里选择直接降级到下一个供应商
+            continue
+        except AkShareTimeoutError:
+            # AkShare 请求超时，继续尝试下一个供应商
+            # 超时可能是网络问题或东方财富服务器响应缓慢
             continue
         except Exception as e:
             # 其他异常（网络错误、数据不可用等）也尝试降级

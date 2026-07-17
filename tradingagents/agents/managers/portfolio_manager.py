@@ -253,36 +253,68 @@ def create_portfolio_manager(llm, memory):
         #   → 决策要求：果断，每个结论都要有分析师辩论中的具体证据支撑。
         #     防止 LLM 做出没有依据的决策。
         # ====================================================================
-        prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+        prompt = f"""作为投资组合经理，请综合风险分析师的辩论，并给出最终交易决策。
 
 {instrument_context}
 
 ---
 
-**Rating Scale** (use exactly one):
-- **Buy**: Strong conviction to enter or add to position
-- **Overweight**: Favorable outlook, gradually increase exposure
-- **Hold**: Maintain current position, no action needed
-- **Underweight**: Reduce exposure, take partial profits
-- **Sell**: Exit position or avoid entry
+**评级量表**（请仅使用以下之一）：
+- **买入（Buy）**：强烈看好，建仓或加仓
+- **超配（Overweight）**：前景乐观，逐步增加敞口
+- **持有（Hold）**：维持当前仓位，无需操作
+- **低配（Underweight）**：降低敞口，部分获利了结
+- **卖出（Sell）**：退出仓位或避免入场
 
-**Context:**
-- Trader's proposed plan: **{trader_plan}**
-- Lessons from past decisions: **{past_memory_str}**
+**背景信息：**
+- 交易员提议的计划：**{trader_plan}**
+- 过往决策的教训：**{past_memory_str}**
 
-**Required Output Structure:**
-1. **Rating**: State one of Buy / Overweight / Hold / Underweight / Sell.
-2. **Executive Summary**: A concise action plan covering entry strategy, position sizing, key risk levels, and time horizon.
-3. **Investment Thesis**: Detailed reasoning anchored in the analysts' debate and past reflections.
+**要求的输出结构：**
+1. **评级（Rating）**：明确给出买入 / 超配 / 持有 / 低配 / 卖出 之一。
+2. **执行摘要（Executive Summary）**：涵盖入场策略、仓位规模、关键风险位和时间维度的简明行动计划。
+3. **投资论点（Investment Thesis）**：基于分析师辩论和过往反思的详细推理。
 
 ---
 
-**Risk Analysts Debate History:**
+**风险分析师辩论历史：**
 {history}
 
 ---
 
-Be decisive and ground every conclusion in specific evidence from the analysts."""
+请果断决策，并确保每一个结论都基于分析师提供的具体证据。"""
+
+        # [英文备份] prompt (en):
+        # prompt = f"""As the Portfolio Manager, synthesize the risk analysts' debate and deliver the final trading decision.
+        #
+        # {instrument_context}
+        #
+        # ---
+        #
+        # **Rating Scale** (use exactly one):
+        # - **Buy**: Strong conviction to enter or add to position
+        # - **Overweight**: Favorable outlook, gradually increase exposure
+        # - **Hold**: Maintain current position, no action needed
+        # - **Underweight**: Reduce exposure, take partial profits
+        # - **Sell**: Exit position or avoid entry
+        #
+        # **Context:**
+        # - Trader's proposed plan: **{trader_plan}**
+        # - Lessons from past decisions: **{past_memory_str}**
+        #
+        # **Required Output Structure:**
+        # 1. **Rating**: State one of Buy / Overweight / Hold / Underweight / Sell.
+        # 2. **Executive Summary**: A concise action plan covering entry strategy, position sizing, key risk levels, and time horizon.
+        # 3. **Investment Thesis**: Detailed reasoning anchored in the analysts' debate and past reflections.
+        #
+        # ---
+        #
+        # **Risk Analysts Debate History:**
+        # {history}
+        #
+        # ---
+        #
+        # Be decisive and ground every conclusion in specific evidence from the analysts."""
 
         # ====================================================================
         # LLM 直接调用（invoke）

@@ -26,6 +26,7 @@ from pydantic import BaseModel
 
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.dataflows.stockstats_utils import reset_yfinance_session, configure_yfinance_proxy
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -224,6 +225,10 @@ def run_analysis_sync(request: AnalyzeRequest):
                 "message": "正在初始化 TradingAgents 多智能体系统...",
             },
         })
+
+        # 重置数据源会话，清除之前的限流缓存
+        configure_yfinance_proxy()
+        reset_yfinance_session()
 
         ta = TradingAgentsGraph(debug=True, config=config)
 

@@ -236,10 +236,19 @@ def create_fundamentals_analyst(llm):
         #     虽然工具本身有描述，但在提示词中再次强调可以提高调用准确率。
         # ====================================================================
         system_message = (
-            "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
-            + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
-            + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements.",
+            "你是一名研究员，负责分析某公司过去一周的基本面信息。请撰写一份全面的基本面分析报告，"
+            "涵盖财务文件、公司简介、公司基础财务数据以及公司财务历史，从而让交易员对公司基本面有完整的认识。"
+            "请确保包含尽可能多的细节，提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"
+            + " 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"
+            + " 请使用以下可用工具：使用 `get_fundamentals` 获取公司综合分析，"
+            "使用 `get_balance_sheet`、`get_cashflow`、`get_income_statement` 获取具体的财务报表。",
         )
+        # [英文备份] system_message (en):
+        # system_message = (
+        #     "You are a researcher tasked with analyzing fundamental information over the past week about a company. Please write a comprehensive report of the company's fundamental information such as financial documents, company profile, basic company financials, and company financial history to gain a full view of the company's fundamental information to inform traders. Make sure to include as much detail as possible. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+        #     + " Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."
+        #     + " Use the available tools: `get_fundamentals` for comprehensive company analysis, `get_balance_sheet`, `get_cashflow`, and `get_income_statement` for specific financial statements.",
+        # )
 
         # ====================================================================
         # 构建 ChatPromptTemplate（聊天提示词模板）
@@ -300,15 +309,27 @@ def create_fundamentals_analyst(llm):
             [
                 (
                     "system",
-                    "You are a helpful AI assistant, collaborating with other assistants."
-                    " Use the provided tools to progress towards answering the question."
-                    " If you are unable to fully answer, that's OK; another assistant with different tools"
-                    " will help where you left off. Execute what you can to make progress."
-                    " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
-                    " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
-                    " You have access to the following tools: {tool_names}.\n{system_message}"
-                    "For your reference, the current date is {current_date}. {instrument_context}",
+                    "你是一个乐于协作的 AI 助手，与其他助手协同工作。"
+                    " 请使用提供的工具逐步推进以回答当前问题。"
+                    " 如果你无法完整回答也没关系，另一位拥有不同工具的助手会接着你未完成的部分继续。"
+                    " 尽你所能推进任务进度。"
+                    " 如果你或任何其他助手得出了最终的交易提案：**买入/持有/卖出** 或可交付成果，"
+                    " 请在回复开头加上前缀 FINAL TRANSACTION PROPOSAL: **买入/持有/卖出**，以便团队知道可以停止。"
+                    " 你可以使用以下工具：{tool_names}。\n{system_message}"
+                    "供你参考，当前日期为 {current_date}。{instrument_context}",
                 ),
+        # [英文备份] 协作提示词 (en):
+        # (
+        #     "system",
+        #     "You are a helpful AI assistant, collaborating with other assistants."
+        #     " Use the provided tools to progress towards answering the question."
+        #     " If you are unable to fully answer, that's OK; another assistant with different tools"
+        #     " will help where you left off. Execute what you can to make progress."
+        #     " If you or any other assistant has the FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** or deliverable,"
+        #     " prefix your response with FINAL TRANSACTION PROPOSAL: **BUY/HOLD/SELL** so the team knows to stop."
+        #     " You have access to the following tools: {tool_names}.\n{system_message}"
+        #     "For your reference, the current date is {current_date}. {instrument_context}",
+        # ),
                 # ==================================================================
                 # MessagesPlaceholder：运行时插入历史消息
                 #

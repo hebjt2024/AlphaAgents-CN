@@ -155,7 +155,7 @@ def create_risk_conservative(llm):
 
         # 提取交易员的交易方案
         # 这是保守风险分析师需要评估的交易方案
-        trader_plan = state["trader_plan"]
+        trader_plan = state["trader_investment_plan"]
 
         # ====================================================================
         # 确定保守分析师需要回应的"对手论点"
@@ -217,21 +217,38 @@ def create_risk_conservative(llm):
         #   激进"质疑保守" ↔ 保守"质疑激进"
         #   激进"dismantle" ↔ 保守"challenge"
         # ====================================================================
-        prompt = f"""You are a Conservative Risk Analyst. Your role is to identify downside risks and advocate for caution. Evaluate the proposed trade and argue why the trader should reduce risk exposure or implement stricter risk controls.
+        prompt = f"""你是一名保守风险分析师。你的职责是识别下行风险并主张谨慎行事。请评估提议的交易，论证为何交易员应当降低风险敞口或实施更严格的风险控制。
 
-Question overly optimistic assumptions and emphasize potential losses, volatility, and worst-case scenarios. Engage directly with the latest argument from the aggressive or neutral analyst and challenge their risk appetite.
+质疑过度乐观的假设，并强调潜在损失、波动性和最坏情形。直接针对激进方或中性分析师的最新论点，挑战他们的风险偏好。
 
-Be firm and analytical, supporting your position with concrete risk metrics and historical precedents.
+要坚定且注重分析，用具体的风险指标和历史先例支撑你的立场。
 
-Trader's proposed plan:
+交易员提议的计划：
 {trader_plan}
 
-Conversation history of the debate:
+辩论对话历史：
 {history}
 
-Latest opponent argument:
+对手最新论点：
 {opponent_response}
 """
+
+        # [英文备份] prompt (en):
+        # prompt = f"""You are a Conservative Risk Analyst. Your role is to identify downside risks and advocate for caution. Evaluate the proposed trade and argue why the trader should reduce risk exposure or implement stricter risk controls.
+        #
+        # Question overly optimistic assumptions and emphasize potential losses, volatility, and worst-case scenarios. Engage directly with the latest argument from the aggressive or neutral analyst and challenge their risk appetite.
+        #
+        # Be firm and analytical, supporting your position with concrete risk metrics and historical precedents.
+        #
+        # Trader's proposed plan:
+        # {trader_plan}
+        #
+        # Conversation history of the debate:
+        # {history}
+        #
+        # Latest opponent argument:
+        # {opponent_response}
+        # """
 
         # ====================================================================
         # LLM 直接调用，生成保守方论点

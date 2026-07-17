@@ -123,25 +123,26 @@ config["max_debate_rounds"] = 1
 # 配置数据供应商
 # ----------------------------------------------------------------------------
 # data_vendors 字典指定每类数据使用哪个数据源
-# yfinance 是默认选项，免费且不需要 API 密钥
-# alpha_vantage 是备选方案，需要注册获取免费 API 密钥
-config["data_vendors"] = {
-    "core_stock_apis": "yfinance",           # 核心股票数据（价格、成交量等）
-    "technical_indicators": "yfinance",      # 技术指标（MACD、RSI、布林带等）
-    "fundamental_data": "yfinance",          # 基本面数据（财报、资产负债表等）
-    "news_data": "yfinance",                 # 新闻数据
-}
+# akshare：中国 A 股数据（推荐），基于东方财富等国内数据源
+# yfinance：美股/港股数据，免费且不需要 API 密钥
+# 如果不在此处覆盖，将使用 default_config.py 中的默认值（akshare）
+# config["data_vendors"] = {
+#     "core_stock_apis": "akshare",
+#     "technical_indicators": "akshare",
+#     "fundamental_data": "akshare",
+#     "news_data": "akshare",
+# }
 
 # ----------------------------------------------------------------------------
 # 初始化 TradingAgentsGraph
 # ----------------------------------------------------------------------------
-# debug=True：开启调试模式，会输出更多日志信息，方便排查问题
-# config=config：传入我们自定义的配置
-# TradingAgentsGraph 的初始化过程：
-#   1. 读取配置参数
-#   2. 创建 LLM 实例（根据 llm_provider 和模型名称）
-#   3. 创建各个智能体（分析师、研究员、风险管理者、交易员）
-#   4. 构建工作流图（定义智能体之间的执行顺序和数据流）
+# 分析前准备工作：重置数据源会话、配置代理
+# 当使用 akshare（国内数据源）时，不需要 yfinance 代理配置
+# 以下代码仅在需要使用 yfinance 时启用
+# from tradingagents.dataflows.stockstats_utils import reset_yfinance_session, configure_yfinance_proxy
+# configure_yfinance_proxy()  # 自动从环境变量 YFINANCE_PROXY / HTTPS_PROXY 读取
+# reset_yfinance_session()    # 清除限流缓存
+
 ta = TradingAgentsGraph(debug=True, config=config)
 
 # ----------------------------------------------------------------------------

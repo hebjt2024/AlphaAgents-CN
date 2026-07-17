@@ -155,7 +155,7 @@ def create_risk_aggressive(llm):
 
         # 提取交易员的交易方案
         # 这是激进风险分析师需要评估的交易方案
-        trader_plan = state["trader_plan"]
+        trader_plan = state["trader_investment_plan"]
 
         # ====================================================================
         # 确定激进分析师需要回应的"对手论点"
@@ -210,21 +210,38 @@ def create_risk_aggressive(llm):
         #   {history}：完整辩论历史（让 LLM 看到之前的辩论）
         #   {opponent_response}：对手最新论点（需要反驳的对象）
         # ====================================================================
-        prompt = f"""You are an Aggressive Risk Analyst. Your role is to challenge conservative risk assessments and advocate for higher risk positions. Evaluate the proposed trade and argue why the trader should take on MORE risk to maximize returns.
+        prompt = f"""你是一名激进风险分析师。你的职责是质疑保守的风险评估，并主张更高的风险敞口。请评估提议的交易，论证为何交易员应当承担更多风险以最大化收益。
 
-Question overly conservative risk management practices and emphasize the opportunity cost of being too cautious. Engage directly with the latest argument from the conservative or neutral analyst and dismantle their points with evidence and confidence.
+质疑过度保守的风险管理做法，并强调过于谨慎所带来的机会成本。直接针对保守方或中性分析师的最新论点，用证据和自信将其观点逐一拆解。
 
-Be persuasive and confident, but always back your claims with data and reasoning.
+要有说服力、有信心，但始终用数据和推理支撑你的论断。
 
-Trader's proposed plan:
+交易员提议的计划：
 {trader_plan}
 
-Conversation history of the debate:
+辩论对话历史：
 {history}
 
-Latest opponent argument:
+对手最新论点：
 {opponent_response}
 """
+
+        # [英文备份] prompt (en):
+        # prompt = f"""You are an Aggressive Risk Analyst. Your role is to challenge conservative risk assessments and advocate for higher risk positions. Evaluate the proposed trade and argue why the trader should take on MORE risk to maximize returns.
+        #
+        # Question overly conservative risk management practices and emphasize the opportunity cost of being too cautious. Engage directly with the latest argument from the conservative or neutral analyst and dismantle their points with evidence and confidence.
+        #
+        # Be persuasive and confident, but always back your claims with data and reasoning.
+        #
+        # Trader's proposed plan:
+        # {trader_plan}
+        #
+        # Conversation history of the debate:
+        # {history}
+        #
+        # Latest opponent argument:
+        # {opponent_response}
+        # """
 
         # ====================================================================
         # LLM 直接调用，生成激进方论点

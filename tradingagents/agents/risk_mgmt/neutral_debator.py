@@ -159,7 +159,7 @@ def create_risk_neutral(llm):
 
         # 提取交易员的交易方案
         # 这是中性风险分析师需要评估的交易方案
-        trader_plan = state["trader_plan"]
+        trader_plan = state["trader_investment_plan"]
 
         # ====================================================================
         # 确定中性分析师需要回应的"对手论点"
@@ -226,21 +226,38 @@ def create_risk_neutral(llm):
         #   保守："firm and analytical"（坚定、分析性）
         #   中性："objective and concise"（客观、简洁）← 更中立
         # ====================================================================
-        prompt = f"""You are a Neutral Risk Analyst. Your role is to provide a balanced, data-driven assessment of the proposed trade. Weigh both the aggressive and conservative arguments and find the middle ground.
+        prompt = f"""你是一名中性风险分析师。你的职责是对提议的交易给出平衡、数据驱动的评估。权衡激进方与保守方的论点，找到中间立场。
 
-Acknowledge valid points from both sides and propose a compromise that balances risk and reward. Engage with the latest argument and clarify where each side may be right or wrong.
+认可双方各自合理的观点，并提出在风险与收益之间取得平衡的折中方案。针对最新论点展开讨论，并阐明各方在何处可能是对的或错的。
 
-Be objective and concise, supporting your conclusions with relevant data.
+要保持客观、简洁，用相关数据支撑你的结论。
 
-Trader's proposed plan:
+交易员提议的计划：
 {trader_plan}
 
-Conversation history of the debate:
+辩论对话历史：
 {history}
 
-Latest opponent argument:
+对手最新论点：
 {opponent_response}
 """
+
+        # [英文备份] prompt (en):
+        # prompt = f"""You are a Neutral Risk Analyst. Your role is to provide a balanced, data-driven assessment of the proposed trade. Weigh both the aggressive and conservative arguments and find the middle ground.
+        #
+        # Acknowledge valid points from both sides and propose a compromise that balances risk and reward. Engage with the latest argument and clarify where each side may be right or wrong.
+        #
+        # Be objective and concise, supporting your conclusions with relevant data.
+        #
+        # Trader's proposed plan:
+        # {trader_plan}
+        #
+        # Conversation history of the debate:
+        # {history}
+        #
+        # Latest opponent argument:
+        # {opponent_response}
+        # """
 
         # ====================================================================
         # LLM 直接调用，生成中性方论点

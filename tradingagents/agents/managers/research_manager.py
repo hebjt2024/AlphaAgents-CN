@@ -162,10 +162,12 @@ def create_research_manager(llm, memory):
         #   - count: 辩论轮数
         #
         # 研究经理需要读取完整的辩论历史来评估双方论点。
-        # 注意：下面的代码在提取 history 之前引用了 investment_debate_state，
-        # 所以需要先获取 investment_debate_state，再提取 history。
-        # 使用 .get("history", "") 提供默认值，防止状态为空时报错
         # ====================================================================
+        
+        # 获取完整的投资辩论状态（必须先赋值，才能使用）
+        investment_debate_state = state["investment_debate_state"]
+
+        # 提取辩论历史，使用 .get("history", "") 提供默认值，防止状态为空时报错
         history = investment_debate_state.get("history", "")
 
         # 提取四份分析报告（由四个分析师 Agent 分别生成）
@@ -175,12 +177,6 @@ def create_research_manager(llm, memory):
         sentiment_report = state["sentiment_report"]
         news_report = state["news_report"]
         fundamentals_report = state["fundamentals_report"]
-
-        # 获取完整的投资辩论状态
-        # 注意：这行代码在原文件中位于 history 提取之后，
-        # 意味着 history 是从 investment_debate_state 提取的，
-        # 而 investment_debate_state 在这里正式赋值
-        investment_debate_state = state["investment_debate_state"]
 
         # ====================================================================
         # 记忆检索（Memory Retrieval）
@@ -263,25 +259,46 @@ def create_research_manager(llm, memory):
         #   {instrument_context}：公司上下文信息
         #   {history}：完整的辩论历史
         # ====================================================================
-        prompt = f"""As the portfolio manager and debate facilitator, your role is to critically evaluate this round of debate and make a definitive decision: align with the bear analyst, the bull analyst, or choose Hold only if it is strongly justified based on the arguments presented.
+        prompt = f"""作为投资组合经理兼辩论主持人，你的职责是批判性地评估本轮辩论，并做出明确的决策：支持熊方分析师、支持牛方分析师，或者仅在论证充分时才选择持有。
 
-Summarize the key points from both sides concisely, focusing on the most compelling evidence or reasoning. Your recommendation—Buy, Sell, or Hold—must be clear and actionable. Avoid defaulting to Hold simply because both sides have valid points; commit to a stance grounded in the debate's strongest arguments.
+请简洁地总结双方的关键论点，聚焦于最有说服力的证据或推理。你的推荐——买入、卖出或持有——必须清晰且可操作。不要仅仅因为双方都有合理之处就默认选择持有；要基于辩论中最有力的论点表明立场。
 
-Additionally, develop a detailed investment plan for the trader. This should include:
+此外，为交易员制定一份详细的投资计划。该计划应包含：
 
-Your Recommendation: A decisive stance supported by the most convincing arguments.
-Rationale: An explanation of why these arguments lead to your conclusion.
-Strategic Actions: Concrete steps for implementing the recommendation.
-Take into account your past mistakes on similar situations. Use these insights to refine your decision-making and ensure you are learning and improving. Present your analysis conversationally, as if speaking naturally, without special formatting.
+你的推荐（Your Recommendation）：由最具说服力的论点支撑的明确立场。
+理由（Rationale）：解释为何这些论点会导致你的结论。
+战略行动（Strategic Actions）：实施该建议的具体步骤。
+请考虑你在类似情境下犯过的错误。利用这些经验来优化你的决策过程，确保你在持续学习和改进。请以对话式的口吻呈现你的分析，就像自然交谈一样，不要使用特殊格式。
 
-Here are your past reflections on mistakes:
-\"{past_memory_str}\"
+以下是你过往对错误的反思：
+"{past_memory_str}"
 
 {instrument_context}
 
-Here is the debate:
-Debate History:
+以下为辩论内容：
+辩论历史：
 {history}"""
+
+        # [英文备份] prompt (en):
+        # prompt = f"""As the portfolio manager and debate facilitator, your role is to critically evaluate this round of debate and make a definitive decision: align with the bear analyst, the bull analyst, or choose Hold only if it is strongly justified based on the arguments presented.
+        #
+        # Summarize the key points from both sides concisely, focusing on the most compelling evidence or reasoning. Your recommendation—Buy, Sell, or Hold—must be clear and actionable. Avoid defaulting to Hold simply because both sides have valid points; commit to a stance grounded in the debate's strongest arguments.
+        #
+        # Additionally, develop a detailed investment plan for the trader. This should include:
+        #
+        # Your Recommendation: A decisive stance supported by the most convincing arguments.
+        # Rationale: An explanation of why these arguments lead to your conclusion.
+        # Strategic Actions: Concrete steps for implementing the recommendation.
+        # Take into account your past mistakes on similar situations. Use these insights to refine your decision-making and ensure you are learning and improving. Present your analysis conversationally, as if speaking naturally, without special formatting.
+        #
+        # Here are your past reflections on mistakes:
+        # "{past_memory_str}"
+        #
+        # {instrument_context}
+        #
+        # Here is the debate:
+        # Debate History:
+        # {history}"""
 
         # ====================================================================
         # LLM 直接调用
