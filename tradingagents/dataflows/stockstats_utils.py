@@ -591,6 +591,15 @@ class StockstatsUtils:
         # config = {"data_cache_dir": "data", "data_vendors": {"technical_indicators": "yfinance"}, ...}
         config = get_config()
 
+        # 将 A 股代码转换为 Yahoo Finance 格式（如 000001 → 000001.SZ）
+        # 避免循环导入，在此处内联转换逻辑
+        yf_symbol = symbol.strip().upper()
+        if "." not in yf_symbol and yf_symbol.isdigit() and len(yf_symbol) == 6:
+            if yf_symbol.startswith("60") or yf_symbol.startswith("68"):
+                yf_symbol = f"{yf_symbol}.SS"  # 上海交易所
+            else:
+                yf_symbol = f"{yf_symbol}.SZ"  # 深圳交易所
+
         # 获取今天的日期作为数据结束日期
         # pd.Timestamp.today() 返回今天的日期时间（如 Timestamp('2024-07-08 15:30:00')）
         today_date = pd.Timestamp.today()
@@ -622,7 +631,7 @@ class StockstatsUtils:
         #           → "data\\AAPL-YFin-data-2009-07-08-2024-07-08.csv"（Windows）
         data_file = os.path.join(
             config["data_cache_dir"],
-            f"{symbol}-YFin-data-{start_date_str}-{end_date_str}.csv",
+            f"{yf_symbol}-YFin-data-{start_date_str}-{end_date_str}.csv",
         )
 
         # ==================== 缓存检查（Cache-Aside 模式）====================
@@ -645,7 +654,7 @@ class StockstatsUtils:
             #   auto_adjust=True: 自动调整价格（处理拆股和分红的影响）
             # 运行时示例：yf.download 返回一个 DataFrame，包含约 3700 行（15年的交易日）
             data = yf_retry(lambda: yf.download(
-                symbol,
+                yf_symbol,
                 start=start_date_str,
                 end=end_date_str,
                 multi_level_index=False,

@@ -193,10 +193,10 @@ DEFAULT_CONFIG = {
     # 类别级别的数据源配置：为每类数据指定默认供应商
     # 每个键对应的值可以是 "yfinance"（免费，无需 API 密钥）或 "alpha_vantage"（需要免费 API 密钥）
     "data_vendors": {
-        "core_stock_apis": "akshare",       # 核心股票数据（价格、成交量、公司信息等）
-        "technical_indicators": "akshare",  # 技术指标（MACD、RSI、布林带、移动平均线等）
-        "fundamental_data": "akshare",      # 基本面数据（财务报表、估值指标等）
-        "news_data": "akshare",             # 新闻数据（公司新闻、市场动态等）
+        "core_stock_apis": "akshare,baostock",       # 核心股票数据：akshare 优先，baostock 备选
+        "technical_indicators": "akshare",            # 技术指标：akshare（baostock 不支持）
+        "fundamental_data": "akshare,baostock",       # 基本面数据：akshare 优先，baostock 备选
+        "news_data": "akshare",                       # 新闻数据：akshare（baostock 不支持）
     },
 
     # ====== 工具级别的数据源配置 ======

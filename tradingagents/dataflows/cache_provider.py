@@ -68,7 +68,15 @@ _CHINESE_NAME_MAP = {
 
 
 def _normalize(symbol: str) -> str:
-    """标准化股票代码：去前缀，返回6位数字，支持中文名查找"""
+    """
+    标准化股票代码：返回 6 位纯数字代码。
+
+    支持格式：
+      - 中文名 → 6 位代码（如 "海南橡胶" → "601118"）
+      - sh.XXXXXX / sz.XXXXXX → 6 位代码
+      - XXXXXX.SZ / XXXXXX.SS → 6 位代码（yfinance 后缀）
+      - 纯 6 位数字 → 原样返回
+    """
     s = symbol.strip()
     # 中文名 → 代码
     if s in _CHINESE_NAME_MAP:
@@ -76,6 +84,11 @@ def _normalize(symbol: str) -> str:
     # 带前缀 → 6位代码
     if s.lower().startswith(("sh", "sz", "bj")) and len(s) == 8:
         return s[2:]
+    # 带 .SZ / .SS / .SH 后缀（yfinance 格式）→ 6位代码
+    if "." in s:
+        parts = s.split(".")
+        if parts[0].isdigit() and len(parts[0]) == 6:
+            return parts[0]
     return s
 
 
@@ -322,38 +335,86 @@ def get_cached_indicators(symbol: str, indicator: str, curr_date: str, look_back
 
 
 def get_cached_news(ticker: str, start_date: str, end_date: str) -> str:
-    """获取缓存的新闻数据"""
+    """获取缓存的新闻数据（根据股票代码动态生成）"""
     code = _normalize(ticker)
 
-    return f"""## {code} ({ticker}) News (cached), from {start_date} to {end_date}:
+    # 针对不同股票类型生成不同的新闻模板
+    news_pool = [
+        # 通用利好新闻
+        (f"行业景气度回升，{code}业绩有望改善 (source: 证券时报)",
+         f"最新行业数据显示，相关产业链景气度持续回升，{code}作为行业龙头，有望受益于下游需求恢复。"),
+        # 业绩相关
+        (f"{code}发布最新季度报告，营收稳步增长 (source: 东方财富)",
+         f"公司最新财报显示，营业收入同比增长8.5%，归母净利润同比增长12.3%，经营现金流持续改善。"),
+        # 机构评级
+        (f"券商给予{code}\"增持\"评级，目标价上调 (source: 中信证券)",
+         f"多家券商发布研报，看好公司长期发展前景，维持\"增持\"评级，部分机构上调目标价。"),
+        # 政策利好
+        (f"宏观政策利好，{code}所在行业迎来发展机遇 (source: 经济日报)",
+         f"国务院常务会议提出加大相关领域支持力度，行业政策环境持续优化，利好{code}等龙头企业。"),
+        # 市场表现
+        (f"{code}近期股价表现活跃，换手率提升 (source: 同花顺)",
+         f"近期{code}交易活跃度提升，日均换手率较前期增加，市场关注度提高。"),
+        # 行业动态
+        (f"行业整合加速，{code}竞争优势凸显 (source: 中国证券报)",
+         f"行业竞争格局持续优化，龙头企业市场份额进一步提升，{code}凭借技术和规模优势占据有利位置。"),
+        # 产能扩张
+        (f"{code}产能扩张项目稳步推进 (source: 公司公告)",
+         f"公司新产能建设项目按计划推进，预计投产后将进一步提升公司盈利能力和市场竞争力。"),
+        # 资金面
+        (f"北向资金持续增持{code}，外资看好后市 (source: Wind数据)",
+         f"沪深港通数据显示，近期北向资金持续净买入{code}，外资持股比例小幅上升。"),
+    ]
 
-### 公司发布2024年第一季度报告 (source: 东方财富)
-公司2024年Q1实现营业收入45.2亿元，同比增长12.3%，归母净利润5.8亿元，同比增长18.6%。
-Link: https://www.eastmoney.com
+    # 基于股票代码的 hash 选择 3 条新闻，确保同一股票每次返回相同新闻
+    code_hash = hash(code) if code.isdigit() else hash(ticker)
+    random.seed(code_hash)
+    selected = random.sample(news_pool, min(3, len(news_pool)))
+    random.seed()
 
-### 行业政策利好：天然橡胶期货价格回升 (source: 期货日报)
-天然橡胶期货主力合约近期持续反弹，市场看好下游需求恢复，利好橡胶种植加工企业。
-Link: https://www.qhrb.com.cn
+    result = f"## {code} ({ticker}) News (cached), from {start_date} to {end_date}:\n\n"
+    for title, body in selected:
+        result += f"### {title}\n{body}\n\n"
+    result += "\n注：以上为缓存/模拟新闻数据，仅供参考。实际新闻请以官方渠道为准。"
 
-### 券商研报：维持"增持"评级 (source: 中信证券)
-中信证券发布研报，看好公司产能扩张和成本控制能力，维持目标价6.5元。
-Link: https://www.cs.ecitic.com
-"""
+    return result
 
 
 def get_cached_global_news(curr_date: str, look_back_days: int = 7, limit: int = 10) -> str:
-    """获取缓存的全球新闻数据"""
-    return f"""## Global Market News (cached), last {look_back_days} days:
+    """获取缓存的全球新闻数据（动态生成更丰富的宏观新闻）"""
+    global_news_items = [
+        ("央行维持LPR利率不变，货币政策保持稳健 (source: 中国人民银行)",
+         "最新一期贷款市场报价利率（LPR）维持不变，1年期LPR为3.1%，5年期以上LPR为3.6%。央行表示将继续实施稳健的货币政策，保持流动性合理充裕。"),
+        ("美联储维持利率不变，市场关注后续降息路径 (source: Bloomberg)",
+         "美联储FOMC会议维持联邦基金利率目标区间不变，点阵图显示年内可能降息1-2次。鲍威尔表示将继续关注通胀和就业数据。"),
+        ("A股三大指数震荡收涨，成交额突破万亿元 (source: 证券时报)",
+         "沪指收涨0.3%，深成指涨0.5%，创业板指涨0.8%，两市成交额突破万亿元，北向资金净流入超50亿元。"),
+        ("国际原油价格波动，OPEC+维持减产协议 (source: Reuters)",
+         "布伦特原油期货价格在75-80美元区间震荡，OPEC+成员国同意维持现有减产协议至年底，市场关注全球需求变化。"),
+        ("人民币汇率保持稳定，跨境资金流动平稳 (source: 外汇管理局)",
+         "人民币对美元中间价报7.10，在岸人民币维持窄幅波动。外管局表示跨境资金流动总体平稳有序。"),
+        ("国务院常务会议部署稳经济一揽子政策 (source: 新华社)",
+         "会议提出加大宏观调控力度，扩大内需，提振市场信心，推动经济运行持续回升向好。"),
+        ("全球半导体行业景气度回升，产业链迎机遇 (source: 电子信息产业网)",
+         "全球半导体行业协会报告显示，2026年全球芯片销售额预计增长15%，AI芯片需求持续旺盛。"),
+        ("房地产市场政策持续优化，多地推出购房补贴 (source: 住建部)",
+         "多个城市推出购房补贴和税费减免政策，房地产市场活跃度有所回升，一线城市二手房成交量环比增长。"),
+        ("新能源产业链投资持续增长 (source: 国家能源局)",
+         "2026年上半年风电、光伏新增装机容量同比增长25%，新能源产业链投资保持高景气度。"),
+        ("大宗商品价格走势分化，农产品价格温和上涨 (source: 期货日报)",
+         "受全球气候和供需关系影响，部分农产品价格温和上涨，工业金属价格受需求预期影响维持震荡。"),
+    ]
 
-### 央行维持LPR利率不变 (source: 中国人民银行)
-最新一期贷款市场报价利率维持不变，1年期LPR为3.45%，5年期以上LPR为3.95%。
+    random.seed(hash(curr_date))
+    selected = random.sample(global_news_items, min(limit, len(global_news_items)))
+    random.seed()
 
-### 美联储维持利率不变，暗示年内降息 (source: Bloomberg)
-美联储6月FOMC会议维持联邦基金利率5.25%-5.50%不变，点阵图显示年内可能降息一次。
+    result = f"## Global Market News (cached), last {look_back_days} days:\n\n"
+    for title, body in selected:
+        result += f"### {title}\n{body}\n\n"
+    result += "\n注：以上为缓存/模拟宏观新闻数据，仅供参考。"
 
-### A股三大指数震荡收涨 (source: 证券时报)
-沪指收涨0.3%，深成指涨0.5%，创业板指涨0.8%，两市成交额突破万亿元。
-"""
+    return result
 
 
 def get_cached_balance_sheet(ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:

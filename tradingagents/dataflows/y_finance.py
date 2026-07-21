@@ -681,6 +681,8 @@ def _get_stock_stats_bulk(
             raise Exception("Stockstats fail: Yahoo Finance data not fetched yet!")
     else:
         # ---- 在线模式：从 Yahoo Finance 下载（带缓存） ----
+        # 将 A 股代码转换为 Yahoo Finance 格式（如 000001 → 000001.SZ）
+        yf_symbol = to_yfinance_symbol(symbol)
         today_date = pd.Timestamp.today()  # 今天的日期
         curr_date_dt = pd.to_datetime(curr_date)  # 当前日期
 
@@ -700,7 +702,7 @@ def _get_stock_stats_bulk(
         # 文件名格式：股票代码-YFin-data-开始日期-结束日期.csv
         data_file = os.path.join(
             config["data_cache_dir"],
-            f"{symbol}-YFin-data-{start_date_str}-{end_date_str}.csv",
+            f"{yf_symbol}-YFin-data-{start_date_str}-{end_date_str}.csv",
         )
 
         # ==================== 缓存检查（Cache-Aside 模式）====================
@@ -713,7 +715,7 @@ def _get_stock_stats_bulk(
             # 带重试的 Yahoo Finance 数据下载
             # lambda 包装延迟执行，让 yf_retry 控制重试逻辑
             data = yf_retry(lambda: yf.download(
-                symbol,
+                yf_symbol,
                 start=start_date_str,
                 end=end_date_str,
                 multi_level_index=False,  # 不使用多级列索引，简化结构

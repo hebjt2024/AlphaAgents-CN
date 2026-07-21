@@ -1,33 +1,42 @@
 """
-TradingAgents Web UI 启动入口
+TradingAgents Web UI 启动脚本
 
-启动方式：
-  python webui/run_webui.py
-
-访问地址：
-  http://localhost:8000
-
-功能：
-  - 左侧面板：配置分析参数（股票代码、日期、模型等）
-  - 右侧面板：实时显示分析进度和日志
-  - 底部结果面板：显示最终决策和各项报告
+用法：
+    python webui/run_webui.py              # 默认端口 8000
+    python webui/run_webui.py --port 8080  # 指定端口
+    python webui/run_webui.py --reload     # 开发模式（热重载）
 """
 
-import uvicorn
+import sys
+import os
+import argparse
+
+# 确保项目根目录在 Python 路径中
+project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, project_root)
 
 if __name__ == "__main__":
-    print("=" * 60)
-    print("  TradingAgents Web UI")
-    print("  多智能体金融交易分析系统")
-    print("=" * 60)
-    print()
-    print("  启动服务器: http://localhost:8000")
-    print("  按 Ctrl+C 停止服务")
-    print()
+    parser = argparse.ArgumentParser(description="TradingAgents Web UI")
+    parser.add_argument("--port", type=int, default=8000, help="服务端口（默认 8000）")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="绑定地址")
+    parser.add_argument("--reload", action="store_true", help="开发模式热重载")
+    args = parser.parse_args()
+
+    import uvicorn
+
+    print("=" * 58)
+    print("  TradingAgents - 多智能体金融交易分析系统")
+    print("=" * 58)
+    print(f"  Web UI 服务启动中...")
+    print(f"  地址: http://{args.host}:{args.port}")
+    print(f"  模式: {'开发模式（热重载）' if args.reload else '生产模式'}")
+    print(f"  停止: Ctrl+C")
+    print("=" * 58)
+
     uvicorn.run(
         "webui.backend.server:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=False,
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
         log_level="info",
     )

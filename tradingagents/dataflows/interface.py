@@ -226,6 +226,16 @@ from .akshare_adapter import (
     AkShareTimeoutError,
 )
 
+# 从 baostock_adapter 模块导入 BaoStock 供应商（A 股数据备选方案）
+# BaoStock 免费、无需注册，数据来源稳定，作为 akshare 的首选降级方案
+from .baostock_adapter import (
+    get_baostock_stock,
+    get_baostock_fundamentals,
+    get_baostock_balance_sheet,
+    get_baostock_cashflow,
+    get_baostock_income_statement,
+)
+
 # 从 cache_provider 模块导入缓存数据供应商（网络不可用时的降级方案）
 from .cache_provider import (
     get_cached_stock_data,
@@ -302,8 +312,11 @@ TOOLS_CATEGORIES = {
 # 列表顺序可能影响降级优先级（但具体的降级顺序由 VENDOR_METHODS 字典的键顺序决定）。
 # 这是一个 Python 列表（list），用方括号定义，元素用逗号分隔。
 VENDOR_LIST = [
-    "yfinance",       # Yahoo Finance - 免费，无需 API 密钥
+    "akshare",        # AkShare - 东方财富 API，A 股数据最全
+    "baostock",       # BaoStock - 证券宝，A 股备选，稳定可靠
+    "yfinance",       # Yahoo Finance - 美股/全球数据，免费无需 API 密钥
     "alpha_vantage",  # Alpha Vantage - 需要 API 密钥
+    "cache",          # 内置缓存 - 最终兜底方案
 ]
 
 # ---------------------------------------------------------------------------
@@ -323,10 +336,11 @@ VENDOR_LIST = [
 VENDOR_METHODS = {
     # ---- 核心股票数据 API ----
     "get_stock_data": {
-        "akshare": get_akshare_stock,               # AkShare 的股价获取（A股）
+        "akshare": get_akshare_stock,               # AkShare 的股价获取（A股，首选）
+        "baostock": get_baostock_stock,             # BaoStock 的股价获取（A股备选，稳定可靠）
         "alpha_vantage": get_alpha_vantage_stock,   # Alpha Vantage 的股价获取实现
         "yfinance": get_YFin_data_online,           # Yahoo Finance 的股价获取实现
-        "cache": get_cached_stock_data,             # 内置缓存数据（网络不可用时的降级方案）
+        "cache": get_cached_stock_data,             # 内置缓存数据（最终降级方案）
     },
     # ---- 技术指标 ----
     "get_indicators": {
@@ -338,24 +352,28 @@ VENDOR_METHODS = {
     # ---- 基本面数据 ----
     "get_fundamentals": {
         "akshare": get_akshare_fundamentals,
+        "baostock": get_baostock_fundamentals,
         "alpha_vantage": get_alpha_vantage_fundamentals,
         "yfinance": get_yfinance_fundamentals,
         "cache": get_cached_fundamentals,
     },
     "get_balance_sheet": {
         "akshare": get_akshare_balance_sheet,
+        "baostock": get_baostock_balance_sheet,
         "alpha_vantage": get_alpha_vantage_balance_sheet,
         "yfinance": get_yfinance_balance_sheet,
         "cache": get_cached_balance_sheet,
     },
     "get_cashflow": {
         "akshare": get_akshare_cashflow,
+        "baostock": get_baostock_cashflow,
         "alpha_vantage": get_alpha_vantage_cashflow,
         "yfinance": get_yfinance_cashflow,
         "cache": get_cached_cashflow,
     },
     "get_income_statement": {
         "akshare": get_akshare_income_statement,
+        "baostock": get_baostock_income_statement,
         "alpha_vantage": get_alpha_vantage_income_statement,
         "yfinance": get_yfinance_income_statement,
         "cache": get_cached_income_statement,

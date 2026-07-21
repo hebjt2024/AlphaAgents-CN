@@ -368,6 +368,31 @@ _CHINESE_NAME_MAP = {
     "浙商银行": "601916",
     "邮储银行": "601658",
     "华夏银行": "600015",
+    # —— 有色金属与矿业（与 baostock_adapter 保持同步）——
+    "云南铜业": "000878",
+    "江西铜业": "600362",
+    "铜陵有色": "000630",
+    "山东黄金": "600547",
+    "中金黄金": "600489",
+    "华友钴业": "603799",
+    "中国铝业": "601600",
+    "云铝股份": "000807",
+    # —— 钢铁 ——
+    "鞍钢股份": "000898",
+    "包钢股份": "600010",
+    # —— 医药 ——
+    "同仁堂": "600085",
+    # —— 消费 ——
+    "永辉超市": "601933",
+    # —— 科技 ——
+    "中科曙光": "603019",
+    "浪潮信息": "000977",
+    # —— 券商 ——
+    "华泰证券": "601688",
+    "国泰君安": "601211",
+    "海通证券": "600837",
+    # —— 保险 ——
+    "新华保险": "601336",
 }
 
 # AkShare 实时查询缓存（模块级，避免重复调用）
@@ -378,44 +403,70 @@ _name_cache_loaded = False
 def _load_akshare_names() -> dict:
     """
     从 AkShare 实时加载所有 A 股名称和代码映射。
-    结果缓存到模块级变量，仅首次调用时加载。
+    结果缓存到模块级变量，仅首次成功加载后缓存。
+
+    数据源优先级：
+      1. stock_info_a_code_name()：轻量级接口，只返回代码+名称两列，
+         不依赖实时行情，调用快、稳定性高。约 5500 条记录。
+      2. stock_zh_a_spot_em()：实时行情接口（包含全部股票代码+名称+行情），
+         数据更全但调用更慢、更易限流。作为兜底。
 
     Returns:
-        {股票名称: 6位代码} 字典
+        {股票名称: 6位代码} 字典；加载失败时返回空字典（继续使用内置映射表）
     """
     global _name_cache, _name_cache_loaded
     if _name_cache_loaded:
         return _name_cache
 
+    # 尝试轻量级接口 stock_info_a_code_name（优先，更稳定）
     try:
-        # 使用重试机制获取股票列表，避免网络波动导致失败
         df = retry_with_backoff(
-            lambda: ak.stock_zh_a_spot_em(),
+            lambda: ak.stock_info_a_code_name(),
             max_retries=AKSHARE_MAX_RETRIES,
             base_delay=AKSHARE_BASE_DELAY,
         )
-        
-        if df is not None and not df.empty:
-            # 构建名称 → 代码映射
-            name_col = None
-            code_col = None
-            for col in df.columns:
-                if "名称" in col or col == "name":
-                    name_col = col
-                if "代码" in col or col == "code":
-                    code_col = col
 
-            if name_col and code_col:
-                for _, row in df.iterrows():
-                    name = str(row[name_col]).strip()
-                    code = str(row[code_col]).strip()
-                    if name and code.isdigit() and len(code) == 6:
-                        _name_cache[name] = code
+        if df is not None and not df.empty and {"code", "name"}.issubset(df.columns):
+            for _, row in df.iterrows():
+                name = str(row["name"]).strip()
+                code = str(row["code"]).strip()
+                if name and code.isdigit() and len(code) == 6:
+                    _name_cache[name] = code
     except Exception:
-        # 加载失败时静默处理，继续使用内置映射表
         pass
 
-    _name_cache_loaded = True
+    # 兜底：尝试 stock_zh_a_spot_em（覆盖范围更广，但易限流）
+    if not _name_cache:
+        try:
+            df = retry_with_backoff(
+                lambda: ak.stock_zh_a_spot_em(),
+                max_retries=AKSHARE_MAX_RETRIES,
+                base_delay=AKSHARE_BASE_DELAY,
+            )
+
+            if df is not None and not df.empty:
+                name_col = None
+                code_col = None
+                for col in df.columns:
+                    if "名称" in col or col == "name":
+                        name_col = col
+                    if "代码" in col or col == "code":
+                        code_col = col
+
+                if name_col and code_col:
+                    for _, row in df.iterrows():
+                        name = str(row[name_col]).strip()
+                        code = str(row[code_col]).strip()
+                        if name and code.isdigit() and len(code) == 6:
+                            _name_cache[name] = code
+        except Exception:
+            pass
+
+    # 仅在成功加载且拿到数据时才标记为已加载，
+    # 否则下次调用会重试（避免网络抖动导致永久缓存空结果）
+    if _name_cache:
+        _name_cache_loaded = True
+
     return _name_cache
 
 
@@ -441,20 +492,26 @@ def resolve_stock_name(symbol: str) -> str:
     if symbol.lower().startswith(("sh", "sz", "bj")) and len(symbol) == 8:
         return symbol[2:]
 
-    # 2. 已经是 6 位纯数字
+    # 2. 去掉 .SZ / .SS / .SH 后缀（yfinance 格式，如 "000878.SZ"）
+    if "." in symbol:
+        parts = symbol.split(".")
+        if parts[0].isdigit() and len(parts[0]) == 6:
+            return parts[0]
+
+    # 3. 已经是 6 位纯数字
     if symbol.isdigit() and len(symbol) == 6:
         return symbol
 
-    # 3. 中文名称 → 先查内置映射表
+    # 4. 中文名称 → 先查内置映射表
     if symbol in _CHINESE_NAME_MAP:
         return _CHINESE_NAME_MAP[symbol]
 
-    # 4. 中文名称 → 查 AkShare 实时数据
+    # 5. 中文名称 → 查 AkShare 实时数据
     names = _load_akshare_names()
     if symbol in names:
         return names[symbol]
 
-    # 5. 无法识别，返回原始字符串（可能是美股等）
+    # 6. 无法识别，返回原始字符串（可能是美股等）
     return symbol
 
 
@@ -952,6 +1009,84 @@ def get_akshare_fundamentals(
 # 4. 资产负债表
 # ============================================================================
 
+def _fetch_financial_statement_ths(
+    code: str,
+    ths_func,
+    statement_name: str,
+    freq: str,
+    curr_date: str,
+    max_periods: int = 8,
+) -> str:
+    """
+    通用财务报表获取函数：从同花顺数据源（通过 akshare 的 stock_financial_*_ths
+    系列接口）拉取三大报表数据。
+
+    背景：
+      akshare 原先的 stock_balance_sheet_by_report_em / stock_cash_flow_sheet_by_report_em
+      / stock_profit_sheet_by_report_em 三个接口依赖东方财富网页爬虫，
+      东方财富页面结构变更后全部失效（TypeError: 'NoneType' object is not subscriptable）。
+      改用同花顺数据源接口，数据更稳定，覆盖范围与字段完整度与原接口相当。
+
+    参数：
+      code: 已标准化的 6 位股票代码（如 "000878"）
+      ths_func: akshare 的财务报表函数（如 ak.stock_financial_debt_ths）
+      statement_name: 报表名称（用于返回头信息，如 "Balance Sheet"）
+      freq: "annual"（年度）或 "quarterly"（季度，按报告期累计）
+      curr_date: 当前日期字符串，格式 "YYYY-MM-DD"；仅返回此日期之前已发布的报告
+      max_periods: 最多返回的报告期数（从最新开始倒序）
+
+    返回：
+      CSV 格式字符串，带元信息头。报告期按从新到旧排列。
+    """
+    # 根据频率选择同花顺的 indicator 参数
+    # - "按年度"：只返回年报，报告期列为整数年份（如 2024）
+    # - "按报告期"：返回所有季报，报告期列为日期字符串（如 "2025-12-31"）
+    indicator = "按年度" if freq.lower() == "annual" else "按报告期"
+
+    df = retry_with_backoff(
+        lambda: ths_func(symbol=code, indicator=indicator),
+        max_retries=AKSHARE_MAX_RETRIES,
+        base_delay=AKSHARE_BASE_DELAY,
+    )
+
+    if df is None or df.empty:
+        return f"No {statement_name.lower()} data found for '{code}'"
+
+    # 按报告期过滤：只保留 curr_date 之前已发布的报告
+    # 同花顺数据中"报告期"列在"按年度"模式下是 int，在"按报告期"模式下是 str
+    if curr_date:
+        try:
+            if indicator == "按年度":
+                # 年度模式：报告期是年份整数，curr_date 取年份比较
+                curr_year = int(curr_date[:4])
+                df = df[df["报告期"] <= curr_year]
+            else:
+                # 报告期模式：报告期是 "YYYY-MM-DD" 字符串
+                # 注意：报告期是统计截止日（如 2025-12-31），不是发布日
+                # 但为了简化，我们用报告期 <= curr_date 过滤
+                # （curr_date=2026-07-21 时，2025-12-31 的年报通常已发布）
+                df = df[df["报告期"] <= curr_date]
+        except Exception:
+            # 过滤失败时不影响主流程，返回全部数据
+            pass
+
+    # 限制返回的报告期数量（从最新的开始取），避免输出过大
+    if len(df) > max_periods:
+        df = df.head(max_periods)
+
+    if df.empty:
+        return f"No {statement_name.lower()} data found for '{code}' before {curr_date}"
+
+    csv_string = df.to_csv(index=False)
+
+    header = f"# {statement_name} data for {code} ({freq})\n"
+    header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    header += f"# Source: AkShare (同花顺数据源)\n"
+    header += f"# Reports: {len(df)} periods\n\n"
+
+    return header + csv_string
+
+
 def get_akshare_balance_sheet(
     ticker: Annotated[str, "股票代码"],
     freq: Annotated[str, "数据频率：'annual' 或 'quarterly'"] = "quarterly",
@@ -960,40 +1095,21 @@ def get_akshare_balance_sheet(
     """
     获取 A 股资产负债表数据。
 
-    调用 AkShare 的 stock_balance_sheet_by_report_em() 接口。
-    返回 CSV 格式字符串，与 yfinance 返回格式一致。
+    数据源：同花顺（通过 AkShare 的 stock_financial_debt_ths 接口）。
+    返回 CSV 格式字符串，每行一个报告期，每列一个会计科目。
 
-    注意：AkShare 返回的是按报告期分类的数据，数据格式为行为科目、列为报告期。
+    注意：原先使用的 stock_balance_sheet_by_report_em 接口因东方财富页面
+    结构变更而失效，已切换到同花顺数据源。
     """
     try:
         code = normalize_symbol(ticker)
-
-        # 使用重试机制获取资产负债表数据
-        df = retry_with_backoff(
-            lambda: ak.stock_balance_sheet_by_report_em(symbol=code),
-            max_retries=AKSHARE_MAX_RETRIES,
-            base_delay=AKSHARE_BASE_DELAY,
+        return _fetch_financial_statement_ths(
+            code=code,
+            ths_func=ak.stock_financial_debt_ths,
+            statement_name="Balance Sheet",
+            freq=freq,
+            curr_date=curr_date,
         )
-
-        if df.empty:
-            return f"No balance sheet data found for '{ticker}'"
-
-        # 如果要求年度数据，过滤年报（报告期以 12-31 结尾）
-        if freq.lower() == "annual":
-            # 报告期列可能不是统一的，尝试找到年度列
-            annual_cols = ["报告期"] + [
-                c for c in df.columns if "12-31" in str(c) or "1231" in str(c)
-            ]
-            if len(annual_cols) > 1:
-                df = df[annual_cols]
-
-        csv_string = df.to_csv(index=False)
-
-        header = f"# Balance Sheet data for {code} ({freq})\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-        return header + csv_string
-
     except Exception:
         raise
 
@@ -1010,35 +1126,18 @@ def get_akshare_cashflow(
     """
     获取 A 股现金流量表数据。
 
-    调用 AkShare 的 stock_cash_flow_sheet_by_report_em() 接口。
+    数据源：同花顺（通过 AkShare 的 stock_financial_cash_ths 接口）。
+    返回 CSV 格式字符串，包含经营活动、投资活动、筹资活动三大现金流明细。
     """
     try:
         code = normalize_symbol(ticker)
-
-        # 使用重试机制获取现金流量表数据
-        df = retry_with_backoff(
-            lambda: ak.stock_cash_flow_sheet_by_report_em(symbol=code),
-            max_retries=AKSHARE_MAX_RETRIES,
-            base_delay=AKSHARE_BASE_DELAY,
+        return _fetch_financial_statement_ths(
+            code=code,
+            ths_func=ak.stock_financial_cash_ths,
+            statement_name="Cash Flow",
+            freq=freq,
+            curr_date=curr_date,
         )
-
-        if df.empty:
-            return f"No cash flow data found for '{ticker}'"
-
-        if freq.lower() == "annual":
-            annual_cols = ["报告期"] + [
-                c for c in df.columns if "12-31" in str(c) or "1231" in str(c)
-            ]
-            if len(annual_cols) > 1:
-                df = df[annual_cols]
-
-        csv_string = df.to_csv(index=False)
-
-        header = f"# Cash Flow data for {code} ({freq})\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-        return header + csv_string
-
     except Exception:
         raise
 
@@ -1055,35 +1154,18 @@ def get_akshare_income_statement(
     """
     获取 A 股利润表数据。
 
-    调用 AkShare 的 stock_profit_sheet_by_report_em() 接口。
+    数据源：同花顺（通过 AkShare 的 stock_financial_benefit_ths 接口）。
+    返回 CSV 格式字符串，包含营业收入、营业成本、净利润、每股收益等明细。
     """
     try:
         code = normalize_symbol(ticker)
-
-        # 使用重试机制获取利润表数据
-        df = retry_with_backoff(
-            lambda: ak.stock_profit_sheet_by_report_em(symbol=code),
-            max_retries=AKSHARE_MAX_RETRIES,
-            base_delay=AKSHARE_BASE_DELAY,
+        return _fetch_financial_statement_ths(
+            code=code,
+            ths_func=ak.stock_financial_benefit_ths,
+            statement_name="Income Statement",
+            freq=freq,
+            curr_date=curr_date,
         )
-
-        if df.empty:
-            return f"No income statement data found for '{ticker}'"
-
-        if freq.lower() == "annual":
-            annual_cols = ["报告期"] + [
-                c for c in df.columns if "12-31" in str(c) or "1231" in str(c)
-            ]
-            if len(annual_cols) > 1:
-                df = df[annual_cols]
-
-        csv_string = df.to_csv(index=False)
-
-        header = f"# Income Statement data for {code} ({freq})\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-        return header + csv_string
-
     except Exception:
         raise
 
