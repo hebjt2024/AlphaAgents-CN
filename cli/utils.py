@@ -157,7 +157,7 @@ def get_ticker() -> str:
         # questionary.Style：定义问答界面的颜色方案
         # 每个样式条目是一个元组：(目标元素, 样式规则)
         # "fg:green" 中 fg 表示 foreground（前景色/文字颜色），green 是绿色
-        questionary.Style(
+        style=questionary.Style(
             [
                 # 设置文本输入框的颜色为绿色
                 ("text", "fg:green"),

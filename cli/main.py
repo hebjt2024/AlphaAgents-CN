@@ -2111,9 +2111,231 @@ def run_analysis():
 # Typer 命令定义
 # =====================================================================
 
-# @app.command() 装饰器：将一个函数注册为 CLI 命令
-# 类似于在 Click 中使用 @click.command()
-# 用户可以通过 `python main.py analyze` 来调用此命令
+@app.command()
+def history(
+    ticker: Optional[str] = typer.Argument(None, help="股票代码，不指定则显示所有记录"),
+):
+    """
+    查看分析历史记录
+
+    示例：
+      tradingagents history           # 显示所有历史记录
+      tradingagents history 海南橡胶   # 显示海南橡胶的历史记录
+      tradingagents history 601118    # 显示601118的历史记录
+    """
+    results_dir = Path("eval_results")
+
+    if not results_dir.exists():
+        console.print("[yellow]暂无分析历史记录[/yellow]")
+        return
+
+    # 收集所有历史记录
+    records = []
+    for stock_dir in results_dir.iterdir():
+        if not stock_dir.is_dir():
+            continue
+
+        log_dir = stock_dir / "TradingAgentsStrategy_logs"
+        if not log_dir.exists():
+            continue
+
+        stock_name = stock_dir.name
+
+        # 如果指定了ticker，过滤
+        if ticker and ticker != stock_name:
+            # 也检查代码是否匹配
+            json_files = list(log_dir.glob("full_states_log_*.json"))
+            if not json_files:
+                continue
+            # 检查文件内容中的代码
+            try:
+                import json
+                with open(json_files[0], "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                first_key = list(data.keys())[0] if data else None
+                if first_key:
+                    company = data[first_key].get("company_of_interest", "")
+                    if ticker != stock_name and ticker not in company:
+                        continue
+            except Exception:
+                continue
+
+        for json_file in sorted(log_dir.glob("full_states_log_*.json"), reverse=True):
+            try:
+                import json
+                with open(json_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+
+                for date_key, record in data.items():
+                    decision = record.get("final_trade_decision", "")
+                    # 提取评级（第一行）
+                    rating_line = ""
+                    for line in decision.split("\n"):
+                        line = line.strip()
+                        if line and ("低配" in line or "高配" in line or "持有" in line or
+                                     "Underweight" in line or "Overweight" in line or
+                                     "Hold" in line or "Buy" in line or "Sell" in line or
+                                     "买入" in line or "卖出" in line):
+                            rating_line = line.replace("#", "").replace("**", "").strip()
+                            break
+
+                    records.append({
+                        "stock": stock_name,
+                        "date": date_key,
+                        "rating": rating_line or "未知",
+                        "file": str(json_file),
+                    })
+            except Exception:
+                continue
+
+    if not records:
+        console.print("[yellow]暂无分析历史记录[/yellow]")
+        return
+
+    # 按日期倒序排列
+    records.sort(key=lambda x: x["date"], reverse=True)
+
+    # 显示表格
+    table = Table(title="分析历史记录", box=box.ROUNDED)
+    table.add_column("股票", style="cyan", no_wrap=True)
+    table.add_column("日期", style="green")
+    table.add_column("评级", style="yellow")
+    table.add_column("文件路径", style="dim")
+
+    for record in records:
+        # 截断文件路径，只显示相对路径
+        file_path = record["file"]
+        if "eval_results" in file_path:
+            file_path = file_path.split("eval_results/")[-1] if "eval_results/" in file_path else file_path
+
+        table.add_row(
+            record["stock"],
+            record["date"],
+            record["rating"],
+            file_path,
+        )
+
+    console.print(table)
+    console.print(f"\n[dim]共 {len(records)} 条记录[/dim]")
+    console.print("[dim]使用 tradingagents view <股票名> <日期> 查看详细报告[/dim]")
+
+
+@app.command()
+def view(
+    ticker: str = typer.Argument(..., help="股票代码或名称"),
+    date: Optional[str] = typer.Argument(None, help="分析日期 (YYYY-MM-DD)，不指定则显示最新"),
+):
+    """
+    查看特定股票的分析报告
+
+    示例：
+      tradingagents view 海南橡胶 2026-07-15
+      tradingagents view 601118              # 显示最新报告
+    """
+    results_dir = Path("eval_results")
+    stock_dir = results_dir / ticker
+
+    if not stock_dir.exists():
+        # 尝试查找包含该ticker的目录
+        for d in results_dir.iterdir():
+            if d.is_dir():
+                log_dir = d / "TradingAgentsStrategy_logs"
+                if log_dir.exists():
+                    for json_file in log_dir.glob("full_states_log_*.json"):
+                        try:
+                            import json
+                            with open(json_file, "r", encoding="utf-8") as f:
+                                data = json.load(f)
+                            for k, v in data.items():
+                                if ticker in v.get("company_of_interest", ""):
+                                    stock_dir = d
+                                    break
+                        except Exception:
+                            pass
+                if stock_dir.exists():
+                    break
+
+    if not stock_dir.exists():
+        console.print(f"[red]未找到股票 {ticker} 的分析记录[/red]")
+        return
+
+    log_dir = stock_dir / "TradingAgentsStrategy_logs"
+    if not log_dir.exists():
+        console.print(f"[red]未找到 {ticker} 的日志目录[/red]")
+        return
+
+    # 查找指定日期或最新的日志
+    json_files = sorted(log_dir.glob("full_states_log_*.json"), reverse=True)
+    if not json_files:
+        console.print(f"[red]未找到 {ticker} 的日志文件[/red]")
+        return
+
+    target_file = None
+    if date:
+        for f in json_files:
+            if date in f.name:
+                target_file = f
+                break
+        if not target_file:
+            console.print(f"[red]未找到 {ticker} 在 {date} 的分析记录[/red]")
+            console.print("[yellow]可用日期:[/yellow]")
+            for f in json_files[:5]:
+                console.print(f"  - {f.name.replace('full_states_log_', '').replace('.json', '')}")
+            return
+    else:
+        target_file = json_files[0]
+
+    try:
+        import json
+        with open(target_file, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        # 获取第一个（也是唯一的）日期记录
+        date_key = list(data.keys())[0]
+        record = data[date_key]
+
+        console.print()
+        console.print(Panel(
+            f"[bold]{record.get('company_of_interest', ticker)}[/bold] - {date_key}",
+            title="分析报告",
+            border_style="blue",
+        ))
+
+        # 显示最终决策
+        final_decision = record.get("final_trade_decision", "无")
+        console.print()
+        console.print(Panel(
+            final_decision or "无决策",
+            title="最终投资决策",
+            border_style="green",
+        ))
+
+        # 显示各报告摘要
+        reports = {
+            "市场报告": record.get("market_report", ""),
+            "情绪报告": record.get("sentiment_report", ""),
+            "新闻报告": record.get("news_report", ""),
+            "基本面报告": record.get("fundamentals_report", ""),
+        }
+
+        for name, content in reports.items():
+            if content:
+                display_content = content[:500] + "..." if len(content) > 500 else content
+                console.print()
+                console.print(Panel(
+                    display_content,
+                    title=name,
+                    border_style="dim",
+                ))
+
+        console.print()
+        console.print(f"[dim]完整日志: {target_file}[/dim]")
+
+    except Exception as e:
+        error_msg = str(e).replace("\u2022", "-").replace("\u2023", "-").replace("\u25cf", "-").replace("\u25cb", "-")
+        console.print(f"[red]读取日志文件失败: {error_msg}[/red]")
+
+
 @app.command()
 def analyze():
     """
