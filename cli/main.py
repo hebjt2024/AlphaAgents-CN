@@ -1380,6 +1380,200 @@ def save_report_to_disk(final_state, ticker: str, save_path: Path):
 
 
 # =====================================================================
+# 函数：parse_final_decision(decision_text)
+# 功能：从 final_trade_decision markdown 中提取结构化数据
+# 参数：decision_text - markdown 格式的决策文本
+# 返回：包含关键字段的字典
+# =====================================================================
+def parse_final_decision(decision_text: str) -> dict:
+    """从 markdown 决策报告中提取关键结构化数据"""
+    import re
+    result = {
+        "rating": "",
+        "entry": "",
+        "position": "",
+        "stop_loss": "",
+        "resistance": "",
+        "timeframe": "",
+        "core_action": "",
+        "full_text": decision_text,
+    }
+    if not decision_text:
+        return result
+
+    lines = decision_text.split("\n")
+
+    # 提取评级：查找包含 低配/高配/持有/Underweight/Overweight/Hold 等关键词的行
+    rating_patterns = [
+        r"[低高]配[（(].+[)）]", r"持有", r"买入", r"卖出",
+        r"Underweight", r"Overweight", r"Hold", r"Buy", r"Sell",
+    ]
+    for i, line in enumerate(lines):
+        for pat in rating_patterns:
+            if re.search(pat, line, re.IGNORECASE):
+                # 清理 markdown 标记
+                clean = line.replace("#", "").replace("**", "").replace(">", "").strip()
+                if clean:
+                    result["rating"] = clean
+                    break
+        if result["rating"]:
+            break
+
+    # 提取执行摘要表格中的字段
+    in_summary = False
+    for line in lines:
+        if "执行摘要" in line or "Executive Summary" in line:
+            in_summary = True
+            continue
+        if in_summary and line.startswith("|"):
+            parts = [p.strip() for p in line.split("|") if p.strip()]
+            if len(parts) >= 2:
+                key = parts[0].replace("**", "").strip()
+                val = parts[1].replace("**", "").strip()
+                if "入场" in key or "entry" in key.lower():
+                    result["entry"] = val
+                elif "仓位" in key or "position" in key.lower():
+                    result["position"] = val
+                elif "止损" in key or "stop" in key.lower():
+                    result["stop_loss"] = val
+                elif "阻力" in key or "resistance" in key.lower():
+                    result["resistance"] = val
+                elif "时间" in key or "time" in key.lower():
+                    result["timeframe"] = val
+        elif in_summary and not line.startswith("|") and line.strip():
+            # 表格结束，查找核心行动
+            if "核心行动" in line or "核心" in line:
+                result["core_action"] = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+                # 也可能是下一行
+            elif result["entry"] and not result["core_action"]:
+                # 可能是核心行动的延续
+                pass
+
+    # 如果核心行动未找到，尝试从段落中提取
+    if not result["core_action"]:
+        for line in lines:
+            if "核心行动" in line:
+                result["core_action"] = line.split("：", 1)[-1].split(":", 1)[-1].strip()
+                break
+            elif "核心" in line and "：" in line:
+                result["core_action"] = line.split("：", 1)[-1].strip()
+                break
+
+    return result
+
+
+# =====================================================================
+# 函数：sanitize_for_console(text)
+# 功能：清理文本中的特殊Unicode字符，避免Windows GBK编码错误
+# 参数：text - 原始文本
+# 返回：清理后的安全文本
+# =====================================================================
+def sanitize_for_console(text: str) -> str:
+    """清理文本中的特殊Unicode字符，避免Windows GBK编码错误"""
+    if not text:
+        return text
+    # 替换常见的特殊字符
+    replacements = {
+        "\u2022": "-",   # bullet
+        "\u2023": "-",   # triangular bullet
+        "\u25cf": "-",   # black circle
+        "\u25cb": "-",   # white circle
+        "\u2705": "[OK]",  # check mark
+        "\u274c": "[X]",   # cross mark
+        "\u26a0": "[!]",   # warning
+        "\u2139": "[i]",   # info
+    }
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    return text
+
+
+# =====================================================================
+# 函数：display_summary_report(record, ticker, date)
+# 功能：以层级分明的方式展示分析摘要
+# 参数：record - 分析记录字典; ticker - 股票代码; date - 分析日期
+# =====================================================================
+def display_summary_report(record: dict, ticker: str, date: str):
+    """以摘要优先模式展示分析结果"""
+    import re
+
+    company = record.get("company_of_interest", ticker)
+    final_decision = record.get("final_trade_decision", "")
+
+    # 解析决策数据
+    parsed = parse_final_decision(final_decision)
+
+    console.print()
+
+    # ---- 标题栏 ----
+    console.print(Panel(
+        f"[bold]{company}[/bold] ({ticker}) - {date}",
+        title="Analysis Report",
+        border_style="blue",
+        padding=(0, 2),
+    ))
+
+    # ---- Level 1: 评级（最醒目）----
+    rating = parsed.get("rating", "未知")
+    # 根据评级选择颜色
+    if any(w in rating for w in ["低配", "卖出", "Underweight", "Sell"]):
+        rating_color = "bold red"
+        rating_icon = "!!"
+    elif any(w in rating for w in ["高配", "买入", "Overweight", "Buy"]):
+        rating_color = "bold green"
+        rating_icon = "+"
+    else:
+        rating_color = "bold yellow"
+        rating_icon = "~"
+
+    # 评级面板
+    console.print(Panel(
+        f"[{rating_color}] {rating_icon} {rating}[/{rating_color}]",
+        border_style="red" if "red" in rating_color else ("green" if "green" in rating_color else "yellow"),
+        padding=(1, 2),
+    ))
+
+    # ---- Level 2: 关键指标表格 ----
+    # 构建指标表格
+    metrics_table = Table(show_header=False, box=None, padding=(0, 2))
+    metrics_table.add_column("Key", style="bold cyan", width=12)
+    metrics_table.add_column("Value")
+
+    if parsed["stop_loss"]:
+        metrics_table.add_row("Stop Loss", parsed["stop_loss"])
+    if parsed["resistance"]:
+        metrics_table.add_row("Resistance", parsed["resistance"])
+    if parsed["position"]:
+        metrics_table.add_row("Position", parsed["position"])
+    if parsed["timeframe"]:
+        metrics_table.add_row("Timeframe", parsed["timeframe"])
+
+    if metrics_table.row_count > 0:
+        console.print(Panel(
+            metrics_table,
+            title="Key Metrics",
+            border_style="cyan",
+            padding=(1, 0),
+        ))
+
+    # ---- Level 3: 核心逻辑 ----
+    core_action = parsed.get("core_action", "")
+    if core_action:
+        console.print(Panel(
+            core_action,
+            title="Core Logic",
+            border_style="green",
+            padding=(1, 2),
+        ))
+
+    # ---- 详细报告选项 ----
+    console.print()
+    show_detail = typer.prompt("Show detailed reports?", default="n").strip().upper()
+    if show_detail in ("Y", "YES"):
+        display_complete_report(record)
+
+
+# =====================================================================
 # 函数：display_complete_report(final_state)
 # 功能：在终端中按顺序显示完整的分析报告
 # 参数：final_state - 最终状态字典
@@ -1405,7 +1599,8 @@ def display_complete_report(final_state):
     if analysts:
         console.print(Panel("[bold]I. Analyst Team Reports[/bold]", border_style="cyan"))
         for title, content in analysts:
-            console.print(Panel(Markdown(content), title=title, border_style="blue", padding=(1, 2)))
+            content = sanitize_for_console(content[:1000] + "..." if len(content) > 1000 else content)
+            console.print(Panel(content, title=title, border_style="blue", padding=(1, 2)))
 
     # ---- II. 研究团队决策 ----
     if final_state.get("investment_debate_state"):
@@ -1420,12 +1615,14 @@ def display_complete_report(final_state):
         if research:
             console.print(Panel("[bold]II. Research Team Decision[/bold]", border_style="magenta"))
             for title, content in research:
-                console.print(Panel(Markdown(content), title=title, border_style="blue", padding=(1, 2)))
+                content = sanitize_for_console(content[:1000] + "..." if len(content) > 1000 else content)
+                console.print(Panel(content, title=title, border_style="blue", padding=(1, 2)))
 
     # ---- III. 交易团队计划 ----
     if final_state.get("trader_investment_plan"):
         console.print(Panel("[bold]III. Trading Team Plan[/bold]", border_style="yellow"))
-        console.print(Panel(Markdown(final_state["trader_investment_plan"]), title="Trader", border_style="blue", padding=(1, 2)))
+        content = sanitize_for_console(final_state["trader_investment_plan"][:1000] + "..." if len(final_state["trader_investment_plan"]) > 1000 else final_state["trader_investment_plan"])
+        console.print(Panel(content, title="Trader", border_style="blue", padding=(1, 2)))
 
     # ---- IV. 风险管理团队决策 ----
     if final_state.get("risk_debate_state"):
@@ -1440,12 +1637,14 @@ def display_complete_report(final_state):
         if risk_reports:
             console.print(Panel("[bold]IV. Risk Management Team Decision[/bold]", border_style="red"))
             for title, content in risk_reports:
-                console.print(Panel(Markdown(content), title=title, border_style="blue", padding=(1, 2)))
+                content = sanitize_for_console(content[:1000] + "..." if len(content) > 1000 else content)
+                console.print(Panel(content, title=title, border_style="blue", padding=(1, 2)))
 
         # ---- V. 投资组合经理决策 ----
         if risk.get("judge_decision"):
             console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
-            console.print(Panel(Markdown(risk["judge_decision"]), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
+            content = sanitize_for_console(risk["judge_decision"][:1000] + "..." if len(risk["judge_decision"]) > 1000 else risk["judge_decision"])
+            console.print(Panel(content, title="Portfolio Manager", border_style="blue", padding=(1, 2)))
 
 
 # =====================================================================
@@ -2101,10 +2300,8 @@ def run_analysis():
         except Exception as e:
             console.print(f"[red]Error saving report: {e}[/red]")
 
-    # 提示在屏幕上显示完整报告
-    display_choice = typer.prompt("\nDisplay full report on screen?", default="Y").strip().upper()
-    if display_choice in ("Y", "YES", ""):
-        display_complete_report(final_state)
+    # 使用摘要优先模式展示结果
+    display_summary_report(final_state, selections["ticker"], selections["analysis_date"])
 
 
 # =====================================================================
@@ -2294,46 +2491,15 @@ def view(
         date_key = list(data.keys())[0]
         record = data[date_key]
 
-        console.print()
-        console.print(Panel(
-            f"[bold]{record.get('company_of_interest', ticker)}[/bold] - {date_key}",
-            title="分析报告",
-            border_style="blue",
-        ))
-
-        # 显示最终决策
-        final_decision = record.get("final_trade_decision", "无")
-        console.print()
-        console.print(Panel(
-            final_decision or "无决策",
-            title="最终投资决策",
-            border_style="green",
-        ))
-
-        # 显示各报告摘要
-        reports = {
-            "市场报告": record.get("market_report", ""),
-            "情绪报告": record.get("sentiment_report", ""),
-            "新闻报告": record.get("news_report", ""),
-            "基本面报告": record.get("fundamentals_report", ""),
-        }
-
-        for name, content in reports.items():
-            if content:
-                display_content = content[:500] + "..." if len(content) > 500 else content
-                console.print()
-                console.print(Panel(
-                    display_content,
-                    title=name,
-                    border_style="dim",
-                ))
+        # 使用新的摘要展示模式
+        display_summary_report(record, ticker, date_key)
 
         console.print()
-        console.print(f"[dim]完整日志: {target_file}[/dim]")
+        console.print(f"[dim]Full log: {target_file}[/dim]")
 
     except Exception as e:
         error_msg = str(e).replace("\u2022", "-").replace("\u2023", "-").replace("\u25cf", "-").replace("\u25cb", "-")
-        console.print(f"[red]读取日志文件失败: {error_msg}[/red]")
+        console.print(f"[red]Failed to read log file: {error_msg}[/red]")
 
 
 @app.command()
