@@ -1176,6 +1176,7 @@ def get_akshare_income_statement(
 
 def get_akshare_insider_transactions(
     ticker: Annotated[str, "股票代码"],
+    curr_date: Annotated[str, "当前日期，格式 YYYY-MM-DD"] = None,
 ) -> str:
     """
     获取 A 股重要股东持股变动数据。
@@ -1188,9 +1189,32 @@ def get_akshare_insider_transactions(
     try:
         code = normalize_symbol(ticker)
 
+        # 确定查询日期：使用传入日期的季度末，或当前日期的上一个季度末
+        if curr_date:
+            curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
+        else:
+            curr_dt = datetime.now()
+
+        # 股东持股变动按季度披露，取最近一个已披露的季度末日期
+        # 季度末：3-31, 6-30, 9-30, 12-31
+        year = curr_dt.year
+        month = curr_dt.month
+        if month >= 11:
+            # 11-12月：三季报(9-30)已披露
+            query_date = f"{year}0930"
+        elif month >= 8:
+            # 8月：中报(6-30)已披露
+            query_date = f"{year}0630"
+        elif month >= 5:
+            # 5-7月：一季报(3-31)已披露
+            query_date = f"{year}0331"
+        else:
+            # 1-4月：上一年年报(12-31)已披露
+            query_date = f"{year-1}1231"
+
         # 使用重试机制获取股东持股变动数据
         df = retry_with_backoff(
-            lambda: ak.stock_gdfx_holding_change_em(),
+            lambda: ak.stock_gdfx_holding_change_em(date=query_date),
             max_retries=AKSHARE_MAX_RETRIES,
             base_delay=AKSHARE_BASE_DELAY,
         )
