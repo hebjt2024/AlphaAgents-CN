@@ -1,0 +1,57 @@
+AlphaAgents-CN
+Copyright 2026 AlphaAgents-CN Contributors
+
+This product includes software developed at
+TauricResearch/TradingAgents (https://github.com/TauricResearch/TradingAgents),
+licensed under the Apache License, Version 2.0.
+
+The LangGraph multi-agent orchestration architecture, analyst/researcher/manager/
+risk-mgmt agent roles, and the base dataflow abstraction originate from that
+upstream project. The upstream authors are Yijia-Xiao and the TauricResearch team.
+
+--------------------------------------------------------------------------------
+A-share (Chinese market) adaptations
+--------------------------------------------------------------------------------
+
+The following modules are original work contributed to this project and are
+distributed under the same Apache License, Version 2.0:
+
+  tradingagents/dataflows/akshare_adapter.py
+      A-share market data adapter: AkShare/BaoStock/TongdaXin multi-source
+      fallback, rate limiting, exponential backoff, request timeouts, symbol
+      normalization and stock-name resolution.
+
+  tradingagents/dataflows/baostock_adapter.py
+      BaoStock historical-data fallback provider.
+
+  tradingagents/dataflows/cache_provider.py
+      Local cache provider used as the last-resort fallback when all network
+      sources are unavailable.
+
+  tradingagents/dataflows/interface.py
+      Vendor routing layer with per-category dispatch and fallback resolution.
+
+  webui/
+      FastAPI backend with WebSocket streaming and single-page web console.
+
+  docs/
+      Architecture walkthroughs and onboarding guides (in Chinese).
+
+--------------------------------------------------------------------------------
+Portions adapted from third-party projects
+--------------------------------------------------------------------------------
+
+  tradingagents/prompts/  and select Chinese prompt templates
+      Adapted from KylinMountain/TradingAgents-AShare
+      (https://github.com/KylinMountain/TradingAgents-AShare), Apache 2.0.
+      Only the components covered by that project's Apache 2.0 grant were
+      referenced; its PolyForm Noncommercial components (api/, frontend/)
+      were NOT used.
+
+--------------------------------------------------------------------------------
+Trademarks
+--------------------------------------------------------------------------------
+
+"TradingAgents" is the trademark of its respective owner. This project is an
+independent derivative and is not endorsed by or affiliated with the upstream
+project or its authors.

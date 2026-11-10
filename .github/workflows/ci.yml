@@ -1,0 +1,105 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: 测试 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 安装 Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio ruff
+
+      - name: 代码检查 (ruff)
+        run: |
+          ruff check tradingagents/ cli/ webui/ tests/
+
+      - name: 运行测试
+        run: |
+          pytest tests/ -v --tb=short
+        env:
+          # CI 中不触发真实网络请求
+          AKSHARE_TEST_MODE: "1"
+
+  license-check:
+    name: 许可合规检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 确认 Apache 2.0 许可
+        run: |
+          if ! head -5 LICENSE | grep -q "Apache License"; then
+            echo "::error::LICENSE 必须是 Apache License 2.0"
+            exit 1
+          fi
+          echo "✓ LICENSE 为 Apache 2.0"
+
+      - name: 确认 NOTICE 存在且提及上游
+        run: |
+          if [ ! -f NOTICE ]; then
+            echo "::error::缺少 NOTICE 文件（Apache 2.0 要求声明归属）"
+            exit 1
+          fi
+          if ! grep -q "TauricResearch/TradingAgents" NOTICE; then
+            echo "::error::NOTICE 必须声明上游来源"
+            exit 1
+          fi
+          echo "✓ NOTICE 完整"
+
+      - name: 确认无 PolyForm 非商业许可残留
+        run: |
+          if grep -rl "PolyForm" --include="*.py" --include="*.md" . 2>/dev/null | grep -v NOTICE | grep -v "^./docs/"; then
+            echo "::error::检测到 PolyForm 引用，可能引入非商业限制代码"
+            exit 1
+          fi
+          echo "✓ 无 PolyForm 残留"
+
+  sync-check:
+    name: 上游同步检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: 检查与上游的偏离程度
+        run: |
+          git remote add upstream https://github.com/TauricResearch/TradingAgents.git || true
+          git fetch upstream main --quiet || {
+            echo "::notice::无法获取上游，跳过同步检查"
+            exit 0
+          }
+          BEHIND=$(git rev-list --count HEAD..upstream/main)
+          AHEAD=$(git rev-list --count upstream/main..HEAD)
+          echo "领先上游 $AHEAD 个提交，落后 $BEHIND 个提交"
+          if [ "$BEHIND" -gt 300 ]; then
+            echo "::warning::已落后上游 $BEHIND 个提交，建议尽快同步"
+          fi

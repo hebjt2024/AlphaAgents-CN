@@ -31,9 +31,16 @@ import threading
 from datetime import datetime
 from typing import Annotated, Optional
 
-import akshare as ak
 import pandas as pd
 from dateutil.relativedelta import relativedelta
+
+# AkShare 是重量级可选依赖：缺失时模块仍可导入，
+# 便于在非 A 股场景、单元测试与文档生成环境中使用纯函数能力。
+# 实际发起行情请求前会检查 ak 是否为 None 并抛出明确错误。
+try:
+    import akshare as ak
+except ImportError:  # pragma: no cover - 依赖缺失时的降级路径
+    ak = None
 
 
 # ============================================================================
@@ -97,20 +104,36 @@ AKSHARE_REQUEST_INTERVAL = float(os.getenv("AKSHARE_REQUEST_INTERVAL", "0.5"))
 _last_request_time = 0.0
 
 
+def _require_akshare():
+    """确保 AkShare 可用，否则抛出明确错误。
+
+    AkShare 是可选的重量级依赖。缺失时模块仍可导入，
+    这样纯函数（代码归一化、日期转换等）与单元测试不受影响，
+    但任何真正发起行情请求的入口都会立刻给出可操作的错误提示，
+    而不是抛出难以理解的 AttributeError: 'NoneType' has no attribute ...
+    """
+    if ak is None:
+        raise ImportError(
+            "未安装 akshare，无法使用 A 股数据源。请执行: pip install akshare\n"
+            "如仅需代码归一化等纯函数功能，可忽略此依赖。"
+        )
+    return ak
+
+
 def _throttle_request():
     """
     请求节流控制，避免快速连续请求触发东方财富 API 限流。
-    
+
     根据 AKSHARE_REQUEST_INTERVAL 配置，在连续请求之间添加最小间隔。
     """
     global _last_request_time
     current_time = time.time()
     elapsed = current_time - _last_request_time
-    
+
     if elapsed < AKSHARE_REQUEST_INTERVAL:
         sleep_time = AKSHARE_REQUEST_INTERVAL - elapsed
         time.sleep(sleep_time)
-    
+
     _last_request_time = time.time()
 
 
@@ -414,6 +437,8 @@ def _load_akshare_names() -> dict:
     Returns:
         {股票名称: 6位代码} 字典；加载失败时返回空字典（继续使用内置映射表）
     """
+    _require_akshare()
+
     global _name_cache, _name_cache_loaded
     if _name_cache_loaded:
         return _name_cache
@@ -635,6 +660,8 @@ def get_stock_hist_with_fallback(
       end_ak: 结束日期，格式 YYYYMMDD
       adjust: 复权方式，默认 "qfq"（前复权），腾讯源忽略此参数
     """
+    _require_akshare()
+
     # ------------------------------------------------------------------
     # 第 1 级：东方财富（主数据源）
     # ------------------------------------------------------------------
@@ -759,6 +786,8 @@ def get_akshare_stock(
       2024-01-02,7.47,7.50,7.29,7.29,1158366.0
       ...
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(symbol)
         datetime.strptime(start_date, "%Y-%m-%d")
@@ -822,6 +851,8 @@ def get_akshare_indicators(
       rsi, macd, macds, macdh, close_50_sma, close_200_sma,
       close_10_ema, boll, boll_ub, boll_lb, atr, vwma, mfi
     """
+    _require_akshare()
+
     # 指标说明（与 yfinance 保持一致）
     best_ind_params = {
         "close_50_sma": "50 SMA: 中期趋势指标。用于识别趋势方向和动态支撑/阻力位。",
@@ -949,6 +980,8 @@ def get_akshare_fundamentals(
       市盈率: 5.23
       ...
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(ticker)
 
@@ -1038,6 +1071,8 @@ def _fetch_financial_statement_ths(
     返回：
       CSV 格式字符串，带元信息头。报告期按从新到旧排列。
     """
+    _require_akshare()
+
     # 根据频率选择同花顺的 indicator 参数
     # - "按年度"：只返回年报，报告期列为整数年份（如 2024）
     # - "按报告期"：返回所有季报，报告期列为日期字符串（如 "2025-12-31"）
@@ -1101,6 +1136,8 @@ def get_akshare_balance_sheet(
     注意：原先使用的 stock_balance_sheet_by_report_em 接口因东方财富页面
     结构变更而失效，已切换到同花顺数据源。
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(ticker)
         return _fetch_financial_statement_ths(
@@ -1129,6 +1166,8 @@ def get_akshare_cashflow(
     数据源：同花顺（通过 AkShare 的 stock_financial_cash_ths 接口）。
     返回 CSV 格式字符串，包含经营活动、投资活动、筹资活动三大现金流明细。
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(ticker)
         return _fetch_financial_statement_ths(
@@ -1157,6 +1196,8 @@ def get_akshare_income_statement(
     数据源：同花顺（通过 AkShare 的 stock_financial_benefit_ths 接口）。
     返回 CSV 格式字符串，包含营业收入、营业成本、净利润、每股收益等明细。
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(ticker)
         return _fetch_financial_statement_ths(
@@ -1186,6 +1227,8 @@ def get_akshare_insider_transactions(
 
     返回 CSV 格式，包含股东名称、变动方向、变动数量等信息。
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(ticker)
 
@@ -1258,6 +1301,8 @@ def get_akshare_news(
     返回 Markdown 格式的新闻列表，与 yfinance_news 返回格式一致。
     内置指数退避重试机制，应对东方财富 API 的限流问题。
     """
+    _require_akshare()
+
     try:
         code = normalize_symbol(ticker)
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
@@ -1333,6 +1378,8 @@ def get_akshare_global_news(
     注意：AkShare 没有直接对应 yfinance 的全球市场新闻接口，
     但 news_cctv() 提供了重要的宏观政策信息，对 A 股分析有参考价值。
     """
+    _require_akshare()
+
     try:
         curr_dt = datetime.strptime(curr_date, "%Y-%m-%d")
         start_dt = curr_dt - relativedelta(days=look_back_days)

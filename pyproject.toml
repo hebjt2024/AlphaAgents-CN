@@ -3,11 +3,22 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "tradingagents"
-version = "0.2.2"
-description = "TradingAgents: Multi-Agents LLM Financial Trading Framework"
+name = "alphaagents-cn"
+version = "0.3.0"
+description = "AlphaAgents-CN: A 股多智能体投研系统，基于 TradingAgents 架构"
 readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "Apache-2.0" }
+authors = [{ name = "AlphaAgents-CN Contributors" }]
+keywords = ["tradingagents", "a-share", "multi-agent", "llm", "quant", "stock-analysis"]
+classifiers = [
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
 dependencies = [
     "akshare>=1.18.0",
     "baostock>=0.8.8",
@@ -35,10 +46,30 @@ dependencies = [
 ]
 
 [project.scripts]
+alphaagents = "cli.main:app"
 tradingagents = "cli.main:app"
+
+[project.urls]
+Homepage = "https://github.com/hebjt2024/AlphaAgents-CN"
+Upstream = "https://github.com/TauricResearch/TradingAgents"
 
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*", "webui*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [".venv", "webui/frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["E501", "B008"]
+
