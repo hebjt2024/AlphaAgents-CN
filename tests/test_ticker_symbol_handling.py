@@ -13,6 +13,15 @@ class TickerSymbolHandlingTests(unittest.TestCase):
         self.assertIn("7203.T", context)
         self.assertIn("exchange suffix", context)
 
+    def test_build_instrument_context_includes_ashare_rules(self):
+        context = build_instrument_context("600519")
+        self.assertIn("T+1", context)
+        self.assertIn("涨跌幅限制", context)
+
+    def test_build_instrument_context_omits_rules_for_us_stock(self):
+        context = build_instrument_context("NVDA")
+        self.assertNotIn("T+1", context)
+
 
 if __name__ == "__main__":
     unittest.main()
