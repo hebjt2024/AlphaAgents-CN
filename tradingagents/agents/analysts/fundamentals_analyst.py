@@ -71,9 +71,8 @@
 # --- 导入 LangChain 核心模块 ---
 # ChatPromptTemplate：用于构建结构化的聊天提示词模板，支持 system 和 human 消息的角色区分
 # MessagesPlaceholder：在提示词中预留一个位置，运行时动态插入历史消息列表
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import time
-import json
 
 # --- 导入项目内部工具函数 ---
 # 这些函数都被 @tool 装饰器标记为 LangChain 工具，LLM 可以"看到"它们的描述并请求调用。
@@ -90,10 +89,9 @@ from tradingagents.agents.utils.agent_utils import (
     get_cashflow,
     get_fundamentals,
     get_income_statement,
-    get_insider_transactions,
 )
+
 # get_config：获取全局配置（如 API 密钥、模型参数等）
-from tradingagents.dataflows.config import get_config
 
 
 # ============================================================================
@@ -168,7 +166,7 @@ def create_fundamentals_analyst(llm):
         # 这个信息会被注入到 LLM 的提示词中，让 Agent 知道它在分析哪家公司
         # build_instrument_context() 返回类似：
         #   "The instrument to analyze is `AAPL`. Use this exact ticker ..."
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # ====================================================================
         # 定义工具列表（Tools）

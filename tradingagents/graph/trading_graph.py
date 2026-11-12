@@ -174,21 +174,22 @@
 # ---------------------------------------------------------------------------
 # import 语句：把其他模块中的功能引入当前文件使用。
 # 以下是 Python 标准库（Python 自带的库，不需要额外安装）。
-import os                       # 操作系统接口，用于创建目录、拼接路径等。
-                                # 例如 os.makedirs("data/cache") 可以创建文件夹。
-from pathlib import Path        # 面向对象的文件路径操作。
-                                # Path 比 os.path 更现代、更易读。
-                                # 例如 Path("a/b/c").mkdir(parents=True) 可以递归创建多级目录。
-import json                     # JSON 序列化/反序列化，用于保存日志。
-                                # json.dump(字典, 文件) 把 Python 字典保存为 JSON 文件。
-                                # json.load(文件) 把 JSON 文件读回 Python 字典。
-from datetime import date       # 日期类型（虽然当前代码中未直接使用，但保留以备扩展）。
-                                # 例如 date(2024, 1, 15) 表示 2024 年 1 月 15 日。
-from typing import Dict, Any, Tuple, List, Optional  # 类型提示，提高代码可读性。
-                                # Dict[str, Any] 表示"键为字符串、值为任意类型的字典"。
-                                # Optional[List] 表示"可以是列表，也可以是 None"。
-                                # 类型提示不影响运行，只是给人和 IDE 看的"说明书"。
+# Path 比 os.path 更现代、更易读。
+# 例如 Path("a/b/c").mkdir(parents=True) 可以递归创建多级目录。
+import json  # JSON 序列化/反序列化，用于保存日志。
+import os  # 操作系统接口，用于创建目录、拼接路径等。
 
+# json.dump(字典, 文件) 把 Python 字典保存为 JSON 文件。
+# json.load(文件) 把 JSON 文件读回 Python 字典。
+# 例如 os.makedirs("data/cache") 可以创建文件夹。
+from pathlib import Path  # 面向对象的文件路径操作。
+
+# 例如 date(2024, 1, 15) 表示 2024 年 1 月 15 日。
+from typing import Any  # 类型提示，提高代码可读性。
+
+# Dict[str, Any] 表示"键为字符串、值为任意类型的字典"。
+# Optional[List] 表示"可以是列表，也可以是 None"。
+# 类型提示不影响运行，只是给人和 IDE 看的"说明书"。
 # ---------------------------------------------------------------------------
 # 第三方库导入
 # ---------------------------------------------------------------------------
@@ -197,17 +198,48 @@ from typing import Dict, Any, Tuple, List, Optional  # 类型提示，提高代�
 # 详见上方"前置知识-概念 5：ToolNode 的内部机制"
 from langgraph.prebuilt import ToolNode
 
-# ---------------------------------------------------------------------------
-# 项目内部模块导入
-# ---------------------------------------------------------------------------
-# LLM 客户端工厂函数：根据 provider 配置创建对应的 LLM 客户端（如 OpenAI、Google 等）
-from tradingagents.llm_clients import create_llm_client
-
 # 导入所有代理创建函数（如 create_market_analyst、create_bull_researcher 等）
 # 使用 * 通配符导入，因为代理类型较多，且都在 __all__ 中声明
 # __all__ 是模块中定义的一个列表，明确声明了 * 会导入哪些名字
 # Python 特有语法说明：from xxx import * 相当于把 xxx 模块中所有公开的名字一次性导入
 from tradingagents.agents import *
+
+# 代理状态数据类：定义图中传递的状态结构
+# 抽象工具函数：封装了各种数据获取操作（股票数据、新闻、基本面等）
+# 这些函数被包装成 ToolNode，供 LLM 代理调用
+# 详见上方"前置知识-概念 5：ToolNode 的内部机制"
+from tradingagents.agents.utils.agent_utils import (
+    get_balance_sheet,  # 获取资产负债表（资产、负债、股东权益）
+    get_capital_flow,  # 获取 A 股资金流向（主力/超大单/大单）
+    get_cashflow,  # 获取现金流量表（经营/投资/筹资活动现金流）
+    get_dragon_tiger,  # 获取龙虎榜数据（A 股）
+    # 运行时数据流示例：
+    #   → 返回 ToolMessage(content="RSI: 72.3, MACD: bullish crossover, Bollinger: upper band...")
+    get_fundamentals,  # 获取公司基本面数据（如市盈率、市净率、股息率等）
+    get_global_news,  # 获取全球宏观新闻（影响整体市场的宏观事件）
+    get_income_statement,  # 获取利润表（收入、成本、利润）
+    # 运行时数据流示例：
+    #   LLM 输出 tool_calls=[{"name": "get_stock_data", "args": {"ticker": "AAPL"}}]
+    #   → ToolNode 调用 get_stock_data(ticker="AAPL")
+    #   → 返回 ToolMessage(content="Date,Open,High,Low,Close,Volume\n2024-01-15,185.5,187.2,...")
+    get_indicators,  # 获取技术指标（如 RSI、MACD、布林带等）
+    get_insider_transactions,  # 获取内部人交易信息（高管买入/卖出自家股票的记录）
+    get_news,  # 获取个股新闻（与该公司相关的新闻报道）
+    get_northbound_flow,  # 获取北向资金（A 股宏观资金面）
+    get_stock_data,  # 获取股票价格数据（OHLCV：开盘价、最高价、最低价、收盘价、成交量）
+    search_stock_news,  # Tavily 个股新闻搜索
+    search_web,  # Tavily 通用联网搜索
+)
+
+# 金融情景记忆系统：用于存储和检索历史决策经验
+# FinancialSituationMemory 内部使用 BM25 算法来检索与当前市场状况最相似的历史经验
+# 详见上方"前置知识-概念 8：BM25 检索的通俗概念"
+from tradingagents.agents.utils.memory import FinancialSituationMemory
+
+# 配置设置函数：将配置字典应用到全局运行时
+# set_config 会把 config 中的参数设置到全局变量中，
+# 这样其他模块（如数据获取工具）就能读取到这些配置
+from tradingagents.dataflows.config import set_config
 
 # 默认配置字典，包含所有可配置参数（LLM 模型名、最大辩论轮数等）
 # DEFAULT_CONFIG 是一个字典，例如：
@@ -222,79 +254,19 @@ from tradingagents.agents import *
 #   }
 from tradingagents.default_config import DEFAULT_CONFIG
 
-# 金融情景记忆系统：用于存储和检索历史决策经验
-# FinancialSituationMemory 内部使用 BM25 算法来检索与当前市场状况最相似的历史经验
-# 详见上方"前置知识-概念 8：BM25 检索的通俗概念"
-from tradingagents.agents.utils.memory import FinancialSituationMemory
-
-# 代理状态数据类：定义图中传递的状态结构
-from tradingagents.agents.utils.agent_states import (
-    AgentState,         # 主状态：包含所有代理共享的数据。这是一个 TypedDict（带类型提示的字典）。
-                        # 运行时数据流示例：
-                        #   state = {
-                        #     "messages": [HumanMessage("AAPL"), AIMessage("..."), ToolMessage("...")],
-                        #     "company_of_interest": "AAPL",
-                        #     "trade_date": "2024-01-15",
-                        #     "market_report": "RSI indicates overbought...",
-                        #     "investment_debate_state": InvestDebateState(...),
-                        #     "risk_debate_state": RiskDebateState(...),
-                        #     "final_trade_decision": "BUY based on...",
-                        #     ...
-                        #   }
-    InvestDebateState,  # 投资辩论子状态：跟踪牛/熊方辩论进度
-                        # 运行时数据流示例：
-                        #   {
-                        #     "bull_history": "Bull: AAPL has strong growth...",
-                        #     "bear_history": "Bear: P/E ratio too high...",
-                        #     "count": 2,  # 已发言 2 次
-                        #     "current_response": "Bull: ...",
-                        #     "judge_decision": "The bull argument is more compelling...",
-                        #   }
-    RiskDebateState,    # 风险辩论子状态：跟踪激进/保守/中性方辩论进度
-                        # 运行时数据流示例：
-                        #   {
-                        #     "aggressive_history": "Aggressive: Buy on margin...",
-                        #     "conservative_history": "Conservative: Reduce position...",
-                        #     "neutral_history": "Neutral: Hold current position...",
-                        #     "count": 3,  # 已发言 3 次
-                        #     "latest_speaker": "Neutral",
-                        #     "judge_decision": "Given the balanced risk...",
-                        #   }
-)
-
-# 配置设置函数：将配置字典应用到全局运行时
-# set_config 会把 config 中的参数设置到全局变量中，
-# 这样其他模块（如数据获取工具）就能读取到这些配置
-from tradingagents.dataflows.config import set_config
-
-# 抽象工具函数：封装了各种数据获取操作（股票数据、新闻、基本面等）
-# 这些函数被包装成 ToolNode，供 LLM 代理调用
-# 详见上方"前置知识-概念 5：ToolNode 的内部机制"
-from tradingagents.agents.utils.agent_utils import (
-    get_stock_data,           # 获取股票价格数据（OHLCV：开盘价、最高价、最低价、收盘价、成交量）
-                              # 运行时数据流示例：
-                              #   LLM 输出 tool_calls=[{"name": "get_stock_data", "args": {"ticker": "AAPL"}}]
-                              #   → ToolNode 调用 get_stock_data(ticker="AAPL")
-                              #   → 返回 ToolMessage(content="Date,Open,High,Low,Close,Volume\n2024-01-15,185.5,187.2,...")
-    get_indicators,           # 获取技术指标（如 RSI、MACD、布林带等）
-                              # 运行时数据流示例：
-                              #   → 返回 ToolMessage(content="RSI: 72.3, MACD: bullish crossover, Bollinger: upper band...")
-    get_fundamentals,         # 获取公司基本面数据（如市盈率、市净率、股息率等）
-    get_balance_sheet,       # 获取资产负债表（资产、负债、股东权益）
-    get_cashflow,             # 获取现金流量表（经营/投资/筹资活动现金流）
-    get_income_statement,     # 获取利润表（收入、成本、利润）
-    get_news,                 # 获取个股新闻（与该公司相关的新闻报道）
-    get_insider_transactions, # 获取内部人交易信息（高管买入/卖出自家股票的记录）
-    get_global_news           # 获取全球宏观新闻（影响整体市场的宏观事件）
-)
+# ---------------------------------------------------------------------------
+# 项目内部模块导入
+# ---------------------------------------------------------------------------
+# LLM 客户端工厂函数：根据 provider 配置创建对应的 LLM 客户端（如 OpenAI、Google 等）
+from tradingagents.llm_clients import create_llm_client
 
 # 从当前包导入子模块
 # 相对导入：. 表示当前包（graph 包），从同级文件导入
 from .conditional_logic import ConditionalLogic  # 条件路由逻辑：定义条件边的判断函数
-from .setup import GraphSetup                    # 图结构搭建：负责创建 StateGraph 并添加节点和边
-from .propagation import Propagator              # 状态传播：负责创建初始状态和图执行参数
-from .reflection import Reflector                # 决策反思：交易后根据收益反思决策质量，并更新记忆
-from .signal_processing import SignalProcessor   # 信号处理：从完整信号文本中提取核心决策词
+from .propagation import Propagator  # 状态传播：负责创建初始状态和图执行参数
+from .reflection import Reflector  # 决策反思：交易后根据收益反思决策质量，并更新记忆
+from .setup import GraphSetup  # 图结构搭建：负责创建 StateGraph 并添加节点和边
+from .signal_processing import SignalProcessor  # 信号处理：从完整信号文本中提取核心决策词
 
 
 # =============================================================================
@@ -369,10 +341,10 @@ class TradingAgentsGraph:
     # self 是对当前对象实例的引用，类似其他语言中的 this。
     def __init__(
         self,
-        selected_analysts=["market", "social", "news", "fundamentals"],
+        selected_analysts=None,
         debug=False,
-        config: Dict[str, Any] = None,
-        callbacks: Optional[List] = None,
+        config: dict[str, Any] = None,
+        callbacks: list | None = None,
     ):
         """
         初始化交易代理图。
@@ -418,6 +390,14 @@ class TradingAgentsGraph:
         # None 在 Python 中是"假值"，所以 None or B 的结果是 B。
         # 使用传入的配置，如果为 None 则使用默认配置
         self.config = config or DEFAULT_CONFIG
+
+        # 自定义图编排：控制分析师集合与可选阶段（辩论/交易员/风控）
+        self.pipeline = self.config.get("pipeline") or {}
+        if selected_analysts is None:
+            selected_analysts = (
+                self.pipeline.get("analysts")
+                or ["market", "social", "news", "fundamentals"]
+            )
 
         # Python 语法说明：callbacks or []
         # 同样的短路求值：如果 callbacks 为 None，则用空列表 []。
@@ -553,6 +533,7 @@ class TradingAgentsGraph:
             self.invest_judge_memory,
             self.portfolio_manager_memory,
             self.conditional_logic,
+            pipeline=self.pipeline,
         )
 
         # 传播器模块：负责创建初始状态和图执行参数
@@ -602,7 +583,7 @@ class TradingAgentsGraph:
     # -------------------------------------------------------------------------
     # Python 语法说明：方法名前加 _ 表示"私有方法"（约定俗成，不是强制）。
     # 外部代码不应直接调用 _ 开头的方法，但技术上是可以调用的。
-    def _get_provider_kwargs(self) -> Dict[str, Any]:
+    def _get_provider_kwargs(self) -> dict[str, Any]:
         """
         获取特定 LLM 提供商的关键字参数。
 
@@ -662,7 +643,7 @@ class TradingAgentsGraph:
     # -------------------------------------------------------------------------
     # 私有方法：创建工具节点
     # -------------------------------------------------------------------------
-    def _create_tool_nodes(self) -> Dict[str, ToolNode]:
+    def _create_tool_nodes(self) -> dict[str, ToolNode]:
         """
         为不同类型的数据源创建工具节点。
 
@@ -709,12 +690,16 @@ class TradingAgentsGraph:
                     get_stock_data,      # 获取股票价格数据（OHLCV）
                     # 技术指标工具
                     get_indicators,      # 获取技术指标（如 RSI、MACD、布林带等）
+                    # A 股资金面工具
+                    get_capital_flow,    # 获取主力资金流向（A 股特有）
+                    get_dragon_tiger,    # 获取龙虎榜（A 股特有）
                 ]
             ),
             "social": ToolNode(
                 [
                     # 新闻工具用于社交媒体情绪分析
                     get_news,            # 获取个股相关新闻
+                    search_web,          # 联网补充最新舆情/事件
                 ]
             ),
             "news": ToolNode(
@@ -723,6 +708,9 @@ class TradingAgentsGraph:
                     get_news,            # 获取个股相关新闻
                     get_global_news,     # 获取全球宏观新闻
                     get_insider_transactions,  # 获取内部人（高管）交易记录
+                    get_northbound_flow,  # 获取北向资金（A 股宏观资金面）
+                    search_web,          # 联网补充新闻/公告
+                    search_stock_news,   # 联网搜索个股新闻
                 ]
             ),
             "fundamentals": ToolNode(
@@ -739,7 +727,7 @@ class TradingAgentsGraph:
     # -------------------------------------------------------------------------
     # 核心方法：执行图流程
     # -------------------------------------------------------------------------
-    def propagate(self, company_name, trade_date):
+    def propagate(self, company_name, trade_date, horizon: str = "medium"):
         """
         对特定公司在特定交易日运行完整的交易代理图。
 
@@ -862,7 +850,7 @@ flowchart TD
         #   - 各种报告字段（初始为空字符串）
         # -----------------------------------------------------------------
         init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date
+            company_name, trade_date, horizon
         )
 
         # 获取图执行参数（如 recursion_limit 防止无限循环）
@@ -924,7 +912,17 @@ flowchart TD
         # process_signal() 从完整信号文本中提取出简洁的决策词
         # 例如："Based on comprehensive analysis, BUY AAPL..." → "BUY"
         # -----------------------------------------------------------------
-        return final_state, self.process_signal(final_state["final_trade_decision"])
+        # 正常流程由 Portfolio Manager 写入 final_trade_decision；
+        # 若用户自定义流程或节点异常导致该字段为空，则回退到交易员/研究经理方案，
+        # 避免直接索引 KeyError 或空信号。
+        decision_text = (
+            final_state.get("final_trade_decision")
+            or final_state.get("trader_investment_plan")
+            or final_state.get("investment_plan")
+            or "HOLD"
+        )
+        final_state["final_trade_decision"] = decision_text
+        return final_state, self.process_signal(decision_text)
 
     # -------------------------------------------------------------------------
     # 私有方法：记录状态日志

@@ -83,15 +83,14 @@
 
 # ChatPromptTemplate：构建结构化聊天提示词模板，支持多角色消息
 # MessagesPlaceholder：在提示词中预留位置，运行时动态插入历史消息列表
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import time
-import json
 
 # --- 导入项目内部工具函数 ---
 # build_instrument_context：构建目标公司的上下文信息字符串
 from tradingagents.agents.utils.agent_utils import build_instrument_context
+
 # get_config：获取全局配置
-from tradingagents.dataflows.config import get_config
 
 
 # ============================================================================
@@ -146,12 +145,26 @@ def create_trader(llm):
         # 构建目标公司的上下文信息
         # build_instrument_context() 返回类似：
         #   "The instrument to analyze is `AAPL`. Use this exact ticker ..."
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # 提取研究经理的投资计划
         # 这是牛熊研究员辩论后，研究经理做出的投资计划
         # 交易员需要根据这个计划制定具体的交易方案
-        investment_plan = state["investment_plan"]
+        # 在自定义精简流程中可能跳过多空辩论，此时 investment_plan 为空，
+        # 交易员应直接基于四份分析师报告制定方案。
+        investment_plan = state.get("investment_plan", "")
+
+        # 分析师报告快照（截断超长内容，控制上下文长度）
+        def _clip(text: str, limit: int = 6000) -> str:
+            text = str(text or "").strip()
+            return text if len(text) <= limit else text[:limit] + "..."
+
+        analyst_reports = (
+            f"### 市场分析\n{_clip(state.get('market_report', ''))}\n\n"
+            f"### 舆情分析\n{_clip(state.get('sentiment_report', ''))}\n\n"
+            f"### 新闻分析\n{_clip(state.get('news_report', ''))}\n\n"
+            f"### 基本面分析\n{_clip(state.get('fundamentals_report', ''))}"
+        )
 
         # ====================================================================
         # 工具列表
@@ -266,6 +279,7 @@ def create_trader(llm):
                     " 请在回复开头加上前缀 FINAL TRANSACTION PROPOSAL: **买入/持有/卖出**，以便团队知道可以停止。"
                     " 你可以使用以下工具：{tool_names}。\n{system_message}"
                     "供你参考，当前日期为 {current_date}。{instrument_context}"
+                    "分析师报告：\n{analyst_reports}\n\n"
                     "研究经理提供的投资计划：{investment_plan}",
                 ),
                 # ==================================================================
@@ -308,6 +322,8 @@ def create_trader(llm):
         prompt = prompt.partial(instrument_context=instrument_context)
         # 填入研究经理的投资计划——这是交易员工作的核心输入
         prompt = prompt.partial(investment_plan=investment_plan)
+        # 填入分析师报告，确保跳过辩论时交易员仍有充分依据
+        prompt = prompt.partial(analyst_reports=analyst_reports)
 
         # ====================================================================
         # 构建并执行 LangChain 链

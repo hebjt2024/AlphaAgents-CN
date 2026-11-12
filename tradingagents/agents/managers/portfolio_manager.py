@@ -152,7 +152,7 @@ def create_portfolio_manager(llm, memory):
         # 构建目标公司的上下文信息
         # build_instrument_context() 返回类似：
         #   "The instrument to analyze is `AAPL`. Use this exact ticker ..."
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # ====================================================================
         # 提取风险辩论的历史记录
@@ -176,10 +176,24 @@ def create_portfolio_manager(llm, memory):
         fundamentals_report = state["fundamentals_report"]        # 基本面分析师报告
         sentiment_report = state["sentiment_report"]              # 社交媒体分析师报告
 
-        # 提取交易员的投资计划
-        # 这是研究经理制定、交易员细化的投资计划
-        # 投资组合经理需要评估这个计划是否合理
-        trader_plan = state["investment_plan"]
+        # 提取交易员的执行方案；若自定义流程跳过了交易员节点，
+        # 则回退到研究经理的投资计划，保证最终裁决仍有决策依据。
+        trader_plan = (
+            state.get("trader_investment_plan")
+            or state.get("investment_plan", "")
+        )
+
+        # 分析师报告快照（截断超长内容，控制上下文长度）
+        def _clip(text: str, limit: int = 6000) -> str:
+            text = str(text or "").strip()
+            return text if len(text) <= limit else text[:limit] + "..."
+
+        analyst_reports = (
+            f"### 市场分析\n{_clip(market_research_report)}\n\n"
+            f"### 舆情分析\n{_clip(sentiment_report)}\n\n"
+            f"### 新闻分析\n{_clip(news_report)}\n\n"
+            f"### 基本面分析\n{_clip(fundamentals_report)}"
+        )
 
         # ====================================================================
         # 记忆检索（Memory Retrieval）
@@ -205,7 +219,7 @@ def create_portfolio_manager(llm, memory):
         # enumerate(past_memories, 1) 从 1 开始编号遍历
         # rec["recommendation"] 是每条记忆中的经验教训文本
         past_memory_str = ""
-        for i, rec in enumerate(past_memories, 1):
+        for _i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
         # ====================================================================
@@ -269,6 +283,9 @@ def create_portfolio_manager(llm, memory):
 **背景信息：**
 - 交易员提议的计划：**{trader_plan}**
 - 过往决策的教训：**{past_memory_str}**
+
+**分析师报告：**
+{analyst_reports}
 
 **要求的输出结构：**
 1. **评级（Rating）**：明确给出买入 / 超配 / 持有 / 低配 / 卖出 之一。

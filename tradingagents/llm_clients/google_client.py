@@ -67,8 +67,10 @@
 #      → 返回规范化后的 AIMessage
 # ============================================================================
 
+import os
+
 # typing 模块：Python 标准库，提供类型注解
-from typing import Any, Optional
+from typing import Any
 
 # LangChain 的 Google Gemini 聊天模型封装
 # ChatGoogleGenerativeAI 是 LangChain 对 Google Gemini API 的封装类
@@ -159,7 +161,7 @@ class GoogleClient(BaseLLMClient):
     思考级别（thinking level）参数映射。
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, base_url: str | None = None, **kwargs):
         """初始化 Google 客户端。
 
         Args:
@@ -202,6 +204,14 @@ class GoogleClient(BaseLLMClient):
                      "http_client", "http_async_client"):
             if key in self.kwargs:
                 llm_kwargs[key] = self.kwargs[key]
+
+        # 兼容 GOOGLE_API_KEY 与 GOOGLE_GENAI_API_KEY 两种环境变量写法
+        if "google_api_key" not in llm_kwargs:
+            api_key = os.getenv("GOOGLE_API_KEY") or os.getenv(
+                "GOOGLE_GENAI_API_KEY"
+            )
+            if api_key:
+                llm_kwargs["google_api_key"] = api_key
 
         # ---- 处理思考级别（thinking level）参数 ----
         # 不同 Gemini 版本对思考级别的支持不同：

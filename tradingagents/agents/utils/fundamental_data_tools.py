@@ -85,13 +85,13 @@
 
 # @tool: LangChain 工具装饰器，将普通函数转换为智能体可调用的工具
 # 【详细说明见文件开头的前置知识部分】
-from langchain_core.tools import tool
-
 # Annotated: 类型注解包装器，用于为参数添加元数据描述
 # LLM 需要读取这些描述来理解参数的含义
 # 【为什么 LLM 需要描述？】因为 LLM 只看类型(str)不知道该填什么值，
 # 但看描述("ticker symbol")就知道该填股票代码如 "AAPL"
 from typing import Annotated
+
+from langchain_core.tools import tool
 
 # route_to_vendor: 统一的数据供应商路由接口
 # 将数据请求转发到配置的供应商（如 Financial Modeling Prep、Alpha Vantage 等）
@@ -113,8 +113,10 @@ def get_fundamentals(
 
     # curr_date 参数：当前交易日期
     # 格式为 yyyy-mm-dd，例如 "2024-06-30"
-    # 这个日期用于确定获取哪个季度/年度的财务数据
-    curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"],
+    # 这个日期用于确定获取哪个季度/年度的财务数据。
+    # 默认 None：允许 LLM 只传 ticker，由供应商使用最新可用数据，
+    # 与其它财务工具（get_balance_sheet 等）保持一致。
+    curr_date: Annotated[str, "current date you are trading at, yyyy-mm-dd"] = None,
 ) -> str:
     """
     获取指定股票代码的综合基本面数据

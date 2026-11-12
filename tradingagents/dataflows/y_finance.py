@@ -145,7 +145,13 @@
 # typing.Annotated: 用于为类型注解添加元数据说明。
 # 例如 Annotated[str, "股票代码"] 在类型检查时仍被视为 str，但附加了语义信息。
 # LangChain 框架会读取第二个参数作为 LLM 工具的参数描述。
-from typing import Annotated
+# os 模块：用于文件和目录操作。
+# 这里用于创建缓存目录、检查文件是否存在。
+# 常用函数：
+#   - os.path.exists(路径)：检查文件/目录是否存在
+#   - os.path.join(目录, 文件名)：拼接路径
+#   - os.makedirs(目录, exist_ok=True)：创建目录
+import os
 
 # datetime: 标准库中的日期时间处理类。
 # 用于日期格式化、解析和当前时间获取。
@@ -154,13 +160,7 @@ from typing import Annotated
 #   - datetime.now()：获取当前时间
 #   - dt.strftime(格式)：日期对象 → 字符串
 from datetime import datetime
-
-# relativedelta: dateutil 库提供的相对日期差计算工具。
-# 与标准库 timedelta 的区别：
-#   timedelta 只能按天、秒、微秒计算偏移。
-#   relativedelta 可以按年、月、周、天计算偏移，更灵活。
-# 例如：relativedelta(days=30) 表示 30 天前，relativedelta(months=1) 表示 1 个月前。
-from dateutil.relativedelta import relativedelta
+from typing import Annotated
 
 # yfinance（别名 yf）：Yahoo Finance 的 Python 封装库。
 # 主要功能：
@@ -171,13 +171,12 @@ from dateutil.relativedelta import relativedelta
 # 这里用 as yf 起别名，后面写 yf.Ticker() 就等于写 yfinance.Ticker()。
 import yfinance as yf
 
-# os 模块：用于文件和目录操作。
-# 这里用于创建缓存目录、检查文件是否存在。
-# 常用函数：
-#   - os.path.exists(路径)：检查文件/目录是否存在
-#   - os.path.join(目录, 文件名)：拼接路径
-#   - os.makedirs(目录, exist_ok=True)：创建目录
-import os
+# relativedelta: dateutil 库提供的相对日期差计算工具。
+# 与标准库 timedelta 的区别：
+#   timedelta 只能按天、秒、微秒计算偏移。
+#   relativedelta 可以按年、月、周、天计算偏移，更灵活。
+# 例如：relativedelta(days=30) 表示 30 天前，relativedelta(months=1) 表示 1 个月前。
+from dateutil.relativedelta import relativedelta
 
 # 从同目录下的 stockstats_utils 模块导入工具函数和类。
 # . 表示相对导入（从当前包导入）。
@@ -187,7 +186,6 @@ import os
 #   - yf_retry: 带指数退避的 API 重试包装器
 # 这三个工具在 y_finance.py 中被反复使用。
 from .stockstats_utils import StockstatsUtils, _clean_dataframe, yf_retry
-
 
 # =============================================================================
 # 函数：get_YFin_data_online
@@ -651,10 +649,10 @@ def _get_stock_stats_bulk(
     """
     # 在函数内部导入，避免循环导入问题
     # 延迟导入（Lazy Import）是处理循环依赖的常用技巧
-    from .config import get_config
     import pandas as pd
     from stockstats import wrap
-    import os
+
+    from .config import get_config
 
     # 获取全局配置
     # config 是一个字典，包含数据缓存目录、数据供应商等设置
@@ -676,15 +674,17 @@ def _get_stock_stats_bulk(
                 ),
                 on_bad_lines="skip",  # 跳过格式错误的行
             )
-        except FileNotFoundError:
-            # 如果本地文件不存在，抛出异常提示
-            raise Exception("Stockstats fail: Yahoo Finance data not fetched yet!")
+        except FileNotFoundError as exc:
+            # 缓存文件不存在，抛出异常提示
+            raise Exception(
+                "Stockstats fail: Yahoo Finance data not fetched yet!"
+            ) from exc
     else:
         # ---- 在线模式：从 Yahoo Finance 下载（带缓存） ----
         # 将 A 股代码转换为 Yahoo Finance 格式（如 000001 → 000001.SZ）
         yf_symbol = to_yfinance_symbol(symbol)
         today_date = pd.Timestamp.today()  # 今天的日期
-        curr_date_dt = pd.to_datetime(curr_date)  # 当前日期
+        pd.to_datetime(curr_date)  # 当前日期
 
         # 设置数据范围：从15年前到今天
         # pd.DateOffset(years=15) 表示 15 年偏移

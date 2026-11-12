@@ -108,15 +108,14 @@
 # default_config 是项目中另一个模块，定义了基础的配置项（如数据源、缓存路径等）。
 # 【什么是 import as？】给模块起个短别名，后续用 default_config.DEFAULT_CONFIG
 # 来引用，比写完整路径更简洁。
-import tradingagents.default_config as default_config
-
 # 从 typing 模块导入 Dict 和 Optional 类型注解。
 # 【什么是类型注解？】给变量标注类型，方便人和 IDE 理解。Python 运行时不强制检查。
 # Dict: 用于声明字典类型，例如 Dict[str, int] 表示键为字符串、值为整数的字典。
 # Optional: 用于声明一个变量可以是某种类型或 None。
 #   例如 Optional[int] 等价于 int | None（Python 3.10+ 的联合类型语法）。
 #   Optional[X] 就是"X 类型或者 None"的意思。
-from typing import Dict, Optional
+
+import tradingagents.default_config as default_config
 
 # ---------------------------------------------------------------------------
 # 全局配置变量
@@ -133,7 +132,7 @@ from typing import Dict, Optional
 # 设计意图：
 #   使用 None 初始值实现"延迟初始化"——只有在真正需要配置时才加载默认值，
 #   避免在模块导入阶段就执行不必要的初始化操作。
-_config: Optional[Dict] = None
+_config: dict | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +183,7 @@ def initialize_config():
 # ---------------------------------------------------------------------------
 # 函数：set_config
 # ---------------------------------------------------------------------------
-def set_config(config: Dict):
+def set_config(config: dict):
     """
     更新配置：使用自定义配置覆盖或合并到全局配置中。
 
@@ -225,7 +224,7 @@ def set_config(config: Dict):
 # ---------------------------------------------------------------------------
 # 函数：get_config
 # ---------------------------------------------------------------------------
-def get_config() -> Dict:
+def get_config() -> dict:
     """
     获取当前配置：返回当前全局配置的副本。
 

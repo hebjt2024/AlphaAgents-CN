@@ -214,21 +214,18 @@
 #   为什么需要：在提示词模板中预留一个"历史消息插入位置"。
 #   解决什么问题：LLM 需要看到之前的对话历史才能理解上下文，
 #   MessagesPlaceholder 把整个消息列表"按原样"插入模板，保留每条消息的角色信息。
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-
-# 【time 模块】
-#   为什么需要：可能用于时间戳记录或性能测量。
-#   解决什么问题：在调试或日志中记录操作耗时。
-import time
-
 # 【json 模块】
 #   为什么需要：可能用于解析或生成 JSON 格式的数据。
 #   解决什么问题：LLM 返回的工具调用参数通常是 JSON 格式，
 #   需要解析后才能传给工具函数。
-import json
+
+# 【time 模块】
+#   为什么需要：可能用于时间戳记录或性能测量。
+#   解决什么问题：在调试或日志中记录操作耗时。
+
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 
 # --- 导入项目内部工具函数 ---
-
 # 【build_instrument_context】
 #   为什么需要：构建目标公司的上下文信息字符串。
 #   解决什么问题：某些交易所的股票代码包含后缀（如 .TO、.L），
@@ -247,6 +244,8 @@ import json
 #   这是一个被 @tool 装饰器标记的 LangChain 工具函数。
 from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
+    get_capital_flow,
+    get_dragon_tiger,
     get_indicators,
     get_stock_data,
 )
@@ -255,7 +254,6 @@ from tradingagents.agents.utils.agent_utils import (
 #   为什么需要：获取全局配置（如数据供应商选择、API 密钥等）。
 #   解决什么问题：系统支持多个数据供应商（如 Yahoo Finance、Alpha Vantage），
 #   通过配置来切换供应商，而不需要修改代码。
-from tradingagents.dataflows.config import get_config
 
 
 # =============================================================================
@@ -362,7 +360,7 @@ def create_market_analyst(llm):
         #    every tool call, report, and recommendation, preserving any
         #    exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."
         # 这段文字会被注入到系统提示词中，确保 LLM 使用正确的股票代码。
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # ====================================================================
         # 第二步：定义工具列表
@@ -390,6 +388,10 @@ def create_market_analyst(llm):
         tools = [
             get_stock_data,
             get_indicators,
+            # A 股资金面（主力资金流向 / 龙虎榜）。非 A 股标的调用会返回
+            # 无数据提示，由 LLM 自行忽略，不影响原有分析流程。
+            get_capital_flow,
+            get_dragon_tiger,
         ]
 
         # ====================================================================
@@ -550,7 +552,8 @@ MACD 相关：
 - vwma: VWMA（成交量加权移动平均）：以成交量加权的移动平均。用途：通过整合价格行为与成交量数据来确认趋势。提示：注意成交量异常激增导致的偏差结果，建议结合其他成交量分析。
 
 - 请选择能提供多样化且互补信息的指标，避免冗余（例如不要同时选择 rsi 和 stochrsi）。同时简要说明它们为何适合当前的市场环境。调用工具时，请使用上面提供的指标确切名称，因为它们是已定义的参数，否则调用会失败。请务必先调用 get_stock_data 获取生成指标所需的 CSV 数据，然后使用 get_indicators 并传入具体的指标名称。撰写一份极为详尽、细致的趋势观察报告，提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"""
-            + """ 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""
+            + """ 对于 A 股标的，如需要判断资金面强弱，请调用 get_capital_flow 获取主力资金流向；若个股近期出现异动，可调用 get_dragon_tiger 查看龙虎榜资金博弈。本次策略扫描结果已随上下文提供，请结合其中的策略信号（多头趋势、均线金叉、放量突破、缩量回踩、箱体、缠论/波浪等）作为技术面证据。
+请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""
         )
         # [英文备份] system_message (en):
         # system_message = (
@@ -610,7 +613,8 @@ MACD 相关：
                     " 如果你或任何其他助手得出了最终的交易提案：**买入/持有/卖出** 或可交付成果，"
                     " 请在回复开头加上前缀 FINAL TRANSACTION PROPOSAL: **买入/持有/卖出**，以便团队知道可以停止。"
                     " 你可以使用以下工具：{tool_names}。\n{system_message}"
-                    "供你参考，当前日期为 {current_date}。{instrument_context}",
+                    "供你参考，当前日期为 {current_date}。{instrument_context}"
+                    "\n\n本次策略扫描结果：\n{strategy_report}",
                 ),
         # [英文备份] 协作提示词 (en):
         # (
@@ -671,6 +675,10 @@ MACD 相关：
 
         # 填充 instrument_context 变量：填入公司上下文信息
         prompt = prompt.partial(instrument_context=instrument_context)
+        # 填入策略扫描结果（由 Strategy Scanner 节点提前生成）
+        prompt = prompt.partial(
+            strategy_report=state.get("strategy_report", "")
+        )
 
         # ====================================================================
         # 第六步：构建并执行 LangChain 链（LCEL 表达式）

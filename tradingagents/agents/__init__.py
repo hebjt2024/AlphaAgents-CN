@@ -88,38 +88,12 @@
 # "工厂函数"是一种设计模式：返回新创建的函数的函数
 # 在 LangChain 中，对话历史会不断增长，需要定期清理以控制 token 使用量
 # create_msg_delete 返回一个函数，该函数可以删除指定数量的历史消息
-from .utils.agent_utils import create_msg_delete
-
-# AgentState: 主智能体状态类，继承自 MessagesState，贯穿整个交易流程
-# 在 LangGraph 中，"状态"（State）是在图节点之间传递的数据容器
-# AgentState 包含：
-#   - messages：对话消息列表（分析师报告、研究员观点等）
-#   - company_of_interest：当前分析的股票代码
-#   - risk_debate_state：风险辩论的当前状态
-#   - investment_debate_state：投资辩论的当前状态
-#
-# InvestDebateState: 投资辩论状态，记录多头/空头辩论过程
-# 包含多头和空头的历次发言内容
-#
-# RiskDebateState: 风险辩论状态，记录激进/保守/中立三方辩论
-# 包含三种风险偏好分析师的历次发言内容
-from .utils.agent_states import AgentState, InvestDebateState, RiskDebateState
-
-# FinancialSituationMemory: 金融情景记忆系统，基于 BM25 算法进行相似度检索
-# 记忆系统的作用：
-#   1. 存储历史分析案例（股票代码 + 分析结果 + 实际收益）
-#   2. 当遇到类似股票时，检索相似案例作为参考
-#   3. 根据"反思"（reflect_and_remember）更新记忆
-# BM25 算法：一种文本相似度检索算法，用于快速找到最相似的历史案例
-from .utils.memory import FinancialSituationMemory
-
 # ---------------------------------------------------------------------------
 # 分析智能体（Analysts）导入
 # ---------------------------------------------------------------------------
 # 这四个分析智能体负责收集和分析不同类型的市场数据
 # 每个分析师使用 LLM 和工具集（toolkit）分析特定领域的数据
 # 分析结果以消息形式存入 AgentState.messages，供后续智能体使用
-
 # create_fundamentals_analyst: 创建基本面分析智能体
 # 分析公司财务报表（资产负债表、利润表、现金流量表）和估值指标
 # 数据来源：yfinance 或 alpha_vantage 的财务数据 API
@@ -140,13 +114,25 @@ from .analysts.news_analyst import create_news_analyst
 # 数据来源：Reddit、Twitter 等社交媒体平台的讨论
 from .analysts.social_media_analyst import create_social_media_analyst
 
+# create_portfolio_manager: 创建投资组合管理智能体
+# 管理整体投资组合，进行资产配置和风险控制
+# 在风险讨论结束后，总结三种风险偏好观点并给出风险评估
+from .managers.portfolio_manager import create_portfolio_manager
+
+# ---------------------------------------------------------------------------
+# 管理智能体（Managers）导入
+# ---------------------------------------------------------------------------
+# create_research_manager: 创建研究管理智能体
+# 协调研究团队的工作流，整合各方分析结果
+# 在多空辩论结束后，总结双方观点并给出研究结论
+from .managers.research_manager import create_research_manager
+
 # ---------------------------------------------------------------------------
 # 研究智能体（Researchers）导入
 # ---------------------------------------------------------------------------
 # 这两个研究智能体进行多空辩论，从不同角度审视投资机会
 # 多头和空头研究员交替发言，形成多轮辩论
 # 辩论结果由研究管理智能体总结
-
 # create_bear_researcher: 创建空头研究员智能体
 # 从悲观角度分析，寻找投资风险和负面因素
 # 会阅读分析师的数据，寻找看跌的理由
@@ -163,7 +149,6 @@ from .researchers.bull_researcher import create_bull_researcher
 # 这三个风险分析师从不同风险偏好角度评估投资决策
 # 激进、保守、中立三种观点形成风险讨论
 # 讨论结果由投资组合管理智能体总结
-
 # create_aggressive_debator: 创建激进型风险分析师
 # 倾向于承担更高风险以追求更高回报
 # 会关注收益潜力而非下行风险
@@ -178,25 +163,11 @@ from .risk_mgmt.conservative_debator import create_risk_conservative
 # 在风险和回报之间寻求平衡
 # 会综合考虑上行潜力和下行风险
 from .risk_mgmt.neutral_debator import create_risk_neutral
-
-# ---------------------------------------------------------------------------
-# 管理智能体（Managers）导入
-# ---------------------------------------------------------------------------
-
-# create_research_manager: 创建研究管理智能体
-# 协调研究团队的工作流，整合各方分析结果
-# 在多空辩论结束后，总结双方观点并给出研究结论
-from .managers.research_manager import create_research_manager
-
-# create_portfolio_manager: 创建投资组合管理智能体
-# 管理整体投资组合，进行资产配置和风险控制
-# 在风险讨论结束后，总结三种风险偏好观点并给出风险评估
-from .managers.portfolio_manager import create_portfolio_manager
+from .strategy_scanner import create_strategy_scanner_node
 
 # ---------------------------------------------------------------------------
 # 交易智能体（Trader）导入
 # ---------------------------------------------------------------------------
-
 # create_trader: 创建交易员智能体
 # 根据研究结果和风险管理建议，制定具体的交易执行方案
 # 这是分析流程的最后一个智能体，输出最终的买卖决策
@@ -206,6 +177,29 @@ from .managers.portfolio_manager import create_portfolio_manager
 #   - 建议的仓位大小
 from .trader.trader import create_trader
 
+# AgentState: 主智能体状态类，继承自 MessagesState，贯穿整个交易流程
+# 在 LangGraph 中，"状态"（State）是在图节点之间传递的数据容器
+# AgentState 包含：
+#   - messages：对话消息列表（分析师报告、研究员观点等）
+#   - company_of_interest：当前分析的股票代码
+#   - risk_debate_state：风险辩论的当前状态
+#   - investment_debate_state：投资辩论的当前状态
+#
+# InvestDebateState: 投资辩论状态，记录多头/空头辩论过程
+# 包含多头和空头的历次发言内容
+#
+# RiskDebateState: 风险辩论状态，记录激进/保守/中立三方辩论
+# 包含三种风险偏好分析师的历次发言内容
+from .utils.agent_states import AgentState, InvestDebateState, RiskDebateState
+from .utils.agent_utils import create_msg_delete
+
+# FinancialSituationMemory: 金融情景记忆系统，基于 BM25 算法进行相似度检索
+# 记忆系统的作用：
+#   1. 存储历史分析案例（股票代码 + 分析结果 + 实际收益）
+#   2. 当遇到类似股票时，检索相似案例作为参考
+#   3. 根据"反思"（reflect_and_remember）更新记忆
+# BM25 算法：一种文本相似度检索算法，用于快速找到最相似的历史案例
+from .utils.memory import FinancialSituationMemory
 
 # ---------------------------------------------------------------------------
 # __all__ 列表 - 定义包的公开接口
@@ -222,6 +216,7 @@ __all__ = [
     "FinancialSituationMemory",  # 金融情景记忆系统
     "AgentState",                # 主智能体状态
     "create_msg_delete",         # 消息删除工厂函数
+    "create_strategy_scanner_node",  # 策略扫描节点
     "InvestDebateState",         # 投资辩论状态
     "RiskDebateState",           # 风险辩论状态
 

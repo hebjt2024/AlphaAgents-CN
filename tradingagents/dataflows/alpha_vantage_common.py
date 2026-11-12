@@ -123,31 +123,6 @@
 # os.getenv() 方法可以获取系统环境变量的值
 # 用法：os.getenv("ALPHA_VANTAGE_API_KEY") 获取名为 ALPHA_VANTAGE_API_KEY 的环境变量
 # ---------------------------------------------------------------------------
-import os
-
-# ---------------------------------------------------------------------------
-# 导入 requests 库
-# 功能：发送 HTTP 请求，是 Python 中最流行的 HTTP 客户端库
-# 常用方法：
-#   - requests.get(url, params={})  : 发送 GET 请求
-#     requests.get 会自动把 params 字典拼接到 URL 后面
-#     例如 requests.get("https://api.com", params={"key":"123"})
-#     实际请求 URL 为 https://api.com?key=123
-#   - response.text                 : 获取响应文本（字符串）
-#   - response.raise_for_status()   : 检查 HTTP 状态码，非 2xx 则抛出异常
-# ---------------------------------------------------------------------------
-import requests
-
-# ---------------------------------------------------------------------------
-# 导入 pandas 库（别名 pd）
-# 功能：数据分析和处理的核心库，提供 DataFrame 和 Series 等数据结构
-# 这里主要用于：
-#   - pd.read_csv() : 解析 CSV 格式的字符串（需要配合 StringIO）
-#   - pd.to_datetime() : 将字符串转换为日期时间类型
-#   - DataFrame 的过滤和切片操作
-# ---------------------------------------------------------------------------
-import pandas as pd
-
 # ---------------------------------------------------------------------------
 # 导入 json 模块
 # 功能：编码和解码 JSON 数据
@@ -155,6 +130,7 @@ import pandas as pd
 # 例如 json.loads('{"name":"Apple"}') → {"name": "Apple"}
 # ---------------------------------------------------------------------------
 import json
+import os
 
 # ---------------------------------------------------------------------------
 # 导入 datetime 模块
@@ -172,6 +148,29 @@ from datetime import datetime
 # 示例：df = pd.read_csv(StringIO("col1,col2\n1,2\n3,4"))
 # ---------------------------------------------------------------------------
 from io import StringIO
+
+# ---------------------------------------------------------------------------
+# 导入 pandas 库（别名 pd）
+# 功能：数据分析和处理的核心库，提供 DataFrame 和 Series 等数据结构
+# 这里主要用于：
+#   - pd.read_csv() : 解析 CSV 格式的字符串（需要配合 StringIO）
+#   - pd.to_datetime() : 将字符串转换为日期时间类型
+#   - DataFrame 的过滤和切片操作
+# ---------------------------------------------------------------------------
+import pandas as pd
+
+# ---------------------------------------------------------------------------
+# 导入 requests 库
+# 功能：发送 HTTP 请求，是 Python 中最流行的 HTTP 客户端库
+# 常用方法：
+#   - requests.get(url, params={})  : 发送 GET 请求
+#     requests.get 会自动把 params 字典拼接到 URL 后面
+#     例如 requests.get("https://api.com", params={"key":"123"})
+#     实际请求 URL 为 https://api.com?key=123
+#   - response.text                 : 获取响应文本（字符串）
+#   - response.raise_for_status()   : 检查 HTTP 状态码，非 2xx 则抛出异常
+# ---------------------------------------------------------------------------
+import requests
 
 # =============================================================================
 # 常量定义
@@ -290,8 +289,10 @@ def format_datetime_for_api(date_input) -> str:
                 dt = datetime.strptime(date_input, "%Y-%m-%d %H:%M")
                 return dt.strftime("%Y%m%dT%H%M")
             except ValueError:
-                # 两种格式都失败，抛出明确的错误信息
-                raise ValueError(f"Unsupported date format: {date_input}")
+                # 如果格式解析失败，抛出明确的错误信息
+                raise ValueError(
+                    f"Unsupported date format: {date_input}"
+                ) from None
                 # f-string 中的 f 前缀表示格式化字符串，{date_input} 会被替换为实际值
                 # raise 抛出异常，程序中断在此处
 

@@ -75,9 +75,6 @@
 
 # AIMessage：LangChain 的 AI 回复消息类型
 # 虽然这里导入了但实际未直接使用（LLM.invoke 返回的就是 AIMessage）
-from langchain_core.messages import AIMessage
-import time
-import json
 
 
 # ============================================================================
@@ -196,7 +193,7 @@ def create_bear_researcher(llm, memory):
         # enumerate(past_memories, 1) 从 1 开始编号遍历
         # rec["recommendation"] 是每条记忆中的经验教训文本
         past_memory_str = ""
-        for i, rec in enumerate(past_memories, 1):
+        for _i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
         # ====================================================================

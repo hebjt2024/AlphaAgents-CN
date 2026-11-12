@@ -87,20 +87,22 @@
 
 # Optional: 类型注解，表示参数可以是某种类型或 None
 # 例如 Optional[str] 表示"字符串或 None"
-from typing import Optional
+
+# AnthropicClient: Anthropic（Claude）的客户端
+from .anthropic_client import AnthropicClient
+from .auth import ensure_provider_credentials
 
 # 从 base_client 模块导入基类 BaseLLMClient
 # 所有客户端都继承自这个基类，工厂返回的类型也是 BaseLLMClient
 # 【什么是相对导入？】from .xxx 中的点表示"当前包目录下"
 from .base_client import BaseLLMClient
 
+# GoogleClient: Google（Gemini）的客户端
+from .google_client import GoogleClient
+
 # 从各客户端模块导入具体实现
 # OpenAIClient: OpenAI 及兼容服务（Ollama、OpenRouter、xAI）的客户端
 from .openai_client import OpenAIClient
-# AnthropicClient: Anthropic（Claude）的客户端
-from .anthropic_client import AnthropicClient
-# GoogleClient: Google（Gemini）的客户端
-from .google_client import GoogleClient
 
 
 def create_llm_client(
@@ -113,7 +115,7 @@ def create_llm_client(
     # base_url: 可选的自定义 API 端点地址
     # 如果为 None，使用提供商的默认地址
     # 可以用它指定代理服务器或本地部署的模型服务
-    base_url: Optional[str] = None,
+    base_url: str | None = None,
 
     # **kwargs: 额外的提供商特定参数
     # 这些参数会原封不动地传给具体的客户端类
@@ -157,6 +159,12 @@ def create_llm_client(
     # 例如：用户输入 "OpenAI" 或 "openai" 都会被转成 "openai"
     # 这样后续比较时不用考虑大小写问题
     provider_lower = provider.lower()
+
+    # 提前校验 API Key，缺失时给出明确的中文配置提示，
+    # 而不是等到 SDK 调用时抛出 "Could not resolve authentication method"。
+    ensure_provider_credentials(
+        provider_lower, base_url, kwargs.get("api_key")
+    )
 
     # ---- OpenAI 兼容的提供商 ----
     # OpenAI、Ollama 和 OpenRouter 都使用兼容 OpenAI 的 API 格式

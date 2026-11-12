@@ -63,8 +63,6 @@
 #
 # ============================================================================
 
-import time
-import json
 
 
 # ============================================================================
@@ -149,7 +147,7 @@ def create_risk_aggressive(llm):
         history = risk_debate_state.get("history", "")
         aggressive_history = risk_debate_state.get("aggressive_history", "")
         latest_speaker = risk_debate_state.get("latest_speaker", "")
-        current_response = risk_debate_state.get("current_response", "")
+        risk_debate_state.get("current_response", "")
         current_neutral_response = risk_debate_state.get("current_neutral_response", "")
         current_conservative_response = risk_debate_state.get("current_conservative_response", "")
 

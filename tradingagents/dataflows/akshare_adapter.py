@@ -26,13 +26,22 @@ AkShare 数据供应商适配器
 
 import os
 import random
-import time
 import threading
+import time
 from datetime import datetime
-from typing import Annotated, Optional
+from typing import Annotated
 
 import pandas as pd
 from dateutil.relativedelta import relativedelta
+
+from .ashare_rules import (
+    contains_cjk,
+    exchange_of,
+    is_a_share_code,
+    normalize_code,
+    report_available_date,
+    risk_warnings,
+)
 
 # AkShare 是重量级可选依赖：缺失时模块仍可导入，
 # 便于在非 A 股场景、单元测试与文档生成环境中使用纯函数能力。
@@ -140,46 +149,46 @@ def _throttle_request():
 def _run_with_timeout(func, timeout: int = None):
     """
     在指定超时时间内执行函数。
-    
+
     使用线程实现超时机制，适用于Windows平台。
-    
+
     参数：
       func: 要执行的无参函数
       timeout: 超时时间（秒），默认使用 AKSHARE_TIMEOUT
-    
+
     返回：
       函数的返回值
-    
+
     异常：
       AkShareTimeoutError: 如果函数执行超时
     """
     if timeout is None:
         timeout = AKSHARE_TIMEOUT
-    
+
     result = [None]
     exception = [None]
-    
+
     def target():
         try:
             result[0] = func()
         except Exception as e:
             exception[0] = e
-    
+
     thread = threading.Thread(target=target)
     thread.daemon = True
     thread.start()
     thread.join(timeout=timeout)
-    
+
     if thread.is_alive():
         # 线程仍在运行，说明超时了
         raise AkShareTimeoutError(
             f"AkShare API 请求超时（{timeout}秒）。"
             f"可能是网络问题或东方财富服务器响应缓慢。"
         )
-    
+
     if exception[0] is not None:
         raise exception[0]
-    
+
     return result[0]
 
 
@@ -224,13 +233,13 @@ def retry_with_backoff(
         max_delay = AKSHARE_MAX_DELAY
     if timeout is None:
         timeout = AKSHARE_TIMEOUT
-    
+
     def execute_with_timeout():
         if use_timeout:
             return _run_with_timeout(func, timeout)
         else:
             return func()
-    
+
     last_exception = None
     for attempt in range(max_retries + 1):
         try:
@@ -511,32 +520,31 @@ def resolve_stock_name(symbol: str) -> str:
     返回：
       6 位数字代码（A 股）或原始字符串（美股等）
     """
-    symbol = symbol.strip()
+    symbol = (symbol or "").strip()
+    if not symbol:
+        return ""
 
-    # 1. 去掉常见前缀 sh/sz/bj
-    if symbol.lower().startswith(("sh", "sz", "bj")) and len(symbol) == 8:
-        return symbol[2:]
+    # 1. 纯代码 / 带前缀 / 带后缀：交给纯函数处理，不触网
+    #    覆盖 600519、sh600519、sh.600519、600519.SH、600519.SS、600519.XSHG 等写法
+    code = normalize_code(symbol)
+    if code:
+        return code
 
-    # 2. 去掉 .SZ / .SS / .SH 后缀（yfinance 格式，如 "000878.SZ"）
-    if "." in symbol:
-        parts = symbol.split(".")
-        if parts[0].isdigit() and len(parts[0]) == 6:
-            return parts[0]
-
-    # 3. 已经是 6 位纯数字
-    if symbol.isdigit() and len(symbol) == 6:
-        return symbol
-
-    # 4. 中文名称 → 先查内置映射表
+    # 2. 中文名称 → 先查内置映射表
     if symbol in _CHINESE_NAME_MAP:
         return _CHINESE_NAME_MAP[symbol]
 
-    # 5. 中文名称 → 查 AkShare 实时数据
-    names = _load_akshare_names()
-    if symbol in names:
-        return names[symbol]
+    # 3. 仅当输入看起来是中文名称时，才查 AkShare 实时名称表。
+    #    这样 is_a_share("NVDA") 之类的判断不会因为查询名称表而发起网络请求。
+    if contains_cjk(symbol):
+        try:
+            names = _load_akshare_names()
+        except Exception:
+            names = {}
+        if symbol in names:
+            return names[symbol]
 
-    # 6. 无法识别，返回原始字符串（可能是美股等）
+    # 4. 无法识别，返回原始字符串（可能是美股等）
     return symbol
 
 
@@ -563,22 +571,34 @@ def normalize_symbol(symbol: str) -> str:
     return resolve_stock_name(symbol)
 
 
+def _fast_code(symbol: str) -> str:
+    """尽最大努力把输入转成 A 股代码，且对非中文输入绝不触网。"""
+    code = normalize_code(symbol)
+    if code:
+        return code
+    if contains_cjk(symbol):
+        return resolve_stock_name(symbol)
+    return ""
+
+
 def is_a_share(symbol: str) -> bool:
-    """判断是否为 A 股代码"""
-    normalized = normalize_symbol(symbol)
-    return normalized.isdigit() and len(normalized) == 6
+    """判断是否为 A 股代码（排除沪深 B 股与港美股）。"""
+    return is_a_share_code(_fast_code(symbol))
 
 
 def is_shanghai(symbol: str) -> bool:
-    """判断是否为上海交易所股票 (60xxxx, 68xxxx)"""
-    normalized = normalize_symbol(symbol)
-    return normalized.startswith("60") or normalized.startswith("68")
+    """判断是否为上海交易所股票（60/601/603/605/688/689 开头）。"""
+    return exchange_of(_fast_code(symbol)) == "sh"
 
 
 def is_shenzhen(symbol: str) -> bool:
-    """判断是否为深圳交易所股票 (00xxxx, 30xxxx)"""
-    normalized = normalize_symbol(symbol)
-    return normalized.startswith("00") or normalized.startswith("30")
+    """判断是否为深圳交易所股票（00/001/002/003/300/301 开头）。"""
+    return exchange_of(_fast_code(symbol)) == "sz"
+
+
+def is_beijing(symbol: str) -> bool:
+    """判断是否为北京交易所股票（4/8 开头）。"""
+    return exchange_of(_fast_code(symbol)) == "bj"
 
 
 # ============================================================================
@@ -601,18 +621,17 @@ def to_iso_date(date_str: str) -> str:
 
 def _to_sina_symbol(code: str) -> str:
     """
-    将 6 位纯数字代码转换为新浪接口所需的带前缀格式。
+    将 6 位纯数字代码转换为新浪 / 腾讯接口所需的带前缀格式。
 
-    新浪接口（stock_zh_a_daily）要求代码带交易所前缀：
       - 上海交易所（60xxxx / 68xxxx）→ sh + 代码，如 sh601118
       - 深圳交易所（00xxxx / 30xxxx）→ sz + 代码，如 sz000001
+      - 北京交易所（4xxxxx / 8xxxxx）→ bj + 代码，如 bj830799
     """
-    if is_shanghai(code):
-        return "sh" + code
-    elif is_shenzhen(code):
-        return "sz" + code
-    # 默认当作上海，避免接口报错
-    return "sh" + code
+    exchange = exchange_of(code)
+    if exchange in ("sh", "sz", "bj"):
+        return exchange + code
+    # 非 A 股代码原样返回，交由调用方处理
+    return code
 
 
 def _normalize_columns(df: "pd.DataFrame", column_map: dict) -> "pd.DataFrame":
@@ -627,6 +646,37 @@ def _normalize_columns(df: "pd.DataFrame", column_map: dict) -> "pd.DataFrame":
     """
     keep = [c for c in column_map if c in df.columns]
     return df[keep].rename(columns=column_map).copy()
+
+
+_HIST_PRICE_COLUMNS = ("开盘", "最高", "最低", "收盘", "成交量")
+
+
+def _finalize_hist(df: "pd.DataFrame") -> "pd.DataFrame":
+    """统一历史行情：日期解析、数值化、升序、去重、丢弃无效行。
+
+    这是 A 股行情链路的关键清洗步骤：
+      - 不同数据源（东财/新浪/腾讯）返回的日期类型和顺序不一致；
+      - 成交量可能以字符串返回；
+      - 停牌或异常行可能出现空收盘价。
+    不统一清洗会直接导致技术指标与回测结果错误。
+    """
+    if df is None or df.empty or "日期" not in df.columns or "收盘" not in df.columns:
+        return pd.DataFrame()
+
+    out = df.copy()
+    out["日期"] = pd.to_datetime(out["日期"], errors="coerce")
+    for column in _HIST_PRICE_COLUMNS:
+        if column in out.columns:
+            out[column] = pd.to_numeric(out[column], errors="coerce")
+
+    out = out.dropna(subset=["日期", "收盘"])
+    out = out[out["收盘"] > 0]
+    out = out.sort_values("日期").drop_duplicates(subset=["日期"], keep="last")
+    if out.empty:
+        return pd.DataFrame()
+
+    out["日期"] = out["日期"].dt.strftime("%Y-%m-%d")
+    return out.reset_index(drop=True)
 
 
 def get_stock_hist_with_fallback(
@@ -691,7 +741,14 @@ def get_stock_hist_with_fallback(
             "收盘": "收盘",
             "成交量": "成交量",
         }
-        return _normalize_columns(df, em_map)
+        normalized = _finalize_hist(_normalize_columns(df, em_map))
+        if not normalized.empty:
+            return normalized
+
+    # 北交所：新浪 / 腾讯历史接口目前不提供北交所数据，
+    # 直接返回空，避免两次无谓的网络请求与等待。
+    if is_beijing(code):
+        return pd.DataFrame()
 
     # ------------------------------------------------------------------
     # 第 2 级：新浪财经（备选源 1）
@@ -721,7 +778,9 @@ def get_stock_hist_with_fallback(
             "close": "收盘",
             "volume": "成交量",
         }
-        return _normalize_columns(df_sina, sina_map)
+        normalized = _finalize_hist(_normalize_columns(df_sina, sina_map))
+        if not normalized.empty:
+            return normalized
 
     # ------------------------------------------------------------------
     # 第 3 级：腾讯财经（备选源 2）
@@ -754,7 +813,9 @@ def get_stock_hist_with_fallback(
             "close": "收盘",
             "amount": "成交量",
         }
-        return _normalize_columns(df_tx, tx_map)
+        normalized = _finalize_hist(_normalize_columns(df_tx, tx_map))
+        if not normalized.empty:
+            return normalized
 
     # 三个数据源全部失败，返回空 DataFrame，由调用方处理
     return pd.DataFrame()
@@ -763,6 +824,47 @@ def get_stock_hist_with_fallback(
 # ============================================================================
 # 1. 股票历史数据
 # ============================================================================
+
+def _missing_trading_days_note(
+    start_date: str, end_date: str, dates: list
+) -> str:
+    """对比交易日历与实际行情日期，提示停牌/无成交/数据缺失。
+
+    只在用户请求的行情区间内做检查，帮助 LLM 意识到“少了的交易日”
+    可能意味着停牌，而不是直接当作连续行情分析。
+    """
+    try:
+        from datetime import timedelta as _timedelta
+
+        from .trade_calendar import is_cn_trading_day
+
+        start = datetime.strptime(start_date, "%Y-%m-%d").date()
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    except Exception:
+        return ""
+
+    if end < start:
+        return ""
+
+    expected = 0
+    cursor = start
+    while cursor <= end:
+        try:
+            if is_cn_trading_day(cursor.isoformat()):
+                expected += 1
+        except Exception:
+            return ""
+        cursor += _timedelta(days=1)
+
+    actual = len({str(d) for d in dates})
+    missing = expected - actual
+    if expected > 0 and missing > 0:
+        return (
+            f"# 注意: 区间内 {missing}/{expected} 个交易日无数据"
+            "（可能停牌、无成交或数据源缺失）\n"
+        )
+    return ""
+
 
 def get_akshare_stock(
     symbol: Annotated[str, "股票代码，如 000001, 600000"],
@@ -821,7 +923,11 @@ def get_akshare_stock(
 
         header = f"# Stock data for {code} from {start_date} to {end_date}\n"
         header += f"# Total records: {len(df_out)}\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        header += _missing_trading_days_note(
+            start_date, end_date, df_out["Date"].tolist()
+        )
+        header += "\n"
 
         return header + csv_string
 
@@ -893,9 +999,12 @@ def get_akshare_indicators(
         curr_date_dt = datetime.strptime(curr_date, "%Y-%m-%d")
         before = curr_date_dt - relativedelta(days=look_back_days)
 
-        # 获取足够长的历史数据用于指标计算
-        # 需要回溯天数的 2 倍（确保指标有足够的数据点）
-        data_start = (before - relativedelta(days=look_back_days * 3)).strftime("%Y%m%d")
+        # 获取足够长的历史数据用于指标计算。
+        # 长周期指标（如 close_200_sma）需要至少 200 个交易日，约 280 个自然日；
+        # 默认 look_back_days=30 时，原逻辑只多取 90 天，远不足以计算 200 SMA。
+        # 这里至少多取 400 个自然日，保证常见长周期指标都能得到有效值。
+        history_extra_days = max(look_back_days * 3, 400)
+        data_start = (before - relativedelta(days=history_extra_days)).strftime("%Y%m%d")
         data_end = to_ak_date(curr_date)
 
         # 获取历史行情（带多数据源容错：东方财富 → 新浪）
@@ -914,9 +1023,10 @@ def get_akshare_indicators(
             "成交量": "Volume",
         })
 
-        df["Date"] = pd.to_datetime(df["Date"])
-        df = df.sort_values("Date")
-        df["Date"] = df["Date"].dt.strftime("%Y-%m-%d")
+        # stockstats 在 wrap 时按日期排序会更稳定，这里保留 datetime 类型，
+        # 与 yfinance 链路（stockstats_utils._clean_dataframe）保持一致。
+        df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+        df = df.dropna(subset=["Date"]).sort_values("Date")
 
         # 用 stockstats 包装并计算指标
         stock_df = wrap(df)
@@ -927,10 +1037,11 @@ def get_akshare_indicators(
         indicator_data = {}
         for _, row in stock_df.iterrows():
             val = row[indicator]
+            date_key = pd.Timestamp(row["Date"]).strftime("%Y-%m-%d")
             if pd.isna(val):
-                indicator_data[str(row["Date"])] = "N/A"
+                indicator_data[date_key] = "N/A"
             else:
-                indicator_data[str(row["Date"])] = str(round(float(val), 4))
+                indicator_data[date_key] = str(round(float(val), 4))
 
         # 生成日期范围内的结果
         current_dt = curr_date_dt
@@ -960,6 +1071,189 @@ def get_akshare_indicators(
 # 3. 基本面数据
 # ============================================================================
 
+# 全市场快照缓存：stock_zh_a_spot_em() 一次返回所有股票，
+# 但调用较慢且容易触发限流，因此做 5 分钟进程内缓存。
+_SPOT_SNAPSHOT_CACHE = {"ts": 0.0, "df": None}
+_SPOT_SNAPSHOT_TTL = 300.0
+
+
+def _get_spot_snapshot():
+    """获取东方财富 A 股全市场快照（带短时缓存）。"""
+    _require_akshare()
+    now = time.time()
+    cached = _SPOT_SNAPSHOT_CACHE.get("df")
+    if cached is not None and (now - _SPOT_SNAPSHOT_CACHE.get("ts", 0)) < _SPOT_SNAPSHOT_TTL:
+        return cached
+
+    df = retry_with_backoff(
+        lambda: ak.stock_zh_a_spot_em(),
+        max_retries=2,
+        base_delay=AKSHARE_BASE_DELAY,
+    )
+    _SPOT_SNAPSHOT_CACHE["df"] = df
+    _SPOT_SNAPSHOT_CACHE["ts"] = now
+    return df
+
+
+def _find_code_column(df) -> str:
+    """在 AkShare DataFrame 中寻找股票代码列。"""
+    for col in ("代码", "code", "symbol"):
+        if col in df.columns:
+            return col
+    return None
+
+
+def _format_amount(value):
+    """把金额格式化为亿元/万元，便于 LLM 理解。"""
+    if value is None:
+        return None
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(v) >= 1e8:
+        return f"{v / 1e8:.2f} 亿元"
+    if abs(v) >= 1e4:
+        return f"{v / 1e4:.2f} 万元"
+    return f"{v:.2f}"
+
+
+# 关键指标缓存：stock_financial_abstract 需要逐年份抓取，耗时可达 1 分钟，
+# 因此按股票代码缓存 1 小时，避免同一分析中反复请求。
+_ABSTRACT_CACHE = {}
+_ABSTRACT_TTL = 3600.0
+
+
+def _fetch_abstract_metrics(code: str, curr_date: str = None) -> dict:
+    """
+    从新浪《关键指标》接口提取最近一期已披露的财务指标。
+
+    stock_financial_abstract 返回的列是报告期（如 20250930），
+    这里只选择 <= curr_date 的最新一期，避免使用未来报告。
+    """
+    cache_key = (code, str(curr_date or ""))
+    now = time.time()
+    cached = _ABSTRACT_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _ABSTRACT_TTL:
+        return dict(cached[1])
+
+    df = retry_with_backoff(
+        lambda: ak.stock_financial_abstract(symbol=code),
+        max_retries=1,
+        base_delay=AKSHARE_BASE_DELAY,
+    )
+    if df is None or df.empty or "指标" not in df.columns:
+        _ABSTRACT_CACHE[cache_key] = (now, {})
+        return {}
+
+    # 按“报告期 + 法定披露截止日”过滤，避免使用分析日尚未披露的财报。
+    cutoff_iso = str(curr_date)[:10] if curr_date else None
+    date_cols = [c for c in df.columns if str(c).isdigit() and len(str(c)) == 8]
+    eligible = []
+    for column in date_cols:
+        if cutoff_iso:
+            available = report_available_date(column)
+            if not available or available > cutoff_iso:
+                continue
+        eligible.append(column)
+    if not eligible:
+        _ABSTRACT_CACHE[cache_key] = (now, {})
+        return {}
+
+    latest_col = max(eligible, key=lambda c: str(c))
+    metrics = {}
+    for _, row in df.iterrows():
+        name = str(row.get("指标", "")).strip()
+        if not name:
+            continue
+        value = row.get(latest_col)
+        if value is None or pd.isna(value):
+            continue
+        # 同名指标可能出现在多个“选项”分组中，优先保留“常用指标”
+        if name not in metrics or str(row.get("选项", "")) == "常用指标":
+            metrics[name] = value
+    metrics["_report_date"] = str(latest_col)
+    _ABSTRACT_CACHE[cache_key] = (now, dict(metrics))
+    return metrics
+
+
+# 历史估值缓存：乐咕估值接口一次返回全部历史，按 (code, curr_date) 缓存 1 小时
+_VALUATION_CACHE = {}
+_VALUATION_TTL = 3600.0
+
+
+def _fetch_historical_valuation(code: str, curr_date: str = None) -> dict:
+    """获取分析日及之前的估值指标（PE-TTM / PB）。
+
+    使用百度股市通历史估值接口（ak.stock_zh_valuation_baidu）。
+    相比实时快照，历史估值能避免把"今天"的 PE/PB 用到历史时点分析中。
+    接口不可用时返回空字典，由调用方退回实时快照。
+    """
+    cache_key = (code, str(curr_date or ""))
+    now = time.time()
+    cached = _VALUATION_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _VALUATION_TTL:
+        return dict(cached[1])
+
+    fetch = getattr(ak, "stock_zh_valuation_baidu", None)
+    if fetch is None:
+        _VALUATION_CACHE[cache_key] = (now, {})
+        return {}
+
+    cutoff = None
+    period = "近一年"
+    if curr_date:
+        try:
+            cutoff = pd.to_datetime(curr_date, errors="coerce")
+        except Exception:
+            cutoff = None
+        if cutoff is not None and pd.notna(cutoff):
+            # 按分析日距今天数选择最小可用区间，减少分页请求与日志噪音
+            days = (pd.Timestamp.now().normalize() - cutoff.normalize()).days
+            if days > 365 * 5:
+                period = "全部"
+            elif days > 365 * 3:
+                period = "近五年"
+            elif days > 365:
+                period = "近三年"
+
+    result: dict = {}
+    for indicator, label in (("市盈率(TTM)", "市盈率-TTM"), ("市净率", "市净率")):
+        try:
+            df = retry_with_backoff(
+                lambda ind=indicator, p=period: fetch(
+                    symbol=code, indicator=ind, period=p
+                ),
+                max_retries=1,
+                base_delay=AKSHARE_BASE_DELAY,
+            )
+        except Exception:
+            continue
+        if df is None or df.empty or "date" not in df.columns:
+            continue
+
+        work = pd.DataFrame(
+            {
+                "date": pd.to_datetime(df["date"], errors="coerce"),
+                "value": pd.to_numeric(df["value"], errors="coerce"),
+            }
+        ).dropna()
+        if cutoff is not None and pd.notna(cutoff):
+            work = work[work["date"] <= cutoff]
+        if work.empty:
+            continue
+
+        row = work.sort_values("date").iloc[-1]
+        result[label] = round(float(row["value"]), 4)
+        result.setdefault(
+            "_valuation_date",
+            pd.Timestamp(row["date"]).strftime("%Y-%m-%d"),
+        )
+
+    _VALUATION_CACHE[cache_key] = (now, dict(result))
+    return result
+
+
 def get_akshare_fundamentals(
     ticker: Annotated[str, "股票代码"],
     curr_date: Annotated[str, "当前日期"] = None,
@@ -967,61 +1261,106 @@ def get_akshare_fundamentals(
     """
     获取 A 股公司基本面数据概览。
 
-    调用 AkShare 的 stock_individual_info_em() 接口（东方财富数据源）。
-    返回格式与 yfinance 的 get_fundamentals 一致。
+    数据来源（多接口合并，任一失败不影响其他部分）：
+      1. stock_individual_info_em：股票简称/行业/上市时间/股本
+      2. stock_zh_a_spot_em：市盈率/市净率/总市值/流通市值/换手率/量比
+      3. stock_financial_abstract：ROE/毛利率/净利率/资产负债率/EPS 等
 
-    返回示例：
-      # Company Fundamentals for 000001
-      # Data retrieved on: 2024-07-16 15:30:00
-
-      总市值: 150000000000
-      流通市值: 120000000000
-      行业: 银行
-      市盈率: 5.23
-      ...
+    注意：旧实现只调用 stock_individual_info_em，但该接口并不返回
+    市盈率、市净率、营收、净利润、ROE 等字段，导致基本面报告大面积缺失。
     """
     _require_akshare()
 
     try:
         code = normalize_symbol(ticker)
 
-        # 使用重试机制获取基本面数据
-        df = retry_with_backoff(
-            lambda: ak.stock_individual_info_em(symbol=code),
-            max_retries=AKSHARE_MAX_RETRIES,
-            base_delay=AKSHARE_BASE_DELAY,
-        )
+        # ---- 1. 公司概况 ----
+        info_dict = {}
+        try:
+            df = retry_with_backoff(
+                lambda: ak.stock_individual_info_em(symbol=code),
+                max_retries=AKSHARE_MAX_RETRIES,
+                base_delay=AKSHARE_BASE_DELAY,
+            )
+            if df is not None and not df.empty and {"item", "value"}.issubset(df.columns):
+                for _, row in df.iterrows():
+                    info_dict[str(row["item"])] = row["value"]
+        except Exception:
+            info_dict = {}
 
-        if df.empty:
+        # ---- 2. 实时估值快照 ----
+        spot = {}
+        try:
+            spot_df = _get_spot_snapshot()
+            code_col = _find_code_column(spot_df)
+            if spot_df is not None and not spot_df.empty and code_col:
+                matched = spot_df[
+                    spot_df[code_col].astype(str).str.zfill(6) == code
+                ]
+                if not matched.empty:
+                    spot = matched.iloc[0].to_dict()
+        except Exception:
+            spot = {}
+
+        # ---- 3. 最近一期财务关键指标 ----
+        abstract = {}
+        try:
+            abstract = _fetch_abstract_metrics(code, curr_date)
+        except Exception:
+            abstract = {}
+
+        # ---- 4. 分析日历史估值（避免把实时 PE/PB 用到历史时点）----
+        # 仅当分析日早于今天时才请求历史估值：当天/无日期时实时快照即可，
+        # 从而避免每次分析都多打一次重量级接口。
+        valuation = {}
+        _today = datetime.now().strftime("%Y-%m-%d")
+        if curr_date and str(curr_date)[:10] < _today:
+            try:
+                valuation = _fetch_historical_valuation(code, curr_date)
+            except Exception:
+                valuation = {}
+
+        if not info_dict and not spot and not abstract and not valuation:
             return f"No fundamentals data found for '{ticker}'"
 
-        # stock_individual_info_em 返回 DataFrame，列 ["item", "value"]
-        # 转为字典方便查询
-        info_dict = {}
-        if "item" in df.columns and "value" in df.columns:
-            for _, row in df.iterrows():
-                info_dict[str(row["item"])] = str(row["value"])
+        def pick(*names):
+            """按 valuation -> spot -> info -> abstract 的优先级取第一个有效值。"""
+            for name in names:
+                for source in (valuation, spot, info_dict, abstract):
+                    if name in source:
+                        value = source[name]
+                        if value is not None and value != "" and value != "-":
+                            return value
+            return None
 
-        # 构建与 yfinance 类似的字段列表
         field_map = [
-            ("总市值", info_dict.get("总市值", None)),
-            ("流通市值", info_dict.get("流通市值", None)),
-            ("行业", info_dict.get("行业", None)),
-            ("市盈率-动态", info_dict.get("市盈率-动态", None)),
-            ("市净率", info_dict.get("市净率", None)),
-            ("每股收益", info_dict.get("每股收益", None)),
-            ("每股净资产", info_dict.get("每股净资产", None)),
-            ("营业收入", info_dict.get("营业收入", None)),
-            ("净利润", info_dict.get("净利润", None)),
-            ("净利润同比增长率", info_dict.get("净利润同比增长率", None)),
-            ("毛利率", info_dict.get("毛利率", None)),
-            ("净利率", info_dict.get("净利率", None)),
-            ("净资产收益率", info_dict.get("净资产收益率", None)),
-            ("资产负债率", info_dict.get("资产负债率", None)),
-            ("每股经营现金流", info_dict.get("每股经营现金流", None)),
-            ("上市时间", info_dict.get("上市时间", None)),
-            ("总股本", info_dict.get("总股本", None)),
-            ("流通股", info_dict.get("流通股", None)),
+            ("股票名称", pick("股票简称", "名称")),
+            ("行业", pick("行业")),
+            ("报告期", abstract.get("_report_date")),
+            ("估值日期", valuation.get("_valuation_date")),
+            ("总市值", _format_amount(pick("总市值"))),
+            ("流通市值", _format_amount(pick("流通市值"))),
+            ("市盈率(TTM)", pick("市盈率-TTM", "市盈率-动态", "市盈率")),
+            ("市净率", pick("市净率")),
+            ("市销率(TTM)", pick("市销率-TTM")),
+            ("股息率(TTM)", pick("股息率-TTM")),
+            ("换手率", pick("换手率")),
+            ("量比", pick("量比")),
+            ("60日涨跌幅", pick("60日涨跌幅")),
+            ("基本每股收益", pick("基本每股收益", "摊薄每股收益_最新股数")),
+            ("每股净资产", pick("每股净资产", "每股净资产_最新股数")),
+            ("营业总收入", _format_amount(pick("营业总收入"))),
+            ("归母净利润", _format_amount(pick("归母净利润", "净利润"))),
+            ("营业总收入增长率", pick("营业总收入增长率")),
+            ("归母净利润增长率", pick("归属母公司净利润增长率")),
+            ("毛利率", pick("毛利率")),
+            ("销售净利率", pick("销售净利率", "净利率")),
+            ("净资产收益率(ROE)", pick("净资产收益率(ROE)", "净资产收益率")),
+            ("资产负债率", pick("资产负债率")),
+            ("每股经营现金流", pick("每股经营现金流", "每股现金流")),
+            ("上市时间", pick("上市时间")),
+            ("总股本", pick("总股本")),
+            ("流通股", pick("流通股")),
         ]
 
         lines = []
@@ -1029,8 +1368,31 @@ def get_akshare_fundamentals(
             if value is not None:
                 lines.append(f"{label}: {value}")
 
+        # A 股特有风险提示（ST/退市/板块涨跌幅限制）
+        stock_name = pick("股票简称", "名称")
+        for warning in risk_warnings(code, str(stock_name) if stock_name else ""):
+            lines.append(f"风险提示: {warning}")
+
+        # 历史分析时明确提示哪些字段是实时快照，避免被误当作历史值
+        today = datetime.now().strftime("%Y-%m-%d")
+        if curr_date and str(curr_date)[:10] < today:
+            if valuation:
+                lines.append(
+                    "数据说明: PE/PB/市销率/股息率已使用分析日及之前的历史估值；"
+                    "市值/换手率/量比等仍为当前实时快照。"
+                )
+            else:
+                lines.append(
+                    "数据说明: 市值/PE/PB/换手率等来自当前实时快照，"
+                    "并非分析日历史值，历史时点判断请谨慎使用。"
+                )
+
         header = f"# Company Fundamentals for {code}\n"
-        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
+        header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        header += (
+            "# Sources: AkShare (stock_individual_info_em / stock_zh_a_spot_em / "
+            "stock_financial_abstract / stock_zh_valuation_baidu)\n\n"
+        )
 
         return header + "\n".join(lines)
 
@@ -1087,25 +1449,25 @@ def _fetch_financial_statement_ths(
     if df is None or df.empty:
         return f"No {statement_name.lower()} data found for '{code}'"
 
-    # 按报告期过滤：只保留 curr_date 之前已发布的报告
-    # 同花顺数据中"报告期"列在"按年度"模式下是 int，在"按报告期"模式下是 str
+    # 按“报告期 + 法定披露截止日”过滤，避免使用分析日尚未披露的报告。
+    # 同花顺数据中"报告期"列在"按年度"模式下是 int，在"按报告期"模式下是 str。
     if curr_date:
+        cutoff_iso = str(curr_date)[:10]
         try:
-            if indicator == "按年度":
-                # 年度模式：报告期是年份整数，curr_date 取年份比较
-                curr_year = int(curr_date[:4])
-                df = df[df["报告期"] <= curr_year]
-            else:
-                # 报告期模式：报告期是 "YYYY-MM-DD" 字符串
-                # 注意：报告期是统计截止日（如 2025-12-31），不是发布日
-                # 但为了简化，我们用报告期 <= curr_date 过滤
-                # （curr_date=2026-07-21 时，2025-12-31 的年报通常已发布）
-                df = df[df["报告期"] <= curr_date]
+            mask = []
+            for value in df["报告期"].tolist():
+                available = report_available_date(value)
+                mask.append(bool(available) and available <= cutoff_iso)
+            df = df[mask]
         except Exception:
             # 过滤失败时不影响主流程，返回全部数据
             pass
 
-    # 限制返回的报告期数量（从最新的开始取），避免输出过大
+    # 报告期按从新到旧排序，再限制数量，避免输出过大且保证顺序稳定
+    try:
+        df = df.sort_values("报告期", ascending=False)
+    except Exception:
+        pass
     if len(df) > max_periods:
         df = df.head(max_periods)
 
@@ -1116,7 +1478,7 @@ def _fetch_financial_statement_ths(
 
     header = f"# {statement_name} data for {code} ({freq})\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    header += f"# Source: AkShare (同花顺数据源)\n"
+    header += "# Source: AkShare (同花顺数据源)\n"
     header += f"# Reports: {len(df)} periods\n\n"
 
     return header + csv_string
@@ -1286,6 +1648,402 @@ def get_akshare_insider_transactions(
 
 
 # ============================================================================
+# 7.5 资金流向（主力资金）
+# ============================================================================
+
+def get_akshare_capital_flow(
+    ticker: Annotated[str, "股票代码"],
+    curr_date: Annotated[str, "当前日期，格式 YYYY-MM-DD"] = None,
+    look_back_days: Annotated[int, "回溯交易日数量"] = 20,
+) -> str:
+    """获取 A 股个股资金流向（主力 / 超大单 / 大单等）。
+
+    数据源：东方财富（ak.stock_individual_fund_flow）。
+    当个股接口不可用时，回退到全市场资金流排行（stock_individual_fund_flow_rank）
+    并按代码过滤，保证北交所等特殊标的也能尽量返回数据。
+    """
+    _require_akshare()
+
+    code = normalize_symbol(ticker)
+    if not is_a_share_code(code):
+        return f"'{ticker}' 不是 A 股标的，无资金流向数据"
+
+    exchange = exchange_of(code)
+    df = None
+
+    # 主数据源：个股资金流（沪深）
+    if exchange in ("sh", "sz"):
+        try:
+            df = retry_with_backoff(
+                lambda: ak.stock_individual_fund_flow(stock=code, market=exchange),
+                max_retries=2,
+                base_delay=AKSHARE_BASE_DELAY,
+            )
+        except Exception:
+            df = None
+
+    # 兜底：全市场资金流排行（覆盖北交所 / 个股接口异常）
+    if df is None or df.empty:
+        try:
+            rank = retry_with_backoff(
+                lambda: ak.stock_individual_fund_flow_rank(indicator="今日"),
+                max_retries=1,
+                base_delay=AKSHARE_BASE_DELAY,
+            )
+            if rank is not None and not rank.empty:
+                code_col = _find_code_column(rank)
+                if code_col:
+                    matched = rank[
+                        rank[code_col].astype(str).str.zfill(6) == code
+                    ]
+                    if not matched.empty:
+                        df = matched
+        except Exception:
+            df = None
+
+    if df is None or df.empty:
+        return f"No capital flow data found for '{ticker}'"
+
+    df = df.copy()
+
+    # 按日期过滤并按时间倒序（最新的在前）
+    date_col = next((c for c in ("日期", "date") if c in df.columns), None)
+    if not date_col and curr_date:
+        # 兜底的资金流排行没有日期列，只能代表“当前快照”。
+        # 历史分析时禁止使用，避免未来数据泄漏。
+        try:
+            cutoff = datetime.strptime(str(curr_date)[:10], "%Y-%m-%d").date()
+        except ValueError:
+            cutoff = None
+        if cutoff is not None and cutoff < datetime.now().date():
+            return (
+                f"No capital flow data found for '{ticker}' "
+                f"before {curr_date} (source only provides current snapshot)"
+            )
+    if date_col:
+        df["_date"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["_date"]).sort_values("_date", ascending=False)
+        if curr_date:
+            cutoff = pd.to_datetime(curr_date, errors="coerce")
+            if pd.notna(cutoff):
+                # 严格只保留分析日及之前的数据：
+                # 资金流接口通常只返回最近约 100 个交易日，
+                # 若请求的是更早的历史日期，必须返回“无数据”，
+                # 绝不能把当前/未来数据交给 LLM（会造成未来函数与误导）。
+                filtered = df[df["_date"] <= cutoff]
+                if filtered.empty:
+                    return (
+                        f"No capital flow data found for '{ticker}' "
+                        f"before {curr_date} (source only keeps recent data)"
+                    )
+                df = filtered
+
+    df = df.head(max(1, int(look_back_days)))
+    if df.empty:
+        return f"No capital flow data found for '{ticker}' before {curr_date}"
+
+    # 汇总主力资金净流入
+    summary_lines = []
+    main_col = next(
+        (
+            c
+            for c in df.columns
+            if "主力净流入" in str(c) and "净额" in str(c)
+        ),
+        None,
+    )
+    if main_col is None:
+        main_col = next((c for c in df.columns if "主力净流入" in str(c)), None)
+    if main_col:
+        values = pd.to_numeric(df[main_col], errors="coerce").dropna()
+        if not values.empty:
+            summary_lines.append(
+                f"最近{len(values)}个交易日主力净流入合计: {_format_amount(values.sum())}"
+            )
+            summary_lines.append(
+                f"最新交易日主力净流入: {_format_amount(values.iloc[0])}"
+            )
+
+    # 控制输出列数量，优先保留资金流关键字段
+    preferred = [
+        "日期",
+        "收盘价",
+        "涨跌幅",
+        "主力净流入-净额",
+        "主力净流入-净占比",
+        "超大单净流入-净额",
+        "大单净流入-净额",
+        "中单净流入-净额",
+        "小单净流入-净额",
+    ]
+    available = [c for c in df.columns if c != "_date"]
+    ordered = [c for c in preferred if c in available]
+    ordered += [c for c in available if c not in ordered]
+    df_out = df[ordered]
+
+    header = f"# Capital Flow data for {code} (A-share main capital flow)\n"
+    header += (
+        f"# Data retrieved on: "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if summary_lines:
+        header += "# " + "\n# ".join(summary_lines) + "\n"
+    header += "# Unit: CNY. 正值=净流入，负值=净流出。\n\n"
+
+    return header + df_out.to_csv(index=False)
+
+
+# ============================================================================
+# 7.6 北向资金
+# ============================================================================
+
+# 北向资金历史接口一次返回全部历史，进程内缓存 1 小时
+_NORTHBOUND_CACHE = {"ts": 0.0, "df": None}
+_NORTHBOUND_TTL = 3600.0
+
+
+def _load_northbound_history() -> "pd.DataFrame | None":
+    """加载北向资金历史数据（带缓存与日期归一化）。"""
+    fetch = getattr(ak, "stock_hsgt_hist_em", None)
+    if fetch is None:
+        return None
+
+    now = time.time()
+    cached = _NORTHBOUND_CACHE.get("df")
+    if (
+        cached is not None
+        and (now - _NORTHBOUND_CACHE.get("ts", 0)) < _NORTHBOUND_TTL
+    ):
+        return cached
+
+    df = retry_with_backoff(
+        lambda: fetch(symbol="北向资金"),
+        max_retries=2,
+        base_delay=AKSHARE_BASE_DELAY,
+    )
+    if df is None or df.empty:
+        return None
+
+    df = df.copy()
+    date_col = next((c for c in ("日期", "date") if c in df.columns), None)
+    if date_col:
+        df["_date"] = pd.to_datetime(df[date_col], errors="coerce")
+        df = df.dropna(subset=["_date"]).sort_values("_date", ascending=False)
+    _NORTHBOUND_CACHE["df"] = df
+    _NORTHBOUND_CACHE["ts"] = now
+    return df
+
+
+def get_akshare_northbound_flow(
+    curr_date: Annotated[str, "当前日期，格式 YYYY-MM-DD"] = None,
+    look_back_days: Annotated[int, "回溯交易日数量"] = 10,
+) -> str:
+    """获取北向资金（沪深股通）历史净流入数据。
+
+    注意：自 2024-08-19 起交易所不再每日披露北向资金净买入额，
+    接口数据会停留在该日期附近。若分析日距今较远或数据明显滞后，
+    输出中会给出明确提示，避免把旧数据当作当前资金动向。
+    """
+    _require_akshare()
+
+    df = _load_northbound_history()
+    if df is None or df.empty or "_date" not in df.columns:
+        return "No northbound capital flow data available"
+
+    reference = pd.Timestamp.now().normalize()
+    if curr_date:
+        cutoff = pd.to_datetime(curr_date, errors="coerce")
+        if pd.notna(cutoff):
+            reference = cutoff.normalize()
+            filtered = df[df["_date"] <= cutoff]
+            if filtered.empty:
+                return (
+                    f"No northbound capital flow data found before {curr_date} "
+                    "(source data starts later or is unavailable)"
+                )
+            df = filtered
+
+    df = df.head(max(1, int(look_back_days)))
+    if df.empty:
+        return f"No northbound capital flow data found before {curr_date}"
+
+    latest_date = pd.Timestamp(df["_date"].iloc[0])
+    stale_days = (reference - latest_date.normalize()).days
+
+    summary_lines = []
+    net_col = next(
+        (c for c in ("当日成交净买额", "当日资金流入") if c in df.columns),
+        None,
+    )
+    if net_col:
+        values = pd.to_numeric(df[net_col], errors="coerce").dropna()
+        if not values.empty:
+            summary_lines.append(
+                f"最近{len(values)}个交易日北向净流入合计: {values.sum():.2f} 亿元"
+            )
+            summary_lines.append(f"最新交易日北向净流入: {values.iloc[0]:.2f} 亿元")
+
+    preferred = [
+        "日期",
+        "当日成交净买额",
+        "当日资金流入",
+        "历史累计净买额",
+        "沪深300",
+        "沪深300-涨跌幅",
+    ]
+    available = [c for c in df.columns if c != "_date"]
+    ordered = [c for c in preferred if c in available]
+    ordered += [c for c in available if c not in ordered]
+    df_out = df[ordered]
+
+    header = "# Northbound Capital Flow (沪深股通)\n"
+    header += (
+        f"# Data retrieved on: "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if summary_lines:
+        header += "# " + "\n# ".join(summary_lines) + "\n"
+    if not summary_lines:
+        header += (
+            "# 注意: 所选区间北向资金净买入额无有效数据"
+            "（交易所已停止每日披露或数据缺失），请勿据此判断资金动向。\n"
+        )
+    elif stale_days > 30:
+        header += (
+            f"# 注意: 北向资金每日净买入数据最新仅到 "
+            f"{latest_date.strftime('%Y-%m-%d')}（交易所已停止每日披露），"
+            "请勿据此判断当前资金动向，仅可作为历史参考。\n"
+        )
+    header += "# 金额单位: 亿元。正值=净流入，负值=净流出。\n\n"
+
+    return header + df_out.to_csv(index=False)
+
+
+# ============================================================================
+# 7.7 龙虎榜
+# ============================================================================
+
+_LHB_CACHE: dict = {}
+_LHB_TTL = 600.0
+
+
+def get_akshare_dragon_tiger(
+    ticker: Annotated[str, "股票代码"],
+    curr_date: Annotated[str, "当前日期，格式 YYYY-MM-DD"] = None,
+    look_back_days: Annotated[int, "回溯自然日数量"] = 60,
+) -> str:
+    """获取 A 股个股龙虎榜数据（上榜原因、买卖金额、席位解读等）。"""
+    _require_akshare()
+
+    code = normalize_symbol(ticker)
+    if not is_a_share_code(code):
+        return f"'{ticker}' 不是 A 股标的，无龙虎榜数据"
+
+    fetch = getattr(ak, "stock_lhb_detail_em", None)
+    if fetch is None:
+        return "龙虎榜接口不可用（当前 AkShare 版本缺少 stock_lhb_detail_em）"
+
+    if curr_date:
+        try:
+            end_dt = datetime.strptime(str(curr_date)[:10], "%Y-%m-%d")
+        except ValueError:
+            end_dt = datetime.now()
+    else:
+        end_dt = datetime.now()
+    start_dt = end_dt - relativedelta(days=max(1, int(look_back_days)))
+    start = start_dt.strftime("%Y%m%d")
+    end = end_dt.strftime("%Y%m%d")
+
+    cache_key = (start, end)
+    now = time.time()
+    cached = _LHB_CACHE.get(cache_key)
+    if cached and (now - cached[0]) < _LHB_TTL:
+        raw = cached[1]
+    else:
+        raw = retry_with_backoff(
+            lambda: fetch(start_date=start, end_date=end),
+            max_retries=2,
+            base_delay=AKSHARE_BASE_DELAY,
+        )
+        if raw is not None and not raw.empty:
+            if len(_LHB_CACHE) > 8:
+                _LHB_CACHE.clear()
+            _LHB_CACHE[cache_key] = (now, raw)
+
+    if raw is None or raw.empty:
+        return f"No dragon-tiger (LHB) data found for '{ticker}' in {start}~{end}"
+
+    df = raw.copy()
+    code_col = _find_code_column(df)
+    if not code_col:
+        return "龙虎榜数据格式不符合预期（缺少代码列）"
+
+    matched = df[df[code_col].astype(str).str.zfill(6) == code]
+    if matched.empty:
+        return (
+            f"No dragon-tiger (LHB) data found for '{code}' in "
+            f"{start_dt.strftime('%Y-%m-%d')}~{end_dt.strftime('%Y-%m-%d')}"
+        )
+
+    matched = matched.copy()
+    date_col = next(
+        (c for c in ("上榜日", "日期", "date") if c in matched.columns),
+        None,
+    )
+    if date_col:
+        matched["_date"] = pd.to_datetime(matched[date_col], errors="coerce")
+        matched = matched.dropna(subset=["_date"])
+        # 防御式过滤：即使上游返回了区间外/未来数据，也绝不能交给 LLM
+        matched = matched[matched["_date"] <= pd.Timestamp(end_dt)]
+        matched = matched.sort_values("_date", ascending=False)
+
+    matched = matched.head(20)
+
+    summary_lines = []
+    net_col = next(
+        (c for c in matched.columns if "龙虎榜净买额" in str(c)), None
+    )
+    if net_col:
+        values = pd.to_numeric(matched[net_col], errors="coerce").dropna()
+        if not values.empty:
+            summary_lines.append(f"最近上榜次数: {len(matched)} 次")
+            summary_lines.append(
+                f"区间龙虎榜净买额合计: {_format_amount(values.sum())}"
+            )
+
+    preferred = [
+        "上榜日",
+        "代码",
+        "名称",
+        "收盘价",
+        "涨跌幅",
+        "龙虎榜净买额",
+        "龙虎榜买入额",
+        "龙虎榜卖出额",
+        "换手率",
+        "上榜原因",
+        "上榜后1日",
+        "上榜后5日",
+        "上榜后10日",
+    ]
+    available = [c for c in matched.columns if c != "_date"]
+    ordered = [c for c in preferred if c in available]
+    ordered += [c for c in available if c not in ordered]
+    df_out = matched[ordered]
+
+    header = f"# Dragon-Tiger (LHB) data for {code}\n"
+    header += (
+        f"# Data retrieved on: "
+        f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    )
+    if summary_lines:
+        header += "# " + "\n# ".join(summary_lines) + "\n"
+    header += "# 金额单位: 元。正值=净买入，负值=净卖出。\n\n"
+
+    return header + df_out.to_csv(index=False)
+
+
+# ============================================================================
 # 8. 个股新闻
 # ============================================================================
 
@@ -1336,11 +2094,14 @@ def get_akshare_news(
             )
 
         # 构建 Markdown 格式新闻
+        # 注意：AkShare stock_news_em 实际返回列名为
+        #   关键词 / 新闻标题 / 新闻内容 / 发布时间 / 文章来源 / 新闻链接
+        # 旧代码读取的是 "标题" / "内容"，导致所有新闻标题都变成 No title、正文为空。
         news_str = ""
         count = 0
         for _, row in df.iterrows():
-            title = row.get("标题", row.get("title", "No title"))
-            content = row.get("内容", row.get("content", ""))
+            title = row.get("新闻标题", row.get("标题", row.get("title", "No title")))
+            content = row.get("新闻内容", row.get("内容", row.get("content", "")))
             source = row.get("文章来源", row.get("source", "Unknown"))
             url = row.get("新闻链接", row.get("url", ""))
 
@@ -1434,8 +2195,48 @@ def get_akshare_global_news(
                     use_timeout=True,
                 )
                 if cls_telegraph is not None and not cls_telegraph.empty:
-                    for _, row in cls_telegraph.head(limit).iterrows():
-                        title = str(row.iloc[0]) if len(row) > 0 else "No title"
+                    cls_df = cls_telegraph.copy()
+                    # 财联社电报只返回最近数据。历史分析时必须按日期过滤，
+                    # 否则会把当前/未来新闻注入历史时点分析（未来函数）。
+                    date_col = next(
+                        (
+                            c
+                            for c in ("发布日期", "日期", "date")
+                            if c in cls_df.columns
+                        ),
+                        None,
+                    )
+                    time_col = next(
+                        (
+                            c
+                            for c in ("发布时间", "时间", "time")
+                            if c in cls_df.columns
+                        ),
+                        None,
+                    )
+                    if date_col:
+                        raw = cls_df[date_col].astype(str)
+                        if time_col:
+                            raw = raw + " " + cls_df[time_col].astype(str)
+                        cls_df["_dt"] = pd.to_datetime(raw, errors="coerce")
+                        cls_df = cls_df.dropna(subset=["_dt"])
+                        cls_df = cls_df[
+                            (cls_df["_dt"] >= start_dt)
+                            & (cls_df["_dt"] <= curr_dt + relativedelta(days=1))
+                        ]
+                    else:
+                        # 无法判断时间时不返回，宁可缺失也不泄漏未来数据
+                        cls_df = cls_df.iloc[0:0]
+
+                    title_col = next(
+                        (c for c in ("标题", "title") if c in cls_df.columns),
+                        None,
+                    )
+                    for _, row in cls_df.head(limit).iterrows():
+                        if title_col:
+                            title = str(row.get(title_col, "No title"))
+                        else:
+                            title = str(row.iloc[0]) if len(row) > 0 else "No title"
                         news_str += f"### {title} (source: CLS Telegraph)\n\n"
             except (AkShareTimeoutError, Exception):
                 # 超时或其他异常，继续

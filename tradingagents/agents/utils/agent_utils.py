@@ -178,25 +178,65 @@
 #   而是一个"删除指令"，LangGraph 的 reducer 会识别并执行它。
 from langchain_core.messages import HumanMessage, RemoveMessage
 
+# 显式再导出（re-export）所有工具函数，供 agents 包统一从 agent_utils 导入。
+# 使用 `as 同名` 形式，避免 lint 将其误判为未使用导入。
+from tradingagents.agents.utils.capital_flow_tools import (
+    get_capital_flow as get_capital_flow,
+)
+from tradingagents.agents.utils.capital_flow_tools import (
+    get_dragon_tiger as get_dragon_tiger,
+)
+from tradingagents.agents.utils.capital_flow_tools import (
+    get_northbound_flow as get_northbound_flow,
+)
+from tradingagents.agents.utils.core_stock_tools import get_stock_data as get_stock_data
+from tradingagents.agents.utils.fundamental_data_tools import (
+    get_balance_sheet as get_balance_sheet,
+)
+from tradingagents.agents.utils.fundamental_data_tools import (
+    get_cashflow as get_cashflow,
+)
+from tradingagents.agents.utils.fundamental_data_tools import (
+    get_fundamentals as get_fundamentals,
+)
+from tradingagents.agents.utils.fundamental_data_tools import (
+    get_income_statement as get_income_statement,
+)
+from tradingagents.agents.utils.news_data_tools import (
+    get_global_news as get_global_news,
+)
+from tradingagents.agents.utils.news_data_tools import (
+    get_insider_transactions as get_insider_transactions,
+)
+from tradingagents.agents.utils.news_data_tools import (
+    get_news as get_news,
+)
+from tradingagents.agents.utils.search_tools import (
+    search_stock_news as search_stock_news,
+)
+from tradingagents.agents.utils.search_tools import (
+    search_web as search_web,
+)
+from tradingagents.agents.utils.strategy_tools import (
+    get_strategy_signals as get_strategy_signals,
+)
+from tradingagents.agents.utils.technical_indicators_tools import (
+    get_indicators as get_indicators,
+)
+from tradingagents.dataflows.ashare_rules import (
+    build_ashare_context,
+    contains_cjk,
+    normalize_code,
+)
+
 # --- 导入项目内部工具函数 ---
 # 以下导入的函数都被 @tool 装饰器标记为 LangChain 工具。
 # 这些工具可以从其他模块导入后，直接被 LLM 通过 bind_tools 调用。
 # 本文件导入它们是为了"再导出"（re-export）——
 # 让其他文件可以从 agent_utils 统一导入所有工具。
-
 # 【get_stock_data】
 #   为什么需要：获取股票价格数据（OHLCV 格式）。
 #   解决什么问题：市场分析师需要历史股价数据来计算技术指标。
-from tradingagents.agents.utils.core_stock_tools import (
-    get_stock_data
-)
-
-# 【get_indicators】
-#   为什么需要：获取技术指标数据（如 RSI、MACD 等）。
-#   解决什么问题：市场分析师需要计算好的技术指标来分析市场趋势。
-from tradingagents.agents.utils.technical_indicators_tools import (
-    get_indicators
-)
 
 # 【基本面数据工具函数集合】
 # get_fundamentals: 获取综合基本面数据（如 P/E、ROE 等估值指标）
@@ -204,23 +244,16 @@ from tradingagents.agents.utils.technical_indicators_tools import (
 # get_cashflow: 获取现金流量表（公司的现金流入和流出）
 # get_income_statement: 获取利润表（公司的收入、成本和利润）
 #   为什么需要：基本面研究员需要财务数据来评估公司的财务健康状况。
-from tradingagents.agents.utils.fundamental_data_tools import (
-    get_fundamentals,
-    get_balance_sheet,
-    get_cashflow,
-    get_income_statement
-)
 
 # 【新闻数据工具函数集合】
 # get_news: 获取公司相关新闻（如财报发布、产品动态等）
 # get_insider_transactions: 获取内部人交易数据（高管买卖股票的记录）
 # get_global_news: 获取全球宏观新闻（如经济政策、地缘政治事件等）
 #   为什么需要：新闻研究员需要新闻和事件信息来分析市场影响因素。
-from tradingagents.agents.utils.news_data_tools import (
-    get_news,
-    get_insider_transactions,
-    get_global_news
-)
+
+# 【get_indicators】
+#   为什么需要：获取技术指标数据（如 RSI、MACD 等）。
+#   解决什么问题：市场分析师需要计算好的技术指标来分析市场趋势。
 
 
 # =============================================================================
@@ -254,7 +287,7 @@ from tradingagents.agents.utils.news_data_tools import (
 #   LLM 看到这段文字后，在调用 get_stock_data 时会传入 symbol="SHOP.TO"，
 #   而不是错误的 "SHOP"（丢失了交易所后缀会导致数据查询失败）。
 # =============================================================================
-def build_instrument_context(ticker: str) -> str:
+def build_instrument_context(ticker: str, horizon: str = "medium") -> str:
     """
     构建交易标的上下文说明文本
 
@@ -296,11 +329,36 @@ def build_instrument_context(ticker: str) -> str:
     # Python 中相邻的字符串字面量会自动拼接：
     #   "Hello " "World"  等价于  "Hello World"
     # 所以这三行字符串会被自动拼接成一个完整的长字符串。
-    return (
+    horizon_labels = {
+        "short": "短线（1-2 周），重点关注短期催化、技术形态和资金流",
+        "medium": "中线（1-3 个月），平衡基本面与趋势",
+        "long": "长线（6 个月以上），重点关注基本面、估值和长期竞争力",
+    }
+    horizon_text = horizon_labels.get(
+        str(horizon or "medium").lower(), horizon_labels["medium"]
+    )
+
+    # A 股交易规则（T+1、涨跌停、交易单位、ST 风险等）。
+    # 用户可能直接输入中文名，这里优先用内置名称表做零网络解析。
+    ticker_code = normalize_code(ticker)
+    if not ticker_code and contains_cjk(ticker):
+        try:
+            from tradingagents.dataflows.akshare_adapter import _CHINESE_NAME_MAP
+
+            ticker_code = _CHINESE_NAME_MAP.get(str(ticker).strip(), "")
+        except Exception:
+            ticker_code = ""
+    ashare_text = build_ashare_context(ticker_code) if ticker_code else ""
+
+    context = (
         f"The instrument to analyze is `{ticker}`. "  # 指定要分析的股票代码
         "Use this exact ticker in every tool call, report, and recommendation, "  # 在所有工具调用中使用
-        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`)."  # 保留交易所后缀
+        "preserving any exchange suffix (e.g. `.TO`, `.L`, `.HK`, `.T`). "  # 保留交易所后缀
+        f"Investment horizon: {horizon_text}."  # 多周期分析视角
     )
+    if ashare_text:
+        context += "\n" + ashare_text
+    return context
 
 
 # =============================================================================

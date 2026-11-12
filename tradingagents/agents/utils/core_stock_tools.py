@@ -182,8 +182,6 @@
 #   - name: 工具名称（默认使用函数名，如 "get_stock_data"）
 #   - description: 工具描述（来自函数的 docstring 文档字符串）
 #   - args_schema: 参数模式（来自函数签名和 Annotated 注解）
-from langchain_core.tools import tool
-
 # 【Annotated】
 #   为什么需要：给参数类型添加描述性元数据。
 #   解决什么问题：在 @tool 装饰的函数中，Annotated 的描述字符串
@@ -192,6 +190,8 @@ from langchain_core.tools import tool
 #   例如：Annotated[str, "ticker symbol of the company"]
 #   告诉 LLM 这个参数是"公司的股票代码"。
 from typing import Annotated
+
+from langchain_core.tools import tool
 
 # 【route_to_vendor】
 #   为什么需要：统一的数据供应商路由接口。

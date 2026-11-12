@@ -30,14 +30,11 @@ BaoStock 特点：
   - pandas: 数据处理
 """
 
-import os
 import random
 import threading
 import time
 from datetime import datetime
-from typing import Annotated, Optional
-
-import pandas as pd
+from typing import Annotated
 
 # ============================================================================
 # BaoStock 全局会话锁
@@ -235,6 +232,8 @@ def _is_valid_a_share_code(code: str) -> bool:
     """
     if not code or not code.isdigit() or len(code) != 6:
         return False
+    if code.startswith("92"):  # 北交所 2024 年新代码段
+        return True
     if code[0] in ("6", "0", "3", "8", "4"):
         return True
     return False
@@ -253,7 +252,10 @@ def _normalize(symbol: str) -> str:
     s = symbol.strip()
     if s in _CHINESE_NAME_MAP:
         return _CHINESE_NAME_MAP[s]
-    # 处理 sh.XXXXXX / sz.XXXXXX / bj.XXXXXX 格式
+    # 处理 sh.XXXXXX / sz.XXXXXX / bj.XXXXXX 标准格式（如 sh.600519，长度 9）
+    if s.lower().startswith(("sh.", "sz.", "bj.")) and len(s) == 9:
+        return s[3:]
+    # 处理 shXXXXXX / szXXXXXX / bjXXXXXX 格式（长度 8）
     if s.lower().startswith(("sh", "sz", "bj")) and len(s) == 8:
         return s[2:]
     # 处理 XXXXXX.SZ / XXXXXX.SS / XXXXXX.SH 格式（yfinance 后缀）
@@ -266,17 +268,48 @@ def _normalize(symbol: str) -> str:
 
 def _to_baostock_code(symbol: str) -> str:
     """
-    将 6 位数字代码转换为 BaoStock 格式 (sh.XXXXXX 或 sz.XXXXXX)。
+    将 6 位数字代码转换为 BaoStock 格式。
 
     上海交易所：60xxxx, 68xxxx → sh.xxxxxx
     深圳交易所：00xxxx, 30xxxx → sz.xxxxxx
+    北京交易所：8xxxxx, 4xxxxx → bj.xxxxxx
     """
     code = _normalize(symbol)
     if code.startswith("6"):
         return f"sh.{code}"
     elif code.startswith(("0", "3")):
         return f"sz.{code}"
+    elif code.startswith(("8", "4", "92")):
+        return f"bj.{code}"
     return code
+
+
+def _latest_report_period(curr_date: str = None) -> tuple[int, int]:
+    """
+    根据当前日期推算最近一个已经披露的财报年份/季度。
+
+    A 股披露节奏（保守估计）：
+      - 11 月以后：当年三季报已披露
+      - 8 月以后：当年中报已披露
+      - 5 月以后：当年一季报已披露
+      - 其余时间：上一年年报已披露
+    """
+    if curr_date:
+        try:
+            dt = datetime.strptime(curr_date, "%Y-%m-%d")
+        except ValueError:
+            dt = datetime.now()
+    else:
+        dt = datetime.now()
+
+    year, month = dt.year, dt.month
+    if month >= 11:
+        return year, 3
+    if month >= 8:
+        return year, 2
+    if month >= 5:
+        return year, 1
+    return year - 1, 4
 
 
 def _to_baostock_date(date_str: str) -> str:
@@ -368,7 +401,7 @@ def get_baostock_stock(
         header = f"# Stock data for {code} from {start_date} to {end_date}\n"
         header += f"# Total records: {len(rows)}\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-        header += f"# Source: BaoStock\n\n"
+        header += "# Source: BaoStock\n\n"
         header += "Date,Open,High,Low,Close,Volume\n"
 
         csv_lines = []
@@ -389,7 +422,7 @@ def get_baostock_stock(
 
 def get_baostock_fundamentals(
     ticker: Annotated[str, "股票代码"],
-    curr_date: Annotated[str, "当前日期，格式 YYYY-MM-DD"],
+    curr_date: Annotated[str, "当前日期，格式 YYYY-MM-DD"] = None,
 ) -> str:
     """
     从 BaoStock 获取 A 股公司基本面数据。
@@ -480,60 +513,88 @@ def get_baostock_fundamentals(
 # 3. 资产负债表
 # ============================================================================
 
+def _query_statement(bs_code: str, query_name: str, year: int, quarter: int):
+    """
+    执行 BaoStock 财务报查询，返回 (字段名列表, 数据行)。
+
+    使用 rs.fields 动态获取字段名，避免硬编码字段顺序。
+    """
+    import baostock as bs
+
+    field_names = []
+
+    def _query():
+        nonlocal field_names
+        with _bs_lock:
+            lg = _bs_safe_login()
+            if lg.error_code != "0":
+                raise ConnectionError(f"BaoStock login failed: {lg.error_msg}")
+
+            try:
+                query_func = getattr(bs, query_name)
+                rs = query_func(code=bs_code, year=year, quarter=quarter)
+                if rs.error_code != "0":
+                    return None
+
+                field_names = list(getattr(rs, "fields", []) or [])
+                rows = []
+                while rs.next():
+                    rows.append(rs.get_row_data())
+                return rows
+            finally:
+                try:
+                    bs.logout()
+                except Exception:
+                    pass
+
+    rows = bs_retry(_query, max_retries=2)
+    return field_names, rows
+
+
+def _format_statement(
+    statement_name: str,
+    code: str,
+    freq: str,
+    year: int,
+    quarter: int,
+    fields,
+    rows,
+) -> str:
+    """把 BaoStock 财务数据格式化为带列名的 CSV 字符串。"""
+    resolved_freq = "annual" if freq and freq.lower() == "annual" else "quarterly"
+    result = f"# {statement_name} data for {code} ({resolved_freq}) (BaoStock)\n"
+    result += f"# Report period: {year}Q{quarter}\n"
+    result += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+    result += "# Source: BaoStock\n\n"
+
+    if fields:
+        result += ",".join(str(f) for f in fields) + "\n"
+    for row in rows:
+        result += ",".join(str(v).replace(",", "") for v in row) + "\n"
+    return result
+
+
 def get_baostock_balance_sheet(
     ticker: Annotated[str, "股票代码"],
-    freq: Annotated[str, "频率: annual 或 quarterly"],
-    curr_date: Annotated[str, "当前日期"],
+    freq: Annotated[str, "频率: annual 或 quarterly"] = "quarterly",
+    curr_date: Annotated[str, "当前日期"] = None,
 ) -> str:
-    """从 BaoStock 获取资产负债表数据"""
+    """从 BaoStock 获取资产负债表数据。"""
     try:
         code = _normalize(ticker)
         if not _is_valid_a_share_code(code):
             return f"No data: '{ticker}' is not a valid A-share code"
 
         bs_code = _to_baostock_code(code)
-
-        import baostock as bs
-
-        def _query():
-            with _bs_lock:
-                lg = _bs_safe_login()
-                if lg.error_code != "0":
-                    raise ConnectionError(f"BaoStock login failed: {lg.error_msg}")
-
-                try:
-                    year = int(curr_date[:4])
-                    rs = bs.query_balance_data(code=bs_code, year=year, quarter=4)
-                    if rs.error_code != "0":
-                        return None
-
-                    rows = []
-                    while rs.next():
-                        rows.append(rs.get_row_data())
-
-                    return rows
-                finally:
-                    try:
-                        bs.logout()
-                    except Exception:
-                        pass
-
-        rows = bs_retry(_query, max_retries=2)
+        year, quarter = _latest_report_period(curr_date)
+        fields, rows = _query_statement(bs_code, "query_balance_data", year, quarter)
 
         if not rows:
-            return f"No balance sheet data found for {ticker}"
+            return f"No balance sheet data found for {ticker} ({year}Q{quarter})"
 
-        # 返回原始 CSV 格式，与各适配器保持一致
-        result = f"# Balance Sheet data for {code} ({freq}) (BaoStock)\n"
-        result += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-        if rows:
-            # 构建字段名列表
-            fields = rows[0].__class__.__name__ if hasattr(rows[0], '__class__') else ""
-            for row in rows:
-                result += " | ".join(str(f) for f in row) + "\n"
-
-        return result
+        return _format_statement(
+            "Balance Sheet", code, freq, year, quarter, fields, rows
+        )
 
     except Exception:
         raise
@@ -545,54 +606,25 @@ def get_baostock_balance_sheet(
 
 def get_baostock_cashflow(
     ticker: Annotated[str, "股票代码"],
-    freq: Annotated[str, "频率: annual 或 quarterly"],
-    curr_date: Annotated[str, "当前日期"],
+    freq: Annotated[str, "频率: annual 或 quarterly"] = "quarterly",
+    curr_date: Annotated[str, "当前日期"] = None,
 ) -> str:
-    """从 BaoStock 获取现金流量表数据"""
+    """从 BaoStock 获取现金流量表数据。"""
     try:
         code = _normalize(ticker)
         if not _is_valid_a_share_code(code):
             return f"No data: '{ticker}' is not a valid A-share code"
 
         bs_code = _to_baostock_code(code)
-
-        import baostock as bs
-
-        def _query():
-            with _bs_lock:
-                lg = _bs_safe_login()
-                if lg.error_code != "0":
-                    raise ConnectionError(f"BaoStock login failed: {lg.error_msg}")
-
-                try:
-                    year = int(curr_date[:4])
-                    rs = bs.query_cash_flow_data(code=bs_code, year=year, quarter=4)
-                    if rs.error_code != "0":
-                        return None
-
-                    rows = []
-                    while rs.next():
-                        rows.append(rs.get_row_data())
-
-                    return rows
-                finally:
-                    try:
-                        bs.logout()
-                    except Exception:
-                        pass
-
-        rows = bs_retry(_query, max_retries=2)
+        year, quarter = _latest_report_period(curr_date)
+        fields, rows = _query_statement(bs_code, "query_cash_flow_data", year, quarter)
 
         if not rows:
-            return f"No cashflow data found for {ticker}"
+            return f"No cashflow data found for {ticker} ({year}Q{quarter})"
 
-        result = f"# Cash Flow data for {code} ({freq}) (BaoStock)\n"
-        result += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-        for row in rows:
-            result += " | ".join(str(f) for f in row) + "\n"
-
-        return result
+        return _format_statement(
+            "Cash Flow", code, freq, year, quarter, fields, rows
+        )
 
     except Exception:
         raise
@@ -604,54 +636,25 @@ def get_baostock_cashflow(
 
 def get_baostock_income_statement(
     ticker: Annotated[str, "股票代码"],
-    freq: Annotated[str, "频率: annual 或 quarterly"],
-    curr_date: Annotated[str, "当前日期"],
+    freq: Annotated[str, "频率: annual 或 quarterly"] = "quarterly",
+    curr_date: Annotated[str, "当前日期"] = None,
 ) -> str:
-    """从 BaoStock 获取利润表数据"""
+    """从 BaoStock 获取利润表数据。"""
     try:
         code = _normalize(ticker)
         if not _is_valid_a_share_code(code):
             return f"No data: '{ticker}' is not a valid A-share code"
 
         bs_code = _to_baostock_code(code)
-
-        import baostock as bs
-
-        def _query():
-            with _bs_lock:
-                lg = _bs_safe_login()
-                if lg.error_code != "0":
-                    raise ConnectionError(f"BaoStock login failed: {lg.error_msg}")
-
-                try:
-                    year = int(curr_date[:4])
-                    rs = bs.query_profit_data(code=bs_code, year=year, quarter=4)
-                    if rs.error_code != "0":
-                        return None
-
-                    rows = []
-                    while rs.next():
-                        rows.append(rs.get_row_data())
-
-                    return rows
-                finally:
-                    try:
-                        bs.logout()
-                    except Exception:
-                        pass
-
-        rows = bs_retry(_query, max_retries=2)
+        year, quarter = _latest_report_period(curr_date)
+        fields, rows = _query_statement(bs_code, "query_profit_data", year, quarter)
 
         if not rows:
-            return f"No income statement data found for {ticker}"
+            return f"No income statement data found for {ticker} ({year}Q{quarter})"
 
-        result = f"# Income Statement data for {code} ({freq}) (BaoStock)\n"
-        result += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n"
-
-        for row in rows:
-            result += " | ".join(str(f) for f in row) + "\n"
-
-        return result
+        return _format_statement(
+            "Income Statement", code, freq, year, quarter, fields, rows
+        )
 
     except Exception:
         raise

@@ -70,8 +70,6 @@
 #
 # ============================================================================
 
-import time
-import json
 
 # --- 导入项目内部工具函数 ---
 # build_instrument_context：构建目标公司的上下文信息字符串
@@ -149,7 +147,7 @@ def create_research_manager(llm, memory):
         # 构建目标公司的上下文信息
         # build_instrument_context() 返回类似：
         #   "The instrument to analyze is `AAPL`. Use this exact ticker ..."
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # ====================================================================
         # 提取投资辩论的历史记录
@@ -163,7 +161,7 @@ def create_research_manager(llm, memory):
         #
         # 研究经理需要读取完整的辩论历史来评估双方论点。
         # ====================================================================
-        
+
         # 获取完整的投资辩论状态（必须先赋值，才能使用）
         investment_debate_state = state["investment_debate_state"]
 
@@ -201,7 +199,7 @@ def create_research_manager(llm, memory):
         # enumerate(past_memories, 1) 从 1 开始编号遍历
         # rec["recommendation"] 是每条记忆中的经验教训文本
         past_memory_str = ""
-        for i, rec in enumerate(past_memories, 1):
+        for _i, rec in enumerate(past_memories, 1):
             past_memory_str += rec["recommendation"] + "\n\n"
 
         # ====================================================================

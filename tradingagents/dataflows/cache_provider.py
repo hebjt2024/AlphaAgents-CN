@@ -6,11 +6,8 @@
 用于：网络不可用时的降级方案，以及功能验证。
 """
 
-import locale
-import os
 import random
 from datetime import datetime
-
 
 # ============================================================================
 # 简易股票代码标准化（不依赖外部模块，避免导入链问题）
@@ -63,7 +60,6 @@ _CHINESE_NAME_MAP = {
     "科大讯飞": "002230",
     "立讯精密": "002475",
     "工业富联": "601138",
-    "工商银行": "601398",
 }
 
 
@@ -206,7 +202,7 @@ def _generate_stock_data(symbol: str, start_date: str, end_date: str, base_price
 
         header = f"# Stock data for {code} from {start_date} to {end_date} (generated)\n"
         header += f"# Total records: {count}\n"
-        header += f"# WARNING: This is simulated data for testing. Not for real trading decisions.\n\n"
+        header += "# WARNING: This is simulated data for testing. Not for real trading decisions.\n\n"
         header += "Date,Open,High,Low,Close,Volume\n"
 
         return header + "\n".join(lines)
@@ -247,7 +243,7 @@ def get_cached_fundamentals(ticker: str, curr_date: str = None) -> str:
 
     # 预置海南橡胶的基本面数据
     if code == "601118":
-        return f"""# Company Fundamentals for 601118 (cached)
+        return """# Company Fundamentals for 601118 (cached)
 # Data retrieved from cache
 
 总市值: 18500000000
@@ -345,10 +341,10 @@ def get_cached_news(ticker: str, start_date: str, end_date: str) -> str:
          f"最新行业数据显示，相关产业链景气度持续回升，{code}作为行业龙头，有望受益于下游需求恢复。"),
         # 业绩相关
         (f"{code}发布最新季度报告，营收稳步增长 (source: 东方财富)",
-         f"公司最新财报显示，营业收入同比增长8.5%，归母净利润同比增长12.3%，经营现金流持续改善。"),
+         "公司最新财报显示，营业收入同比增长8.5%，归母净利润同比增长12.3%，经营现金流持续改善。"),
         # 机构评级
         (f"券商给予{code}\"增持\"评级，目标价上调 (source: 中信证券)",
-         f"多家券商发布研报，看好公司长期发展前景，维持\"增持\"评级，部分机构上调目标价。"),
+         "多家券商发布研报，看好公司长期发展前景，维持\"增持\"评级，部分机构上调目标价。"),
         # 政策利好
         (f"宏观政策利好，{code}所在行业迎来发展机遇 (source: 经济日报)",
          f"国务院常务会议提出加大相关领域支持力度，行业政策环境持续优化，利好{code}等龙头企业。"),
@@ -360,7 +356,7 @@ def get_cached_news(ticker: str, start_date: str, end_date: str) -> str:
          f"行业竞争格局持续优化，龙头企业市场份额进一步提升，{code}凭借技术和规模优势占据有利位置。"),
         # 产能扩张
         (f"{code}产能扩张项目稳步推进 (source: 公司公告)",
-         f"公司新产能建设项目按计划推进，预计投产后将进一步提升公司盈利能力和市场竞争力。"),
+         "公司新产能建设项目按计划推进，预计投产后将进一步提升公司盈利能力和市场竞争力。"),
         # 资金面
         (f"北向资金持续增持{code}，外资看好后市 (source: Wind数据)",
          f"沪深港通数据显示，近期北向资金持续净买入{code}，外资持股比例小幅上升。"),

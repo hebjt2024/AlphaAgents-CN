@@ -25,13 +25,8 @@
 # ---------------------------------------------------------------------------
 
 # 导入交易图主类 —— 整个系统的入口，负责编排所有代理
-from .trading_graph import TradingAgentsGraph
-
 # 导入条件逻辑类 —— 决定图中"条件边"的路由规则（如：是否继续辩论）
 from .conditional_logic import ConditionalLogic
-
-# 导入图搭建类 —— 负责创建 LangGraph 的 StateGraph 并添加节点和边
-from .setup import GraphSetup
 
 # 导入传播器类 —— 负责初始化图执行的初始状态
 from .propagation import Propagator
@@ -39,8 +34,12 @@ from .propagation import Propagator
 # 导入反思器类 —— 负责在交易后对决策进行反思，更新记忆
 from .reflection import Reflector
 
+# 导入图搭建类 —— 负责创建 LangGraph 的 StateGraph 并添加节点和边
+from .setup import GraphSetup
+
 # 导入信号处理器类 —— 负责从完整的交易信号中提取核心决策（买入/卖出等）
 from .signal_processing import SignalProcessor
+from .trading_graph import TradingAgentsGraph
 
 # ---------------------------------------------------------------------------
 # __all__ 列表：定义 `from tradingagents.graph import *` 时导出的名称

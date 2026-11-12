@@ -130,18 +130,16 @@
 # 使用 Okapi 变体（最常用的 BM25 版本），参数 k1=1.5, b=0.75 为默认值
 # k1 控制词频饱和程度，b 控制文档长度归一化强度
 # 【安装方式】pip install rank_bm25
-from rank_bm25 import BM25Okapi
+# re: Python 正则表达式模块，用于文本分词（按单词边界分割）
+# re.findall(模式, 文本) 找出文本中所有匹配模式的子串
+import re
 
 # List: 列表类型注解，用于标注参数和返回值类型
 #   例如 List[str] 表示"字符串列表"，如 ["a", "b", "c"]
 # Tuple: 元组类型注解，用于标注固定长度的复合类型
 #   例如 Tuple[str, str] 表示"包含两个字符串的元组"，如 ("情景", "建议")
 # 【什么是元组（tuple）？】类似列表，但不可修改。用圆括号定义：(1, 2, 3)
-from typing import List, Tuple
-
-# re: Python 正则表达式模块，用于文本分词（按单词边界分割）
-# re.findall(模式, 文本) 找出文本中所有匹配模式的子串
-import re
+from rank_bm25 import BM25Okapi
 
 
 # =============================================================================
@@ -254,16 +252,16 @@ class FinancialSituationMemory:
         # 情景文本列表（语料库）
         # 【什么是语料库？】一组文本的集合，BM25 会基于这些文本建立索引
         # 初始为空列表 []，后续通过 add_situations 添加内容
-        self.documents: List[str] = []
+        self.documents: list[str] = []
         # 投资建议列表（与 documents 一一对应）
         # documents[0] 的情景对应 recommendations[0] 的建议
         # 这两个列表通过索引位置保持对应关系
-        self.recommendations: List[str] = []
+        self.recommendations: list[str] = []
         # BM25 索引对象，初始为空（还没有文档，无法建索引）
         # 添加文档后会通过 _rebuild_index() 创建 BM25Okapi 对象
         self.bm25 = None
 
-    def _tokenize(self, text: str) -> List[str]:
+    def _tokenize(self, text: str) -> list[str]:
         """
         对文本进行分词处理，供 BM25 索引使用
 
@@ -332,7 +330,7 @@ class FinancialSituationMemory:
             # 没有文档就无法建立索引，get_memories 会检查这个条件
             self.bm25 = None
 
-    def add_situations(self, situations_and_advice: List[Tuple[str, str]]):
+    def add_situations(self, situations_and_advice: list[tuple[str, str]]):
         """
         添加金融情景及其对应的投资建议
 
@@ -372,7 +370,7 @@ class FinancialSituationMemory:
         # 添加新文档后这些信息变了，必须重新计算
         self._rebuild_index()
 
-    def get_memories(self, current_situation: str, n_matches: int = 1) -> List[dict]:
+    def get_memories(self, current_situation: str, n_matches: int = 1) -> list[dict]:
         """
         根据当前情景检索最匹配的历史记忆
 

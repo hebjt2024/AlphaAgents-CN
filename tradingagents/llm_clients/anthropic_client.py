@@ -68,7 +68,7 @@
 
 # typing 模块：Python 标准库，提供类型注解
 # Any 表示任意类型，Optional 表示值可以为 None
-from typing import Any, Optional
+from typing import Any
 
 # LangChain 的 Anthropic 聊天模型封装
 # ChatAnthropic 是 LangChain 对 Anthropic Claude API 的封装类
@@ -82,12 +82,12 @@ from langchain_anthropic import ChatAnthropic
 # 从当前包（llm_clients）的 base_client 模块导入基类和工具函数
 # BaseLLMClient：所有 LLM 客户端的抽象基类，提供通用接口
 # normalize_content：内容规范化函数，将结构化块列表转为纯字符串
+from .auth import resolve_api_key
 from .base_client import BaseLLMClient, normalize_content
 
 # 从当前包的 validators 模块导入模型验证函数
 # validate_model：检查模型名称对指定提供商是否有效
 from .validators import validate_model
-
 
 # 需要从用户配置转发给 ChatAnthropic 的参数名列表
 # 这是一个元组（tuple），包含所有需要从 self.kwargs 传递给 ChatAnthropic 构造函数的参数名
@@ -196,7 +196,7 @@ class AnthropicClient(BaseLLMClient):
     支持所有 Claude 系列模型：Opus（最强）、Sonnet（平衡）、Haiku（快速）。
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, base_url: str | None = None, **kwargs):
         """初始化 Anthropic 客户端。
 
         Args:
@@ -255,9 +255,19 @@ class AnthropicClient(BaseLLMClient):
                 # 如果存在，添加到 llm_kwargs 字典中
                 llm_kwargs[key] = self.kwargs[key]
 
+        # 显式解析 API Key：
+        # - 优先使用调用方传入的 api_key
+        # - 其次读取 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
+        # - MiniMax 兼容端点额外支持 MINIMAX_API_KEY
+        # 这样即使用户只配置了 MINIMAX_API_KEY，也能正常鉴权。
+        if "api_key" not in llm_kwargs:
+            api_key = resolve_api_key("anthropic", self.base_url)
+            if api_key:
+                llm_kwargs["api_key"] = api_key
+
         # 使用收集的参数创建 NormalizedChatAnthropic 实例
         # **llm_kwargs 解包字典为关键字参数
-        # 等价于：NormalizedChatAnthropic(model="claude-sonnet-4-6", base_url="https://api.minimaxi.com/anthropic", api_key="...", ...)
+        # 等价于：NormalizedChatAnthropic(model="claude-sonnet-4-6", base_url="https://api.minimax.cn/anthropic", api_key="...", ...)
         return NormalizedChatAnthropic(**llm_kwargs)
 
     def validate_model(self) -> bool:

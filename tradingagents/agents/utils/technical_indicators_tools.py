@@ -107,14 +107,14 @@
 # 【导入语法】from langchain_core.tools import tool
 # 从 langchain_core 包的 tools 模块中导入 tool 装饰器
 # langchain_core 是 LangChain 的核心库，提供基础工具和接口
-from langchain_core.tools import tool
-
 # Annotated: 类型注解包装器，用于为参数添加元数据描述
 # 【为什么需要 Annotated？】
 # 普通类型注解 str 只告诉 Python "这是字符串"，但 LLM 需要知道
 # "这个字符串代表什么"（如股票代码、日期、指标名称等）。
 # Annotated[str, "描述"] 就是在类型上附加这段描述。
 from typing import Annotated
+
+from langchain_core.tools import tool
 
 # route_to_vendor: 统一的数据供应商路由接口
 # 将数据请求转发到配置的供应商（如 Yahoo Finance、Alpha Vantage 等）

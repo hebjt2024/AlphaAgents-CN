@@ -79,6 +79,21 @@
 #   os.environ：访问环境变量字典
 import os
 
+
+def _env_str(name: str, default: str) -> str:
+    """读取环境变量；为空时回退到默认值。"""
+    value = os.getenv(name)
+    return value.strip() if value and value.strip() else default
+
+
+def _env_int(name: str, default: int) -> int:
+    """读取整数环境变量；无效时回退到默认值。"""
+    try:
+        return int(str(os.getenv(name, "")).strip())
+    except (TypeError, ValueError):
+        return default
+
+
 # ----------------------------------------------------------------------------
 # DEFAULT_CONFIG 字典：项目所有默认配置的集合
 # 每个键值对代表一个可配置项，含义如下：
@@ -118,33 +133,34 @@ DEFAULT_CONFIG = {
     ),
 
     # ====== LLM（大语言模型）配置 ======
-    # LLM 服务提供商：可选 "openai"、"anthropic"、"google"
-    # 不同提供商使用不同的 API 和模型
-    "llm_provider": "anthropic",
+    # LLM 服务提供商：可选 "openai"、"anthropic"、"google" 等
+    # 可通过 .env 的 TRADINGAGENTS_LLM_PROVIDER 覆盖
+    "llm_provider": _env_str("TRADINGAGENTS_LLM_PROVIDER", "anthropic"),
 
     # 深度思考模型：用于需要复杂推理的任务（如撰写分析报告、制定策略）
-    # 这里使用 OpenAI 的 GPT-5.2 模型，推理能力强但速度较慢、成本较高
+    # 可通过 .env 的 TRADINGAGENTS_DEEP_THINK_LLM 覆盖
     # 深度思考模型用于：
     #   - 综合分析师的数据生成分析报告
     #   - 多头/空头研究员的深度分析
     #   - 风险管理者的风险评估
     #   - 交易员的最终决策
-    "deep_think_llm": "MiniMax-M3",
+    "deep_think_llm": _env_str("TRADINGAGENTS_DEEP_THINK_LLM", "MiniMax-M3"),
 
     # 快速思考模型：用于简单、快速响应的任务（如数据格式化、简单判断）
-    # 使用 GPT-5-mini，速度快、成本低，适合高频调用
+    # 可通过 .env 的 TRADINGAGENTS_QUICK_THINK_LLM 覆盖
     # 快速思考模型用于：
     #   - 工具调用的参数解析
     #   - 数据格式转换
     #   - 简单的条件判断
-    "quick_think_llm": "MiniMax-M2.5",
+    "quick_think_llm": _env_str("TRADINGAGENTS_QUICK_THINK_LLM", "MiniMax-M3.1-Flash"),
 
     # 后端 API 地址：LLM 服务的 API 端点
-    # 默认使用 OpenAI 官方 API，也可以替换为兼容的代理地址
+    # 可通过 .env 的 TRADINGAGENTS_BACKEND_URL 覆盖；WebUI 中也可临时覆盖
     # 替换示例（使用代理）：
     #   "backend_url": "https://your-proxy.com/v1"
-    #"backend_url": "https://api.openai.com/v1",
-    "backend_url": "https://api.minimaxi.com/anthropic",
+    "backend_url": _env_str(
+        "TRADINGAGENTS_BACKEND_URL", "https://api.minimax.cn/anthropic"
+    ),
 
     # ====== 各供应商特有的思考配置 ======
     # 这些参数控制 LLM 在推理时投入的"思考"量
@@ -174,13 +190,15 @@ DEFAULT_CONFIG = {
     #   第1轮：多头研究员发表看涨观点 → 空头研究员反驳
     #   第2轮：多头研究员再发表 → 空头研究员再反驳
     #   结束 → 研究管理智能体总结辩论结果
-    "max_debate_rounds": 1,
+    "max_debate_rounds": _env_int("TRADINGAGENTS_MAX_DEBATE_ROUNDS", 1),
 
     # 风险讨论最大轮数：激进、保守、中性三种风险偏好的辩论回合数
     # 风险讨论流程（以 max_risk_discuss_rounds=1 为例）：
     #   第1轮：激进型发言 → 保守型发言 → 中立型发言
     #   结束 → 投资组合管理智能体总结风险评估
-    "max_risk_discuss_rounds": 1,
+    "max_risk_discuss_rounds": _env_int(
+        "TRADINGAGENTS_MAX_RISK_DISCUSS_ROUNDS", 1
+    ),
 
     # 最大递归限制：防止 LangGraph 工作流陷入无限循环的保护机制
     # 当图执行步骤超过此值时，系统会强制终止
@@ -197,7 +215,39 @@ DEFAULT_CONFIG = {
         "technical_indicators": "akshare",            # 技术指标：akshare（baostock 不支持）
         "fundamental_data": "akshare,baostock",       # 基本面数据：akshare 优先，baostock 备选
         "news_data": "akshare",                       # 新闻数据：akshare（baostock 不支持）
+        "capital_flow": "akshare",                    # 资金流向：akshare（东方财富）
     },
+
+    # ====== 模拟数据开关 ======
+    # 默认关闭（fail-closed）：当 AkShare / BaoStock / yfinance 等真实数据源
+    # 全部失败时，直接报错，而不是用 cache_provider 生成的模拟行情继续分析。
+    # 交易类系统默认绝不能把伪造数据当作真实行情输出。
+    # 仅用于开发/联调时，可通过环境变量显式开启：
+    #   ALLOW_SYNTHETIC_DATA=1
+    "allow_synthetic_data": os.getenv("ALLOW_SYNTHETIC_DATA", "0").lower()
+    in ("1", "true", "yes", "on"),
+
+    # ====== 自定义图编排 ======
+    # 控制哪些阶段参与分析。Portfolio Manager（最终裁决）始终保留。
+    # WebUI 会覆盖这些值；CLI/定时任务可直接修改配置。
+    "pipeline": {
+        "analysts": ["market", "social", "news", "fundamentals"],
+        "enable_debate": True,   # 多空辩论（Bull/Bear + Research Manager）
+        "enable_trader": True,   # 交易员节点
+        "enable_risk": True,     # 三方风险辩论（依赖交易员）
+    },
+
+    # ====== 策略选择 ======
+    # 默认只启用核心策略组合，避免每次分析都运行全部 15 个策略。
+    # WebUI 可在“策略选择”中覆盖；CLI/定时任务可修改此列表。
+    "strategy_keys": [
+        "bull_trend",
+        "ma_golden_cross",
+        "volume_breakout",
+        "shrink_pullback",
+        "bottom_volume",
+        "box_oscillation",
+    ],
 
     # ====== 工具级别的数据源配置 ======
     # 可以为单个工具函数指定不同于类别默认的数据源

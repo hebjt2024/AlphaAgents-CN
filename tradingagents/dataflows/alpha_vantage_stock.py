@@ -94,6 +94,10 @@
 #   - dt.strftime(格式)：日期对象 → 字符串
 from datetime import datetime
 
+# Annotated: 用于为类型注解添加元数据说明
+# LangChain 框架会读取这些说明作为 LLM 工具的参数描述
+from typing import Annotated
+
 # 从同目录下的 alpha_vantage_common 模块导入公共工具
 # . 表示"相对导入"——从当前包（dataflows 目录）导入
 # 导入的函数：
@@ -101,14 +105,10 @@ from datetime import datetime
 #   - _filter_csv_by_date_range: 按日期范围过滤 CSV 数据
 #   - AlphaVantageRateLimitError: API 限流时抛出的自定义异常
 from .alpha_vantage_common import (
-    _make_api_request,                # 发送 API 请求的统一入口函数
-    _filter_csv_by_date_range,       # 按日期范围过滤 CSV 数据
-    AlphaVantageRateLimitError,      # API 速率限制超限异常
+    AlphaVantageRateLimitError,  # API 速率限制超限异常
+    _filter_csv_by_date_range,  # 按日期范围过滤 CSV 数据
+    _make_api_request,  # 发送 API 请求的统一入口函数
 )
-
-# Annotated: 用于为类型注解添加元数据说明
-# LangChain 框架会读取这些说明作为 LLM 工具的参数描述
-from typing import Annotated
 
 
 # =============================================================================
@@ -223,8 +223,8 @@ def get_stock(
         # 当请求频率超过 Alpha Vantage 的限制时抛出
         # 返回友好的错误信息，而不是让程序崩溃
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:

@@ -119,7 +119,21 @@
 #   Sequence 是一个抽象的"有序集合"类型（list、tuple 都是 Sequence）。
 #   本文件中虽然在最终定义里没有直接使用 Sequence，
 #   但它是 typing 模块的标准导入，常用于类型注解中标注"有序集合"。
-from typing import Annotated, Sequence
+from typing import Annotated
+
+# 【为什么需要 ToolNode】
+#   ToolNode 是 LangGraph 预编译的"工具节点"。
+#   在 LangGraph 工作流中，当 LLM 请求调用工具时，
+#   ToolNode 负责实际执行工具函数并将结果返回给 LLM。
+#   虽然本文件不直接使用它，但它是状态流程图的组成部分。
+# 【为什么需要 END、StateGraph、START、MessagesState】
+#   - END: 图节点终止标记，表示工作流到此结束（相当于"终点站"）
+#   - StateGraph: 状态图类，用于构建智能体工作流（相当于"路线图"）
+#   - START: 图节点起始标记，表示工作流从这里开始（相当于"始发站"）
+#   - MessagesState: 消息状态基类，内置 messages 字段，
+#     使用 add_messages reducer 实现"追加而非覆盖"的消息管理
+#   本文件中的 AgentState 继承自 MessagesState，因此需要导入它。
+from langgraph.graph import MessagesState
 
 # 【为什么需要 datetime 模块】
 #   交易系统大量涉及日期时间处理（如"获取最近30天的股价数据"）。
@@ -128,8 +142,6 @@ from typing import Annotated, Sequence
 #   - datetime: 表示日期+时间的组合，如 datetime(2024, 6, 15, 10, 30)
 #   这些类型虽然在本文件的类型定义中没有直接出现，
 #   但它们是交易系统基础设施的一部分，可能在后续扩展中使用。
-from datetime import date, timedelta, datetime
-
 # 【为什么需要 TypedDict】
 #   TypedDict 是本文件的核心工具。
 #   它允许我们定义"有固定键和值类型的字典"。
@@ -139,37 +151,19 @@ from datetime import date, timedelta, datetime
 #   Optional[X] 表示"可以是 X 类型，也可以是 None"。
 #   在状态字段中，有些字段在初始状态下可能还没有值（None），
 #   Optional 提供了一种方式来标注这种"可选"状态。
-from typing_extensions import TypedDict, Optional
+from typing_extensions import TypedDict
 
 # 【为什么需要 ChatOpenAI】
 #   ChatOpenAI 是 LangChain 封装的 OpenAI 聊天模型接口。
 #   虽然在此文件中未直接使用（本文件只定义数据结构，不含逻辑），
 #   但它可能被其他模块通过 `from agent_states import *` 间接引用。
 #   这是一个"再导出"（re-export）模式，方便其他文件从统一位置导入。
-from langchain_openai import ChatOpenAI
-
 # 【为什么需要 `from tradingagents.agents import *`】
 #   这行代码从项目的 agents 包中导入所有公开符号（__all__ 列表中的内容）。
 #   这是一个"再导出"模式，让本文件可以访问 agents 包中定义的公共接口。
 #   通配符 * 导入会导入 __all__ 列表中定义的所有内容。
 #   如果 __all__ 未定义，则导入所有不以 _ 开头的名称。
 from tradingagents.agents import *
-
-# 【为什么需要 ToolNode】
-#   ToolNode 是 LangGraph 预编译的"工具节点"。
-#   在 LangGraph 工作流中，当 LLM 请求调用工具时，
-#   ToolNode 负责实际执行工具函数并将结果返回给 LLM。
-#   虽然本文件不直接使用它，但它是状态流程图的组成部分。
-from langgraph.prebuilt import ToolNode
-
-# 【为什么需要 END、StateGraph、START、MessagesState】
-#   - END: 图节点终止标记，表示工作流到此结束（相当于"终点站"）
-#   - StateGraph: 状态图类，用于构建智能体工作流（相当于"路线图"）
-#   - START: 图节点起始标记，表示工作流从这里开始（相当于"始发站"）
-#   - MessagesState: 消息状态基类，内置 messages 字段，
-#     使用 add_messages reducer 实现"追加而非覆盖"的消息管理
-#   本文件中的 AgentState 继承自 MessagesState，因此需要导入它。
-from langgraph.graph import END, StateGraph, START, MessagesState
 
 
 # =============================================================================
@@ -503,6 +497,10 @@ class AgentState(MessagesState):
     # 例如：获取该日期前 6 个月的股价数据用于技术分析。
     trade_date: Annotated[str, "What date we are trading at"]
 
+    # analysis_horizon: 分析视角（short/medium/long）
+    # 会注入到所有分析师的 instrument_context 中，影响报告的时间维度。
+    analysis_horizon: Annotated[str, "Investment horizon: short/medium/long"]
+
     # sender: 消息发送者标识（字符串类型）
     # ----------------------------------------------------------------
     # 追踪当前消息来自哪个智能体（如 "market_analyst"、"trader"）。
@@ -523,6 +521,14 @@ class AgentState(MessagesState):
     # 生成时机：市场分析师节点执行完成后。
     # 使用者：投资辩论阶段的多头/空头研究员、交易员。
     market_report: Annotated[str, "Report from the Market Analyst"]
+
+    # strategy_report: 本次启用策略的扫描结果（字符串类型）
+    # 由独立的策略扫描节点生成，供市场分析师参考
+    strategy_report: Annotated[str, "Report from the Strategy Scanner"]
+
+    # strategy_result: 策略扫描的结构化结果（dict）
+    # 用于生成结构化决策卡（评分/止损/目标价/仓位）
+    strategy_result: Annotated[dict, "Structured result from the Strategy Scanner"]
 
     # sentiment_report: 社交媒体情绪分析报告（字符串类型）
     # ----------------------------------------------------------------

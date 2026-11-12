@@ -1,0 +1,88 @@
+"""无界面分析服务：供定时任务 / API / 命令行复用。"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from tradingagents import bootstrap as _bootstrap  # noqa: F401
+from tradingagents.notify import build_report_notification, send_notification
+from tradingagents.runtime import ANALYSIS_LOCK
+from tradingagents.storage import save_report
+
+
+def run_analysis(
+    ticker: str,
+    trade_date: str,
+    config: dict[str, Any] | None = None,
+    source: str = "scheduler",
+    notify: bool = True,
+    horizon: str = "medium",
+) -> dict[str, Any]:
+    """执行一次完整分析并持久化、可选推送通知。"""
+    from tradingagents.default_config import DEFAULT_CONFIG
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    cfg = (config or DEFAULT_CONFIG).copy()
+
+    with ANALYSIS_LOCK:
+        graph = TradingAgentsGraph(config=cfg)
+        final_state, decision = graph.propagate(ticker, trade_date, horizon)
+
+    from tradingagents.services.decision_plan import (
+        build_decision_plan,
+        format_decision_plan,
+    )
+
+    decision_plan = build_decision_plan(
+        final_state.get("strategy_result"), decision
+    )
+
+    reports = {
+        "market_report": final_state.get("market_report", ""),
+        "strategy_report": final_state.get("strategy_report", ""),
+        "sentiment_report": final_state.get("sentiment_report", ""),
+        "news_report": final_state.get("news_report", ""),
+        "fundamentals_report": final_state.get("fundamentals_report", ""),
+        "investment_plan": final_state.get("investment_plan", ""),
+        "trader_investment_plan": final_state.get("trader_investment_plan", ""),
+        "final_trade_decision": final_state.get("final_trade_decision", ""),
+        "decision_plan": format_decision_plan(decision_plan),
+    }
+
+    report_id = save_report(
+        ticker=ticker,
+        trade_date=trade_date,
+        decision=decision,
+        decision_text=final_state.get("final_trade_decision", ""),
+        reports=reports,
+        source=source,
+        meta={
+            "llm_provider": cfg.get("llm_provider"),
+            "deep_think_llm": cfg.get("deep_think_llm"),
+            "quick_think_llm": cfg.get("quick_think_llm"),
+            "horizon": horizon,
+            "decision_plan": decision_plan,
+        },
+    )
+
+    notify_result = {}
+    if notify:
+        title, text = build_report_notification(
+            {
+                "ticker": ticker,
+                "trade_date": trade_date,
+                "decision": decision,
+                "decision_text": final_state.get("final_trade_decision", ""),
+            }
+        )
+        notify_result = send_notification(title, text)
+
+    return {
+        "report_id": report_id,
+        "ticker": ticker,
+        "trade_date": trade_date,
+        "decision": decision,
+        "decision_plan": decision_plan,
+        "final_state": final_state,
+        "notification": notify_result,
+    }

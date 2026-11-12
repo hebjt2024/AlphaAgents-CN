@@ -110,7 +110,17 @@
 # 常用方法：
 #   - datetime.now()：获取当前时间
 #   - dt.strftime(格式)：日期对象 → 字符串
+# json 模块：用于解析 JSON 格式的 API 响应
+# Alpha Vantage 的基本面数据返回 JSON 格式（而非 CSV）
+# json.loads(str) 把 JSON 字符串解析为 Python 字典/列表
+# 例如 json.loads('{"Name": "Apple"}') → {"Name": "Apple"}
+import json
 from datetime import datetime
+
+# Annotated: 用于为类型注解添加元数据说明
+# Annotated[str, "ticker symbol"] 在类型检查器眼中是 str
+# 但"ticker symbol"被 LangChain 框架读取作为 LLM 工具参数描述
+from typing import Annotated
 
 # 从同目录的 alpha_vantage_common 模块导入公共工具
 # . 表示相对导入——从当前包（dataflows 目录）导入
@@ -118,20 +128,9 @@ from datetime import datetime
 #   - _make_api_request: 统一的 API 请求函数，封装了 HTTP 请求和错误处理
 #   - AlphaVantageRateLimitError: API 限流时抛出的自定义异常类
 from .alpha_vantage_common import (
-    _make_api_request,            # 统一的 API 请求函数
-    AlphaVantageRateLimitError,   # API 速率限制超限异常
+    AlphaVantageRateLimitError,  # API 速率限制超限异常
+    _make_api_request,  # 统一的 API 请求函数
 )
-
-# json 模块：用于解析 JSON 格式的 API 响应
-# Alpha Vantage 的基本面数据返回 JSON 格式（而非 CSV）
-# json.loads(str) 把 JSON 字符串解析为 Python 字典/列表
-# 例如 json.loads('{"Name": "Apple"}') → {"Name": "Apple"}
-import json
-
-# Annotated: 用于为类型注解添加元数据说明
-# Annotated[str, "ticker symbol"] 在类型检查器眼中是 str
-# 但"ticker symbol"被 LangChain 框架读取作为 LLM 工具参数描述
-from typing import Annotated
 
 
 # =============================================================================
@@ -259,8 +258,8 @@ def get_fundamentals(
         # 当请求频率超过限制时抛出
         # 返回友好提示，而非让程序崩溃
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:
@@ -336,8 +335,8 @@ def get_income_statement(
 
     except AlphaVantageRateLimitError:
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:
@@ -409,8 +408,8 @@ def get_balance_sheet(
 
     except AlphaVantageRateLimitError:
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:
@@ -483,8 +482,8 @@ def get_cash_flow(
 
     except AlphaVantageRateLimitError:
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:

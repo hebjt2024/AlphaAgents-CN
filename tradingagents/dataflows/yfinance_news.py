@@ -118,10 +118,12 @@
 #   - stock.get_news()：获取该股票的新闻
 #   - yf.Search(query="关键词")：按关键词搜索新闻
 # ---------------------------------------------------------------------------
-import yfinance as yf
 from datetime import datetime
-from .y_finance import to_yfinance_symbol
+
+import yfinance as yf
 from dateutil.relativedelta import relativedelta
+
+from .y_finance import to_yfinance_symbol
 
 
 def _extract_article_data(article: dict) -> dict:

@@ -192,22 +192,28 @@
 # ---------------------------------------------------------------------------
 # 导入依赖
 # ---------------------------------------------------------------------------
-from typing import Dict, Any                           # 类型提示
                         # Dict[str, Any] 表示"键为字符串、值为任意类型的字典"
                         # 类型提示不影响运行，只是给人和 IDE 看的"说明书"
-from langchain_openai import ChatOpenAI                # OpenAI 兼容的聊天模型接口
-                        # ChatOpenAI 是 LangChain 提供的 LLM 封装类，
-                        # 它可以调用 OpenAI 的 API 来生成回复。
-                        # 本系统也支持 Google、Anthropic 等其他提供商，
-                        # 但最终都会适配成类似 ChatOpenAI 的接口。
-from langgraph.graph import END, StateGraph, START     # LangGraph 核心组件
-                        # StateGraph：用于创建有状态的有向图（核心类）
-                        # START：特殊节点，表示图的执行入口
-                        # END：特殊节点，表示图的执行出口
-                        # 执行流程：START → 各个节点 → END
-from langgraph.prebuilt import ToolNode                # 预置工具节点
-                        # ToolNode 详见上方"前置知识-概念 5：ToolNode 的内部机制"
+import logging
+import os  # 并行开关/并发度环境变量
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
+from langchain_openai import ChatOpenAI  # OpenAI 兼容的聊天模型接口
+
+# ChatOpenAI 是 LangChain 提供的 LLM 封装类，
+# 它可以调用 OpenAI 的 API 来生成回复。
+# 本系统也支持 Google、Anthropic 等其他提供商，
+# 但最终都会适配成类似 ChatOpenAI 的接口。
+from langgraph.graph import END, START, StateGraph  # LangGraph 核心组件
+
+# StateGraph：用于创建有状态的有向图（核心类）
+# START：特殊节点，表示图的执行入口
+# END：特殊节点，表示图的执行出口
+# 执行流程：START → 各个节点 → END
+from langgraph.prebuilt import ToolNode  # 预置工具节点
+
+# ToolNode 详见上方"前置知识-概念 5：ToolNode 的内部机制"
 # 导入所有代理创建函数
 # 这些函数返回 LangGraph 可用的节点函数
 # Python 语法说明：from xxx import * 把 xxx 模块中所有公开名字一次性导入
@@ -225,6 +231,15 @@ from tradingagents.agents.utils.agent_states import AgentState
 # 这些方法被用作条件边的条件函数。
 # 详见 conditional_logic.py 的注释
 from .conditional_logic import ConditionalLogic
+
+ANALYST_REPORT_FIELDS = {
+    "market": "market_report",
+    "social": "sentiment_report",
+    "news": "news_report",
+    "fundamentals": "fundamentals_report",
+}
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -279,13 +294,14 @@ class GraphSetup:
         self,
         quick_thinking_llm: ChatOpenAI,        # 快速思考 LLM（用于大多数代理）
         deep_thinking_llm: ChatOpenAI,         # 深度思考 LLM（用于研究经理和投资组合经理）
-        tool_nodes: Dict[str, ToolNode],       # 工具节点字典（键为分析师类型）
+        tool_nodes: dict[str, ToolNode],       # 工具节点字典（键为分析师类型）
         bull_memory,                           # 牛市研究员的情景记忆
         bear_memory,                           # 熊市研究员的情景记忆
         trader_memory,                         # 交易员的情景记忆
         invest_judge_memory,                   # 投资裁判的情景记忆
         portfolio_manager_memory,              # 投资组合经理的情景记忆
         conditional_logic: ConditionalLogic,   # 条件路由逻辑
+        pipeline: dict | None = None,          # 自定义图编排配置
     ):
         """
         初始化图搭建器。
@@ -358,13 +374,17 @@ class GraphSetup:
         self.invest_judge_memory = invest_judge_memory
         self.portfolio_manager_memory = portfolio_manager_memory
         self.conditional_logic = conditional_logic
+        # pipeline 控制哪些阶段参与图编排：
+        #   enable_debate  多空辩论（Bull/Bear + Research Manager）
+        #   enable_trader  交易员节点
+        #   enable_risk    三方风险辩论
+        # Portfolio Manager（最终裁决）始终保留，保证 final_trade_decision 一定生成。
+        self.pipeline = pipeline or {}
 
     # -------------------------------------------------------------------------
     # 核心方法：搭建完整的工作流图
     # -------------------------------------------------------------------------
-    def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals"]
-    ):
+    def setup_graph(self, selected_analysts=None):
         """
         搭建并编译代理工作流图。
 
@@ -471,10 +491,20 @@ class GraphSetup:
             #    return workflow.compile()
             #    → 返回一个 CompiledGraph 对象，可以调用 invoke() 或 stream()
         """
+        if selected_analysts is None:
+            selected_analysts = ["market", "social", "news", "fundamentals"]
+
         # 安全检查：必须至少选择一个分析师
         # 如果 selected_analysts 是空列表，后面的循环不会执行，图会缺少入口
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")
+
+        # 读取自定义图编排配置。
+        # 风险辩论需要交易员方案作为评估对象，因此 enable_risk 依赖 enable_trader。
+        pipeline = self.pipeline or {}
+        enable_debate = bool(pipeline.get("enable_debate", True))
+        enable_trader = bool(pipeline.get("enable_trader", True))
+        enable_risk = bool(pipeline.get("enable_risk", True)) and enable_trader
 
         # =====================================================================
         # 阶段 1：创建分析师节点
@@ -636,6 +666,107 @@ class GraphSetup:
             self.deep_thinking_llm, self.portfolio_manager_memory
         )
 
+        # 策略扫描节点：在分析师之前运行本次选中的策略组合
+        strategy_scanner_node = create_strategy_scanner_node()
+
+        # 并行分析师：每个分析师使用独立的 messages 副本，报告字段在节点结束时合并。
+        use_parallel_analysts = (
+            os.getenv("TRADINGAGENTS_PARALLEL_ANALYSTS", "1").lower()
+            in ("1", "true", "yes", "on")
+            and len(selected_analysts) > 1
+        )
+        try:
+            parallel_workers = max(
+                1,
+                min(
+                    int(os.getenv("TRADINGAGENTS_PARALLEL_ANALYSTS_WORKERS", "4")),
+                    len(selected_analysts),
+                ),
+            )
+        except ValueError:
+            parallel_workers = min(4, len(selected_analysts))
+
+        def _run_analyst(
+            analyst_type: str, state: dict, config: dict | None = None
+        ) -> str:
+            node = analyst_nodes[analyst_type]
+            report_field = ANALYST_REPORT_FIELDS[analyst_type]
+            local = dict(state)
+            local["messages"] = list(state.get("messages") or [])
+            error = None
+            for _ in range(6):
+                update = node(local) or {}
+                messages = update.get("messages") or []
+                if messages:
+                    local["messages"].extend(messages)
+                for key, value in update.items():
+                    if key != "messages":
+                        local[key] = value
+                ai_message = messages[-1] if messages else None
+                tool_calls = getattr(ai_message, "tool_calls", None) or []
+                if not tool_calls:
+                    break
+                try:
+                    tool_update = tool_nodes[analyst_type].invoke(
+                        {"messages": [ai_message]},
+                        config=config,
+                    )
+                    local["messages"].extend(
+                        tool_update.get("messages") or []
+                    )
+                except Exception as exc:
+                    error = exc
+                    break
+            report = local.get(report_field, "")
+            if report:
+                return report
+            last_message = (
+                local["messages"][-1] if local["messages"] else None
+            )
+            content = str(getattr(last_message, "content", "") or "").strip()
+            if content:
+                return content
+            if error is not None:
+                return (
+                    f"（{analyst_type} 工具调用失败："
+                    f"{type(error).__name__}: {error}）"
+                )
+            return f"（{analyst_type} 未返回报告）"
+
+        def parallel_analysts_node(
+            state: dict, config: dict | None = None
+        ) -> dict:
+            reports: dict[str, str] = {}
+            started = time.perf_counter()
+            with ThreadPoolExecutor(max_workers=parallel_workers) as pool:
+                futures = {
+                    pool.submit(
+                        _run_analyst, analyst_type, state, config
+                    ): analyst_type
+                    for analyst_type in selected_analysts
+                }
+                for future in as_completed(futures):
+                    analyst_type = futures[future]
+                    field = ANALYST_REPORT_FIELDS[analyst_type]
+                    try:
+                        reports[field] = future.result()
+                    except Exception as exc:
+                        reports[field] = (
+                            f"（{analyst_type} 分析失败："
+                            f"{type(exc).__name__}: {exc}）"
+                        )
+                    logger.info(
+                        "并行分析师 %s 完成，累计耗时 %.1fs",
+                        analyst_type,
+                        time.perf_counter() - started,
+                    )
+            logger.info(
+                "并行分析师全部完成，共 %.1fs（workers=%s）",
+                time.perf_counter() - started,
+                parallel_workers,
+            )
+            return reports
+
         # =====================================================================
         # 搭建 StateGraph
         # 这是 StateGraph 生命周期的第 1 步：创建
@@ -646,6 +777,9 @@ class GraphSetup:
         # 所有节点都共享同一个 AgentState 实例
         # StateGraph 内部维护了节点列表和边列表，此时图是空的
         workflow = StateGraph(AgentState)
+
+        # 策略扫描作为流程的第一个阶段
+        workflow.add_node("Strategy Scanner", strategy_scanner_node)
 
         # -----------------------------------------------------------------
         # 添加分析师节点到图中
@@ -662,241 +796,147 @@ class GraphSetup:
         #   例如 analyst_nodes = {"market": func1, "social": func2}
         #   则遍历：("market", func1), ("social", func2)
         # -----------------------------------------------------------------
-        for analyst_type, node in analyst_nodes.items():
-            # 添加分析师节点，名称首字母大写（如 "market" → "Market Analyst"）
-            # Python 语法说明：
-            #   analyst_type.capitalize() → "market".capitalize() → "Market"
-            #   f"{analyst_type.capitalize()} Analyst" → "Market Analyst"
-            # add_node(节点名, 处理函数)：把节点注册到图中
-            workflow.add_node(f"{analyst_type.capitalize()} Analyst", node)
+        if use_parallel_analysts:
+            workflow.add_node("Parallel Analysts", parallel_analysts_node)
+        else:
+            for analyst_type, node in analyst_nodes.items():
+                # 添加分析师节点，名称首字母大写（如 "market" → "Market Analyst"）
+                workflow.add_node(f"{analyst_type.capitalize()} Analyst", node)
 
-            # 添加消息清除节点
-            # 节点名如 "Msg Clear Market"、"Msg Clear Social" 等
-            workflow.add_node(
-                f"Msg Clear {analyst_type.capitalize()}", delete_nodes[analyst_type]
-            )
+                # 添加消息清除节点
+                workflow.add_node(
+                    f"Msg Clear {analyst_type.capitalize()}",
+                    delete_nodes[analyst_type],
+                )
 
-            # 添加工具节点
-            # 节点名如 "tools_market"、"tools_social" 等
-            workflow.add_node(f"tools_{analyst_type}", tool_nodes[analyst_type])
+                # 添加工具节点
+                workflow.add_node(
+                    f"tools_{analyst_type}", tool_nodes[analyst_type]
+                )
 
-        # 添加其他节点（研究员、交易员、风险管理）
-        # 这些节点不需要工具节点和消息清除节点
-        workflow.add_node("Bull Researcher", bull_researcher_node)
-        workflow.add_node("Bear Researcher", bear_researcher_node)
-        workflow.add_node("Research Manager", research_manager_node)
-        workflow.add_node("Trader", trader_node)
-        workflow.add_node("Aggressive Analyst", aggressive_analyst)
-        workflow.add_node("Neutral Analyst", neutral_analyst)
-        workflow.add_node("Conservative Analyst", conservative_analyst)
+        # 按 pipeline 配置添加可选阶段节点。
+        # 未启用的节点不加入图，避免出现孤立节点导致 compile 失败。
+        if enable_debate:
+            workflow.add_node("Bull Researcher", bull_researcher_node)
+            workflow.add_node("Bear Researcher", bear_researcher_node)
+            workflow.add_node("Research Manager", research_manager_node)
+
+        if enable_trader:
+            workflow.add_node("Trader", trader_node)
+
+        if enable_risk:
+            workflow.add_node("Aggressive Analyst", aggressive_analyst)
+            workflow.add_node("Neutral Analyst", neutral_analyst)
+            workflow.add_node("Conservative Analyst", conservative_analyst)
+
+        # 最终裁决节点始终保留，确保一定生成 final_trade_decision
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
 
         # =====================================================================
         # 定义边（Edge）—— 数据流动的路径
-        # 这是 StateGraph 生命周期的第 3-4 步：add_edge 和 add_conditional_edges
+        # 支持按 pipeline 配置跳过部分阶段，形成“精简 / 标准 / 深度”等流程。
         # =====================================================================
+        if enable_debate:
+            analysts_next_node = "Bull Researcher"
+        elif enable_trader:
+            analysts_next_node = "Trader"
+        else:
+            analysts_next_node = "Portfolio Manager"
 
-        # -----------------------------------------------------------------
-        # 入口边：从 START 到第一个分析师
-        # START 是 LangGraph 的特殊节点，表示图的执行起点
-        # 这是普通边（add_edge）：START 完了必定去第一个分析师
-        # -----------------------------------------------------------------
-        # selected_analysts[0] 获取列表的第一个元素（如 "market"）
-        first_analyst = selected_analysts[0]
-        # f"{first_analyst.capitalize()} Analyst" → "Market Analyst"
-        workflow.add_edge(START, f"{first_analyst.capitalize()} Analyst")
+        workflow.add_edge(START, "Strategy Scanner")
 
-        # -----------------------------------------------------------------
-        # 分析师流水线边：将分析师按顺序连接
-        # 每个分析师的处理流程：
-        #   分析师 <--(条件边)--> 工具节点     # 循环：分析→获取数据→分析→...
-        #   分析师 --(条件边)--> 消息清除       # 分析完成时清除消息
-        #   消息清除 --(普通边)--> 下一个分析师  # 准备下一个分析师
-        # -----------------------------------------------------------------
-        # Python 语法说明：enumerate(列表)
-        #   enumerate 同时给出索引和值：
-        #     enumerate(["market", "social", "news", "fundamentals"])
-        #     → (0, "market"), (1, "social"), (2, "news"), (3, "fundamentals")
-        #   好处：不需要手动用 range(len(...)) 来获取索引
-        for i, analyst_type in enumerate(selected_analysts):
-            # 构建当前分析师相关的节点名
-            current_analyst = f"{analyst_type.capitalize()} Analyst"   # 如 "Market Analyst"
-            current_tools = f"tools_{analyst_type}"                     # 如 "tools_market"
-            current_clear = f"Msg Clear {analyst_type.capitalize()}"   # 如 "Msg Clear Market"
-
-            # 添加条件边：从分析师节点出发
-            # 这是 StateGraph 生命周期的第 4 步：add_conditional_edges
-            #
-            # 条件函数（如 should_continue_market）检查最后一条消息是否包含 tool_calls
-            # - 如果有 tool_calls：路由到工具节点（继续获取数据）
-            # - 如果没有 tool_calls：路由到消息清除节点（分析完成）
-            #
-            # 详见上方"前置知识-概念 4：条件边的路由机制"
-            # 和"前置知识-概念 5：ToolNode 的内部机制"
-            #
-            # Python 语法说明：getattr(self.conditional_logic, f"should_continue_{analyst_type}")
-            # getattr 是"动态方法获取"：
-            #   当 analyst_type = "market" 时：
-            #   f"should_continue_{analyst_type}" = "should_continue_market"
-            #   getattr(self.conditional_logic, "should_continue_market")
-            #   等价于 self.conditional_logic.should_continue_market
-            #   好处：在循环中动态拼接方法名，避免写一堆 if-else。
-            #         否则需要：
-            #           if analyst_type == "market":
-            #               condition_func = self.conditional_logic.should_continue_market
-            #           elif analyst_type == "social":
-            #               condition_func = self.conditional_logic.should_continue_social
-            #           ...
-            workflow.add_conditional_edges(
-                current_analyst,  # 源节点（如 "Market Analyst"）
-                getattr(self.conditional_logic, f"should_continue_{analyst_type}"),  # 条件函数
-                [current_tools, current_clear],  # 可能的目标节点列表
-                # 列表形式：条件函数返回的字符串直接作为目标节点名
-                # should_continue_market 返回 "tools_market" 或 "Msg Clear Market"
+        if use_parallel_analysts:
+            workflow.add_edge("Strategy Scanner", "Parallel Analysts")
+            workflow.add_edge("Parallel Analysts", analysts_next_node)
+        else:
+            first_analyst = selected_analysts[0]
+            workflow.add_edge(
+                "Strategy Scanner", f"{first_analyst.capitalize()} Analyst"
             )
 
-            # 工具节点 -> 回到分析师节点（形成循环：分析 -> 获取数据 -> 分析）
-            # 这是普通边（add_edge）：工具节点执行完必定回到分析师节点
-            # 这个循环就是"分析师反复调用工具获取数据"的实现
-            workflow.add_edge(current_tools, current_analyst)
+            # 分析师流水线：分析师 <-> 工具 -> 消息清理 -> 下一个阶段
+            for i, analyst_type in enumerate(selected_analysts):
+                current_analyst = f"{analyst_type.capitalize()} Analyst"
+                current_tools = f"tools_{analyst_type}"
+                current_clear = f"Msg Clear {analyst_type.capitalize()}"
 
-            # 消息清除 -> 下一个分析师（或 Bull Researcher）
-            # Python 语法说明：if i < len(selected_analysts) - 1:
-            #   判断当前是否不是最后一个分析师
-            #   len(selected_analysts) - 1 是最后一个元素的索引
-            if i < len(selected_analysts) - 1:
-                # 不是最后一个分析师：连接到下一个分析师
-                # selected_analysts[i+1] 获取下一个分析师类型
-                # 如 i=0 时，selected_analysts[1] 是 "social"
-                next_analyst = f"{selected_analysts[i+1].capitalize()} Analyst"
-                workflow.add_edge(current_clear, next_analyst)
+                workflow.add_conditional_edges(
+                    current_analyst,
+                    getattr(
+                        self.conditional_logic,
+                        f"should_continue_{analyst_type}",
+                    ),
+                    [current_tools, current_clear],
+                )
+                workflow.add_edge(current_tools, current_analyst)
+
+                if i < len(selected_analysts) - 1:
+                    next_analyst = (
+                        f"{selected_analysts[i + 1].capitalize()} Analyst"
+                    )
+                    workflow.add_edge(current_clear, next_analyst)
+                else:
+                    workflow.add_edge(current_clear, analysts_next_node)
+
+        # 多空辩论阶段（可选）
+        if enable_debate:
+            workflow.add_conditional_edges(
+                "Bull Researcher",
+                self.conditional_logic.should_continue_debate,
+                {
+                    "Bear Researcher": "Bear Researcher",
+                    "Research Manager": "Research Manager",
+                },
+            )
+            workflow.add_conditional_edges(
+                "Bear Researcher",
+                self.conditional_logic.should_continue_debate,
+                {
+                    "Bull Researcher": "Bull Researcher",
+                    "Research Manager": "Research Manager",
+                },
+            )
+
+            if enable_trader:
+                workflow.add_edge("Research Manager", "Trader")
             else:
-                # 是最后一个分析师：连接到牛市研究员，开始投资辩论阶段
-                workflow.add_edge(current_clear, "Bull Researcher")
+                workflow.add_edge("Research Manager", "Portfolio Manager")
 
-        # -----------------------------------------------------------------
-        # 投资辩论阶段边：牛/熊方交替辩论
-        #
-        # 这是 StateGraph 生命周期的第 4 步：add_conditional_edges（循环和分支）
-        #
-        # 流程：
-        #   Bull Researcher --(条件边)--> Bear Researcher（继续辩论）
-        #   Bull Researcher --(条件边)--> Research Manager（辩论结束）
-        #   Bear Researcher --(条件边)--> Bull Researcher（继续辩论）
-        #   Bear Researcher --(条件边)--> Research Manager（辩论结束）
-        #
-        # 条件函数 should_continue_debate：
-        # - 如果辩论轮数达到上限：返回 "Research Manager"
-        # - 如果当前发言以 "Bull" 开头：返回 "Bear Researcher"（让熊方回应）
-        # - 如果当前发言以 "Bear" 开头：返回 "Bull Researcher"（让牛方回应）
-        #
-        # 运行时数据流示例（辩论过程）：
-        #   第 1 步：Bull Researcher 执行
-        #     → current_response = "Bull: AAPL has strong revenue growth..."
-        #     → count = 1
-        #     → should_continue_debate 返回 "Bear Researcher"（让熊方回应）
-        #
-        #   第 2 步：Bear Researcher 执行
-        #     → current_response = "Bear: But P/E ratio is too high..."
-        #     → count = 2
-        #     → should_continue_debate 检查 count >= 2*1 = 2 → 达到上限
-        #     → 返回 "Research Manager"（结束辩论）
-        #
-        #   第 3 步：Research Manager 执行
-        #     → judge_decision = "The bull argument is more compelling..."
-        #
-        # 路由映射使用字典形式：
-        #   {"Bear Researcher": "Bear Researcher", "Research Manager": "Research Manager"}
-        # 条件函数返回的字符串在字典中查找对应的值（这里值和键相同）
-        # -----------------------------------------------------------------
-        workflow.add_conditional_edges(
-            "Bull Researcher",
-            self.conditional_logic.should_continue_debate,
-            {
-                "Bear Researcher": "Bear Researcher",    # 条件函数返回此值时，路由到熊方
-                "Research Manager": "Research Manager",  # 条件函数返回此值时，辩论结束
-            },
-        )
-        workflow.add_conditional_edges(
-            "Bear Researcher",
-            self.conditional_logic.should_continue_debate,
-            {
-                "Bull Researcher": "Bull Researcher",    # 条件函数返回此值时，路由到牛方
-                "Research Manager": "Research Manager",  # 条件函数返回此值时，辩论结束
-            },
-        )
+        # 交易员阶段（可选）
+        if enable_trader:
+            if enable_risk:
+                workflow.add_edge("Trader", "Aggressive Analyst")
+            else:
+                workflow.add_edge("Trader", "Portfolio Manager")
 
-        # 研究经理 -> 交易员（普通边，确定性路由）
-        # 研究经理做出投资判断后，交易员据此制定交易计划
-        workflow.add_edge("Research Manager", "Trader")
+        # 三方风险辩论（可选，依赖交易员方案）
+        if enable_risk:
+            workflow.add_conditional_edges(
+                "Aggressive Analyst",
+                self.conditional_logic.should_continue_risk_analysis,
+                {
+                    "Conservative Analyst": "Conservative Analyst",
+                    "Portfolio Manager": "Portfolio Manager",
+                },
+            )
+            workflow.add_conditional_edges(
+                "Conservative Analyst",
+                self.conditional_logic.should_continue_risk_analysis,
+                {
+                    "Neutral Analyst": "Neutral Analyst",
+                    "Portfolio Manager": "Portfolio Manager",
+                },
+            )
+            workflow.add_conditional_edges(
+                "Neutral Analyst",
+                self.conditional_logic.should_continue_risk_analysis,
+                {
+                    "Aggressive Analyst": "Aggressive Analyst",
+                    "Portfolio Manager": "Portfolio Manager",
+                },
+            )
 
-        # 交易员 -> 激进分析师（开始风险分析阶段）
-        # 交易员制定完交易计划后，进入风险分析三方辩论
-        workflow.add_edge("Trader", "Aggressive Analyst")
-
-        # -----------------------------------------------------------------
-        # 风险分析阶段边：三方循环辩论
-        #
-        # 流程：
-        #   Aggressive -> Conservative -> Neutral -> Aggressive -> ...
-        #   每个节点都有条件边，要么继续循环，要么到 Portfolio Manager
-        #
-        # 条件函数 should_continue_risk_analysis：
-        # - 如果讨论轮数达到上限：返回 "Portfolio Manager"
-        # - 根据 latest_speaker 决定下一个发言者：
-        #   - "Aggressive" 开头 → "Conservative Analyst"
-        #   - "Conservative" 开头 → "Neutral Analyst"
-        #   - "Neutral" 开头 → "Aggressive Analyst"（循环回到激进方）
-        #
-        # 运行时数据流示例（风险辩论过程，假设 max_risk_discuss_rounds=1）：
-        #   第 1 步：Aggressive Analyst 执行
-        #     → latest_speaker = "Aggressive"
-        #     → count = 1
-        #     → should_continue_risk_analysis 返回 "Conservative Analyst"
-        #
-        #   第 2 步：Conservative Analyst 执行
-        #     → latest_speaker = "Conservative"
-        #     → count = 2
-        #     → should_continue_risk_analysis 返回 "Neutral Analyst"
-        #
-        #   第 3 步：Neutral Analyst 执行
-        #     → latest_speaker = "Neutral"
-        #     → count = 3
-        #     → should_continue_risk_analysis 检查 count >= 3*1 = 3 → 达到上限
-        #     → 返回 "Portfolio Manager"（结束讨论）
-        #
-        #   第 4 步：Portfolio Manager 执行
-        #     → judge_decision = "Given balanced risk perspectives, BUY with 60% position..."
-        #     → final_trade_decision = "BUY AAPL with target $200..."
-        # -----------------------------------------------------------------
-        workflow.add_conditional_edges(
-            "Aggressive Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Conservative Analyst": "Conservative Analyst",  # 继续：激进 -> 保守
-                "Portfolio Manager": "Portfolio Manager",        # 结束：进入最终决策
-            },
-        )
-        workflow.add_conditional_edges(
-            "Conservative Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Neutral Analyst": "Neutral Analyst",            # 继续：保守 -> 中性
-                "Portfolio Manager": "Portfolio Manager",        # 结束：进入最终决策
-            },
-        )
-        workflow.add_conditional_edges(
-            "Neutral Analyst",
-            self.conditional_logic.should_continue_risk_analysis,
-            {
-                "Aggressive Analyst": "Aggressive Analyst",      # 继续：中性 -> 激进（循环）
-                "Portfolio Manager": "Portfolio Manager",        # 结束：进入最终决策
-            },
-        )
-
-        # 投资组合经理 -> END（图执行结束）
-        # END 是 LangGraph 的特殊节点，表示图的执行终点
-        # 这是普通边（add_edge）：投资组合经理做完决策后，图执行结束
+        # 最终裁决 -> END（Portfolio Manager 始终存在）
         workflow.add_edge("Portfolio Manager", END)
 
         # =====================================================================

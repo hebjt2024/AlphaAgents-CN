@@ -83,13 +83,13 @@
 
 # @tool: LangChain 工具装饰器，将普通函数转换为智能体可调用的工具
 # 【详细说明见文件开头的前置知识部分】
-from langchain_core.tools import tool
-
 # Annotated: 类型注解包装器，用于为参数添加元数据描述
 # 【为什么需要 Annotated？】
 # LLM 需要知道每个参数的含义才能正确填写值。
 # Annotated[str, "描述"] 在类型(str)之外附加说明，LLM 据此填写参数。
 from typing import Annotated
+
+from langchain_core.tools import tool
 
 # route_to_vendor: 统一的数据供应商路由接口
 # 将数据请求转发到配置的供应商（如 NewsAPI、Alpha Vantage 等）

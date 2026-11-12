@@ -87,7 +87,8 @@
 # ---------------------------------------------------------------------------
 # 导入依赖
 # ---------------------------------------------------------------------------
-from langchain_openai import ChatOpenAI     # OpenAI 兼容的聊天模型接口
+from langchain_openai import ChatOpenAI  # OpenAI 兼容的聊天模型接口
+
                         # ChatOpenAI 是 LangChain 提供的 LLM 封装类
                         # 可以调用 LLM 的 API 来生成文本回复
                         # .invoke(messages) 发送消息列表并获取 LLM 回复

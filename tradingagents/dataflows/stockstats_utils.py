@@ -161,14 +161,27 @@
 # time 模块：Python 标准库，提供时间相关的函数。
 # 这里主要用于 time.sleep(秒数) 函数——让程序暂停执行指定的秒数。
 # 在"指数退避重试"中，我们需要在重试前暂停一会儿，等服务器恢复。
-import time
-
 # logging 模块：Python 标准的日志记录库。
 # 相比 print()，logging 提供了日志级别（DEBUG/INFO/WARNING/ERROR）、
 # 时间戳、模块名等更丰富的日志信息，更适合生产环境使用。
 # 用法：logger = logging.getLogger(__name__) 创建日志记录器，
 #       然后用 logger.warning("消息") 记录警告级别的日志。
 import logging
+
+# os 模块：Python 标准库，用于操作系统相关的操作。
+# 这里主要用于：
+#   - os.path.exists(路径)：检查文件或目录是否存在
+#   - os.path.join(目录, 文件名)：跨平台拼接路径（Windows 用 \，Linux 用 /）
+#   - os.makedirs(目录, exist_ok=True)：创建目录（已存在不报错）
+import os
+import time
+
+# typing.Annotated：Python 的类型注解增强工具。
+# 用法：Annotated[基础类型, "说明文字"]
+# 例如 Annotated[str, "ticker symbol"] 在类型检查器看来还是 str，
+# 但"ticker symbol"这个说明文字会被 LangChain 框架读取，
+# 作为传递给 LLM（大语言模型）的工具描述信息。
+from typing import Annotated
 
 # pandas（别名 pd）：Python 数据分析核心库。
 # pandas 是本项目中最重要的数据处理库。
@@ -193,12 +206,6 @@ import pandas as pd
 # 这里起别名 yf，后面写 yf.download() 就等于写 yfinance.download()。
 import yfinance as yf
 
-# YFRateLimitError: 这是 yfinance 库在遇到 HTTP 429（请求过多）响应时抛出的异常类。
-# 当我们发送请求太快、超过 Yahoo Finance 的速率限制时，yfinance 就会抛出这个异常。
-# 我们需要在重试函数中捕获这个特定异常，决定是否等待后重试。
-# 语法解释：从 yfinance 包的 exceptions 子模块中导入 YFRateLimitError 类。
-from yfinance.exceptions import YFRateLimitError
-
 # stockstats.wrap：stockstats 库的包装函数。
 # 它的作用：把普通的 pandas DataFrame 包装成 StockDataFrame。
 # StockDataFrame 是 stockstats 的核心类，它的特殊之处在于：
@@ -207,19 +214,11 @@ from yfinance.exceptions import YFRateLimitError
 # 只有在你真正访问指标时才进行计算，避免浪费资源。
 from stockstats import wrap
 
-# typing.Annotated：Python 的类型注解增强工具。
-# 用法：Annotated[基础类型, "说明文字"]
-# 例如 Annotated[str, "ticker symbol"] 在类型检查器看来还是 str，
-# 但"ticker symbol"这个说明文字会被 LangChain 框架读取，
-# 作为传递给 LLM（大语言模型）的工具描述信息。
-from typing import Annotated
-
-# os 模块：Python 标准库，用于操作系统相关的操作。
-# 这里主要用于：
-#   - os.path.exists(路径)：检查文件或目录是否存在
-#   - os.path.join(目录, 文件名)：跨平台拼接路径（Windows 用 \，Linux 用 /）
-#   - os.makedirs(目录, exist_ok=True)：创建目录（已存在不报错）
-import os
+# YFRateLimitError: 这是 yfinance 库在遇到 HTTP 429（请求过多）响应时抛出的异常类。
+# 当我们发送请求太快、超过 Yahoo Finance 的速率限制时，yfinance 就会抛出这个异常。
+# 我们需要在重试函数中捕获这个特定异常，决定是否等待后重试。
+# 语法解释：从 yfinance 包的 exceptions 子模块中导入 YFRateLimitError 类。
+from yfinance.exceptions import YFRateLimitError
 
 # 从同目录下的 config 模块导入 get_config 函数。
 # 语法解释：

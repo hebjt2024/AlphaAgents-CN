@@ -107,9 +107,10 @@
 # ============================================================================
 
 import os  # 操作系统接口，用于读取环境变量（API 密钥等）
+
 # 【什么是 os 模块？】Python 内置模块，提供与操作系统交互的功能。
 # os.environ.get("KEY") 从环境变量中读取名为 KEY 的值
-from typing import Any, Optional
+from typing import Any
 
 # LangChain 的 OpenAI 聊天模型封装
 # ChatOpenAI 是 LangChain 提供的类，封装了与 OpenAI API 的通信
@@ -216,7 +217,7 @@ class OpenAIClient(BaseLLMClient):
         model: str,
         # base_url: 自定义 API 地址（可选）
         # 如果为 None，根据 provider 自动选择默认地址
-        base_url: Optional[str] = None,
+        base_url: str | None = None,
         # provider: 提供商标识，决定使用哪个 API 地址和认证方式
         # 取值："openai"（默认）、"ollama"、"openrouter"、"xai"
         provider: str = "openai",

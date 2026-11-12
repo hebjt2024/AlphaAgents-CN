@@ -120,7 +120,15 @@
 #   - datetime.strptime(字符串, 格式)：字符串 → 日期对象
 #   - datetime.now()：获取当前时间
 #   - dt.strftime(格式)：日期对象 → 字符串
+# json 模块：用于解析 JSON 格式的 API 响应
+# Alpha Vantage 的新闻 API 返回 JSON 格式
+# json.loads(str) 把 JSON 字符串解析为 Python 字典/列表
+import json
 from datetime import datetime
+
+# Annotated: 用于为类型注解添加元数据说明
+# LangChain 框架读取"说明文字"作为 LLM 工具参数描述
+from typing import Annotated
 
 # relativedelta 类（来自 dateutil 库）：基于日历的日期差计算工具
 # 与标准库 timedelta 的区别：
@@ -137,19 +145,10 @@ from dateutil.relativedelta import relativedelta
 #     把 "2024-01-15" 转为 Alpha Vantage 要求的 "20240115T0000" 格式
 #   - AlphaVantageRateLimitError: API 限流异常类
 from .alpha_vantage_common import (
-    _make_api_request,               # 统一的 API 请求函数
-    format_datetime_for_api,         # 日期格式转换函数
-    AlphaVantageRateLimitError,       # API 速率限制超限异常
+    AlphaVantageRateLimitError,  # API 速率限制超限异常
+    _make_api_request,  # 统一的 API 请求函数
+    format_datetime_for_api,  # 日期格式转换函数
 )
-
-# json 模块：用于解析 JSON 格式的 API 响应
-# Alpha Vantage 的新闻 API 返回 JSON 格式
-# json.loads(str) 把 JSON 字符串解析为 Python 字典/列表
-import json
-
-# Annotated: 用于为类型注解添加元数据说明
-# LangChain 框架读取"说明文字"作为 LLM 工具参数描述
-from typing import Annotated
 
 
 # =============================================================================
@@ -272,7 +271,7 @@ def get_news(
         # enumerate(feed) 同时获取索引 i 和元素 article
         # i 是当前新闻的序号（从 0 开始）
         # article 是一条新闻的字典
-        for i, article in enumerate(feed):
+        for _i, article in enumerate(feed):
             # 从新闻字典中提取各字段
             # .get(key, default) 安全获取值，键不存在时返回默认值
             title = article.get("title", "No title")             # 新闻标题
@@ -312,8 +311,8 @@ def get_news(
         # 捕获 API 速率限制异常
         # 当请求频率超过 Alpha Vantage 的限制时抛出
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:
@@ -427,7 +426,7 @@ def get_global_news(
         # 构建格式化的新闻输出
         news_str = ""
         # enumerate(feed) 同时获取索引 i 和元素 article
-        for i, article in enumerate(feed):
+        for _i, article in enumerate(feed):
             # 从新闻字典中提取各字段
             title = article.get("title", "No title")
             summary = article.get("summary", "")
@@ -453,8 +452,8 @@ def get_global_news(
 
     except AlphaVantageRateLimitError:
         return (
-            f"Alpha Vantage API rate limit exceeded. "
-            f"Please wait a minute and try again."
+            "Alpha Vantage API rate limit exceeded. "
+            "Please wait a minute and try again."
         )
 
     except Exception as e:

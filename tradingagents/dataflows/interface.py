@@ -165,7 +165,6 @@
 # 【什么是类型注解？】Python 是动态类型语言，变量不需要声明类型。
 # 但为了代码可读性和 IDE 提示，可以加上类型注解：name: str = "Tom"
 # Annotated 在类型的基础上额外附加说明文字，方便人和工具理解。
-from typing import Annotated
 
 # 从 y_finance 模块导入 Yahoo Finance 供应商的具体实现函数。
 # 【什么是 `from ... import ...`？】
@@ -177,32 +176,52 @@ from typing import Annotated
 #   如果不重命名，两个同名函数会冲突，后导入的会覆盖前面的。
 #   用 `as` 给它们起不同的别名，就像两个人同名，用绰号区分。
 #   例如：get_fundamentals 被重命名为 get_yfinance_fundamentals。
-from .y_finance import (
-    get_YFin_data_online,          # 获取股票在线价格数据
-    get_stock_stats_indicators_window,  # 获取技术指标窗口数据
-    get_fundamentals as get_yfinance_fundamentals,  # 获取基本面数据
-    get_balance_sheet as get_yfinance_balance_sheet,  # 获取资产负债表
-    get_cashflow as get_yfinance_cashflow,  # 获取现金流量表
-    get_income_statement as get_yfinance_income_statement,  # 获取利润表
-    get_insider_transactions as get_yfinance_insider_transactions,  # 获取内部交易
+# 从 akshare_adapter 模块导入 AkShare 供应商的具体实现函数和异常类
+from .akshare_adapter import (
+    AkShareRateLimitError,
+    AkShareTimeoutError,
+    get_akshare_balance_sheet,
+    get_akshare_capital_flow,
+    get_akshare_cashflow,
+    get_akshare_dragon_tiger,
+    get_akshare_fundamentals,
+    get_akshare_global_news,
+    get_akshare_income_statement,
+    get_akshare_indicators,
+    get_akshare_insider_transactions,
+    get_akshare_news,
+    get_akshare_northbound_flow,
+    get_akshare_stock,
 )
-
-# 从 yfinance_news 模块导入新闻相关函数
-# 【什么是 `.` 相对导入？】from .xxx 中的一个点表示"当前包目录下"。
-# 即从与 interface.py 同目录的 yfinance_news.py 文件中导入。
-from .yfinance_news import get_news_yfinance, get_global_news_yfinance
+from .alpha_vantage import (
+    get_balance_sheet as get_alpha_vantage_balance_sheet,
+)
+from .alpha_vantage import (
+    get_cash_flow as get_alpha_vantage_cashflow,
+)
+from .alpha_vantage import (
+    get_fundamentals as get_alpha_vantage_fundamentals,
+)
+from .alpha_vantage import (
+    get_global_news as get_alpha_vantage_global_news,
+)
+from .alpha_vantage import (
+    get_income_statement as get_alpha_vantage_income_statement,
+)
+from .alpha_vantage import (
+    get_news as get_alpha_vantage_news,
+)
 
 # 从 alpha_vantage 模块导入 Alpha Vantage 供应商的具体实现函数。
 # 同样使用 as 重命名，便于后续统一管理。
 from .alpha_vantage import (
     get_stock as get_alpha_vantage_stock,
-    get_technical_indicator as get_alpha_vantage_indicator,
-    get_fundamentals as get_alpha_vantage_fundamentals,
-    get_balance_sheet as get_alpha_vantage_balance_sheet,
-    get_cash_flow as get_alpha_vantage_cashflow,
-    get_income_statement as get_alpha_vantage_income_statement,
-    get_news as get_alpha_vantage_news,
-    get_global_news as get_alpha_vantage_global_news,
+)
+from .alpha_vantage import (
+    # get_stockstats_indicator 的签名是 (symbol, indicator, curr_date, look_back_days)，
+    # 与 route_to_vendor("get_indicators", ...) 的调用方式一致。
+    # 不能使用 get_technical_indicator，它的第三个参数是 interval，会导致日期被当作 interval。
+    get_stockstats_indicator as get_alpha_vantage_indicator,
 )
 
 # 导入 Alpha Vantage 的频率限制异常，用于降级逻辑
@@ -211,47 +230,56 @@ from .alpha_vantage import (
 # route_to_vendor 会捕获这个特定异常来触发降级。
 from .alpha_vantage_common import AlphaVantageRateLimitError
 
-# 从 akshare_adapter 模块导入 AkShare 供应商的具体实现函数和异常类
-from .akshare_adapter import (
-    get_akshare_stock,
-    get_akshare_indicators,
-    get_akshare_fundamentals,
-    get_akshare_balance_sheet,
-    get_akshare_cashflow,
-    get_akshare_income_statement,
-    get_akshare_insider_transactions,
-    get_akshare_news,
-    get_akshare_global_news,
-    AkShareRateLimitError,
-    AkShareTimeoutError,
-)
-
 # 从 baostock_adapter 模块导入 BaoStock 供应商（A 股数据备选方案）
 # BaoStock 免费、无需注册，数据来源稳定，作为 akshare 的首选降级方案
 from .baostock_adapter import (
-    get_baostock_stock,
-    get_baostock_fundamentals,
     get_baostock_balance_sheet,
     get_baostock_cashflow,
+    get_baostock_fundamentals,
     get_baostock_income_statement,
+    get_baostock_stock,
 )
 
 # 从 cache_provider 模块导入缓存数据供应商（网络不可用时的降级方案）
 from .cache_provider import (
-    get_cached_stock_data,
-    get_cached_indicators,
-    get_cached_fundamentals,
     get_cached_balance_sheet,
     get_cached_cashflow,
+    get_cached_fundamentals,
+    get_cached_global_news,
     get_cached_income_statement,
+    get_cached_indicators,
     get_cached_insider_transactions,
     get_cached_news,
-    get_cached_global_news,
+    get_cached_stock_data,
 )
 
 # 从 config 模块导入配置获取函数
 # get_config() 返回当前的全局配置字典（详见 config.py 的注释）
 from .config import get_config
+from .y_finance import (
+    get_balance_sheet as get_yfinance_balance_sheet,  # 获取资产负债表
+)
+from .y_finance import (
+    get_cashflow as get_yfinance_cashflow,  # 获取现金流量表
+)
+from .y_finance import (
+    get_fundamentals as get_yfinance_fundamentals,  # 获取基本面数据
+)
+from .y_finance import (
+    get_income_statement as get_yfinance_income_statement,  # 获取利润表
+)
+from .y_finance import (
+    get_insider_transactions as get_yfinance_insider_transactions,  # 获取内部交易
+)
+from .y_finance import (
+    get_stock_stats_indicators_window,  # 获取技术指标窗口数据
+    get_YFin_data_online,  # 获取股票在线价格数据
+)
+
+# 从 yfinance_news 模块导入新闻相关函数
+# 【什么是 `.` 相对导入？】from .xxx 中的一个点表示"当前包目录下"。
+# 即从与 interface.py 同目录的 yfinance_news.py 文件中导入。
+from .yfinance_news import get_global_news_yfinance, get_news_yfinance
 
 # ---------------------------------------------------------------------------
 # 工具分类定义
@@ -301,7 +329,15 @@ TOOLS_CATEGORIES = {
             "get_global_news",        # 全球市场新闻
             "get_insider_transactions",  # 内部交易数据
         ]
-    }
+    },
+    "capital_flow": {
+        "description": "A-share capital flow (main funds / northbound / LHB)",
+        "tools": [
+            "get_capital_flow",       # 个股资金流向（主力/超大单/大单）
+            "get_northbound_flow",    # 北向资金（沪深股通）
+            "get_dragon_tiger",       # 龙虎榜
+        ],
+    },
 }
 
 # ---------------------------------------------------------------------------
@@ -395,6 +431,16 @@ VENDOR_METHODS = {
         "akshare": get_akshare_insider_transactions,
         "yfinance": get_yfinance_insider_transactions,
         "cache": get_cached_insider_transactions,
+    },
+    # ---- A 股资金流向 ----
+    "get_capital_flow": {
+        "akshare": get_akshare_capital_flow,
+    },
+    "get_northbound_flow": {
+        "akshare": get_akshare_northbound_flow,
+    },
+    "get_dragon_tiger": {
+        "akshare": get_akshare_dragon_tiger,
     },
 }
 
@@ -497,6 +543,22 @@ def get_vendor(category: str, method: str = None) -> str:
 # ---------------------------------------------------------------------------
 # 函数：route_to_vendor（核心路由函数）
 # ---------------------------------------------------------------------------
+# 模拟/缓存数据的识别标记。
+# cache_provider 生成的数据会带有这些标记；一旦检测到，默认拒绝作为真实数据返回。
+_SYNTHETIC_MARKERS = (
+    "WARNING: This is simulated data",
+    "simulated data for testing",
+    "Cached indicator data",
+    "(generated)",
+    "(cached)",
+)
+
+
+def _looks_synthetic(text: str) -> bool:
+    """判断字符串是否来自 cache_provider 的模拟/缓存数据。"""
+    return any(marker in text for marker in _SYNTHETIC_MARKERS)
+
+
 def route_to_vendor(method: str, *args, **kwargs):
     """
     将方法调用路由到合适的供应商实现，并支持自动降级（Fallback）。
@@ -625,6 +687,11 @@ def route_to_vendor(method: str, *args, **kwargs):
         fallback_vendors.remove("cache")
         fallback_vendors.append("cache")
 
+    # 读取全局配置，决定是否允许使用模拟数据兜底。
+    # 默认 False（fail-closed）：真实数据源全部失败时直接报错，
+    # 避免把伪造行情当作真实数据交给 LLM 生成投资建议。
+    allow_synthetic = bool(get_config().get("allow_synthetic_data", False))
+
     # 步骤5：按降级链依次尝试
     # 遍历降级链中的每一个供应商
     for vendor in fallback_vendors:
@@ -632,6 +699,10 @@ def route_to_vendor(method: str, *args, **kwargs):
         # 防御性编程：即使配置写错了供应商名，也不会崩溃
         if vendor not in VENDOR_METHODS[method]:
             continue  # 跳过这个供应商，尝试下一个
+
+        # 默认禁止使用 cache 模拟数据
+        if vendor == "cache" and not allow_synthetic:
+            continue
 
         # 获取供应商的实现函数
         # VENDOR_METHODS[method] 是一个字典，如 {"alpha_vantage": some_func}
@@ -653,6 +724,16 @@ def route_to_vendor(method: str, *args, **kwargs):
             # 某些供应商实现会将错误以字符串形式返回
             # 这些情况下需要触发降级，而不是将其当作正常结果
             if isinstance(result, str):
+                # 默认拒绝模拟/缓存数据，除非用户显式开启 ALLOW_SYNTHETIC_DATA
+                if _looks_synthetic(result) and not allow_synthetic:
+                    if vendor != fallback_vendors[-1]:
+                        continue
+                    raise RuntimeError(
+                        f"All real data vendors failed for '{method}'. "
+                        "Refusing to use simulated data (set ALLOW_SYNTHETIC_DATA=1 "
+                        "to allow it for development)."
+                    )
+
                 is_error = (
                     result.startswith("Error") or
                     result.startswith("No ") or
@@ -667,6 +748,10 @@ def route_to_vendor(method: str, *args, **kwargs):
                     # 直接返回其结果（可能是模拟/缓存数据），确保流水线可运行
                     return result
 
+                # 用户显式允许模拟数据时，加上醒目前缀，便于前端/日志识别
+                if _looks_synthetic(result) and not result.lstrip().startswith("[SIMULATED"):
+                    result = "[SIMULATED DATA] " + result
+
             return result
         except AlphaVantageRateLimitError:
             # Alpha Vantage 频率限制，继续尝试下一个供应商
@@ -680,7 +765,7 @@ def route_to_vendor(method: str, *args, **kwargs):
             # AkShare 请求超时，继续尝试下一个供应商
             # 超时可能是网络问题或东方财富服务器响应缓慢
             continue
-        except Exception as e:
+        except Exception:
             # 其他异常（网络错误、数据不可用等）也尝试降级
             # 多供应商设计就是为了容错——一个供应商挂了，自动切换下一个
             # 只有当这是最后一个供应商时才抛出异常

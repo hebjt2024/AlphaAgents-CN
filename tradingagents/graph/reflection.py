@@ -107,10 +107,12 @@
 # ---------------------------------------------------------------------------
 # 导入依赖
 # ---------------------------------------------------------------------------
-from typing import Dict, Any                # 类型提示
-                        # Dict[str, Any] 表示"键为字符串、值为任意类型的字典"
-                        # 类型提示不影响运行，只是给人和 IDE 看的"说明书"
-from langchain_openai import ChatOpenAI     # OpenAI 兼容的聊天模型接口
+from typing import Any  # 类型提示
+
+# Dict[str, Any] 表示"键为字符串、值为任意类型的字典"
+# 类型提示不影响运行，只是给人和 IDE 看的"说明书"
+from langchain_openai import ChatOpenAI  # OpenAI 兼容的聊天模型接口
+
                         # ChatOpenAI 是 LangChain 提供的 LLM 封装类
                         # 可以调用 LLM 的 API 来生成文本回复
                         # .invoke(messages) 发送消息列表并获取 LLM 回复
@@ -316,7 +318,7 @@ class Reflector:
             #   messages = [("system", prompt), ("human", "具体数据...")]
         """
         return """
-You are an expert financial analyst tasked with reviewing trading decisions/analysis and providing a comprehensive, step-by-step analysis. 
+You are an expert financial analyst tasked with reviewing trading decisions/analysis and providing a comprehensive, step-by-step analysis.
 Your goal is to deliver detailed insights into investment decisions and highlight opportunities for improvement, adhering strictly to the following guidelines:
 
 1. Reasoning:
@@ -326,7 +328,7 @@ Your goal is to deliver detailed insights into investment decisions and highligh
      - Technical indicators.
      - Technical signals.
      - Price movement analysis.
-     - Overall market data analysis 
+     - Overall market data analysis
      - News analysis.
      - Social media and sentiment analysis.
      - Fundamental data analysis.
@@ -350,7 +352,7 @@ Adhere strictly to these instructions, and ensure your output is detailed, accur
     # -------------------------------------------------------------------------
     # 私有方法：提取当前市场状况
     # -------------------------------------------------------------------------
-    def _extract_current_situation(self, current_state: Dict[str, Any]) -> str:
+    def _extract_current_situation(self, current_state: dict[str, Any]) -> str:
         """
         从状态中提取当前市场状况的文本描述。
 

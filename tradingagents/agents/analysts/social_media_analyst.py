@@ -67,16 +67,19 @@
 
 # ChatPromptTemplate：构建结构化聊天提示词模板，支持多角色消息
 # MessagesPlaceholder：在提示词中预留位置，运行时动态插入历史消息列表
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import time
-import json
 
 # --- 导入项目内部工具函数 ---
 # build_instrument_context：构建目标公司的上下文信息字符串
 # get_news：获取新闻/社交媒体数据的工具函数（参数：query, start_date, end_date）
-from tradingagents.agents.utils.agent_utils import build_instrument_context, get_news
+from tradingagents.agents.utils.agent_utils import (
+    build_instrument_context,
+    get_news,
+    search_web,
+)
+
 # get_config：获取全局配置
-from tradingagents.dataflows.config import get_config
 
 
 # ============================================================================
@@ -141,14 +144,14 @@ def create_social_media_analyst(llm):
         # 构建目标公司的上下文信息字符串
         # build_instrument_context() 返回类似：
         #   "The instrument to analyze is `AAPL`. Use this exact ticker ..."
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # ====================================================================
         # 定义工具列表
         #
         # 为什么社交媒体分析师只有一个工具 get_news？
         #
-        # get_news(query, start_date, end_date) 是一个通用的新闻搜索工具，
+        # get_news(ticker, start_date, end_date) 是一个通用的新闻搜索工具，
         # 通过不同的 query 参数可以实现多种搜索：
         # - 搜索社交媒体讨论：query = "AAPL stock reddit twitter"
         # - 搜索公司新闻：query = "Apple Inc news"
@@ -161,6 +164,8 @@ def create_social_media_analyst(llm):
         # ====================================================================
         tools = [
             get_news,
+            # 配置 TAVILY_API_KEY 后，可联网补充最新舆情/事件
+            search_web,
         ]
 
         # ====================================================================
@@ -190,7 +195,7 @@ def create_social_media_analyst(llm):
         #     3) 近期公司新闻
         #     关键词"comprehensive long"鼓励详细，避免敷衍。
         #
-        # 第 3 段："Use the get_news(query, start_date, end_date) tool to
+        # 第 3 段："Use the get_news(ticker, start_date, end_date) tool to
         #          search for company-specific news and social media discussions."
         #   → 工具引导：告诉 LLM 用 get_news 搜索，并给出参数名。
         #
@@ -213,14 +218,15 @@ def create_social_media_analyst(llm):
             "社交媒体帖子、近期公司新闻以及公众情绪。你会获得公司名称，你的目标是撰写一份全面的长篇报告，"
             "详细描述你在查看社交媒体上关于该公司的舆论、分析公众每日对该公司的情绪数据、"
             "并审视近期公司新闻之后，得出的分析、洞察以及对交易员和投资者关于该公司当前状况的启示。"
-            "请使用 get_news(query, start_date, end_date) 工具搜索公司专属新闻和社交媒体讨论。"
+            "请使用 get_news(ticker, start_date, end_date) 工具搜索公司专属新闻和社交媒体讨论（ticker 传入股票代码，例如 600519）。"
+            "如需补充最新舆情或事件，可调用 search_web 进行联网搜索。"
             "尽可能涵盖从社交媒体到情绪数据再到新闻的所有来源。"
             "请提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"
             + """ 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""
         )
         # [英文备份] system_message (en):
         # system_message = (
-        #     "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. Use the get_news(query, start_date, end_date) tool to search for company-specific news and social media discussions. Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+        #     "You are a social media and company specific news researcher/analyst tasked with analyzing social media posts, recent company news, and public sentiment for a specific company over the past week. You will be given a company's name your objective is to write a comprehensive long report detailing your analysis, insights, and implications for traders and investors on this company's current state after looking at social media and what people are saying about that company, analyzing sentiment data of what people feel each day about the company, and looking at recent company news. Use the get_news(ticker, start_date, end_date) tool to search for company-specific news and social media discussions. Try to look at all sources possible from social media to sentiment to news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
         #     + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
         # )
 

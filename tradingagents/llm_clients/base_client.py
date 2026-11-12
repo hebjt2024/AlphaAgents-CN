@@ -97,7 +97,7 @@ from abc import ABC, abstractmethod
 #   用于不确定具体类型时的类型注解
 # Optional：可选类型（可以是某种类型或 None）
 #   例如 Optional[str] 表示"字符串或 None"
-from typing import Any, Optional
+from typing import Any
 
 
 def normalize_content(response):
@@ -187,7 +187,7 @@ class BaseLLMClient(ABC):
     这是一种"早期错误发现"的机制。
     """
 
-    def __init__(self, model: str, base_url: Optional[str] = None, **kwargs):
+    def __init__(self, model: str, base_url: str | None = None, **kwargs):
         """初始化 LLM 客户端。
 
         Args:

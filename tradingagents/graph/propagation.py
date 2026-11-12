@@ -132,22 +132,19 @@
 # ---------------------------------------------------------------------------
 # 导入依赖
 # ---------------------------------------------------------------------------
-from typing import Dict, Any, List, Optional  # 类型提示
-                        # Dict：字典类型
-                        # Any：任意类型
-                        # List：列表类型
-                        # Optional：可选类型（可以是该类型，也可以是 None）
+from typing import Any  # 类型提示
 
+# Dict：字典类型
+# Any：任意类型
+# List：列表类型
+# Optional：可选类型（可以是该类型，也可以是 None）
 # 导入代理状态数据类
 # AgentState, InvestDebateState, RiskDebateState 都是 TypedDict（带类型提示的字典）
 from tradingagents.agents.utils.agent_states import (
-    AgentState,         # 主状态类型（TypedDict）
-                        # 定义了图中所有节点共享的数据结构
-                        # 详见上方"前置知识-概念 6：AgentState 结构"
     InvestDebateState,  # 投资辩论子状态类型
-                        # 详见上方"前置知识-概念 7：InvestDebateState 结构"
-    RiskDebateState,    # 风险辩论子状态类型
-                        # 详见上方"前置知识-概念 8：RiskDebateState 结构"
+    # 详见上方"前置知识-概念 7：InvestDebateState 结构"
+    RiskDebateState,  # 风险辩论子状态类型
+    # 详见上方"前置知识-概念 8：RiskDebateState 结构"
 )
 
 
@@ -226,8 +223,8 @@ class Propagator:
     # 核心方法：创建初始状态
     # -------------------------------------------------------------------------
     def create_initial_state(
-        self, company_name: str, trade_date: str
-    ) -> Dict[str, Any]:
+        self, company_name: str, trade_date: str, horizon: str = "medium"
+    ) -> dict[str, Any]:
         """
         创建代理图的初始状态。
 
@@ -332,6 +329,9 @@ class Propagator:
             #   如果 trade_date 是 date 对象（如 date(2024,1,15)），str() 会转为 "2024-01-15"
             "trade_date": str(trade_date),
 
+            # 分析视角：short（1-2周）/ medium（1-3月）/ long（6月以上）
+            "analysis_horizon": str(horizon or "medium"),
+
             # 投资辩论子状态：初始化为空的 InvestDebateState
             # InvestDebateState 是一个 TypedDict，这里传入一个字典来初始化
             # Python 语法说明：InvestDebateState({...}) 看起来像构造函数调用，
@@ -365,15 +365,23 @@ class Propagator:
 
             # 分析报告字段：由各分析师在运行时填充
             "market_report": "",         # 市场分析报告（技术面）
+            "strategy_report": "",       # 策略扫描报告
+            "strategy_result": {},       # 策略扫描结构化结果
             "fundamentals_report": "",   # 基本面分析报告
             "sentiment_report": "",      # 情绪分析报告（社交媒体）
             "news_report": "",           # 新闻分析报告
+
+            # 决策链字段：必须预先初始化，否则在自定义精简流程中
+            # （例如跳过多空辩论/交易员节点）直接索引会抛 KeyError。
+            "investment_plan": "",           # 研究经理投资计划
+            "trader_investment_plan": "",    # 交易员执行方案
+            "final_trade_decision": "",      # 组合经理最终决策
         }
 
     # -------------------------------------------------------------------------
     # 获取图执行参数
     # -------------------------------------------------------------------------
-    def get_graph_args(self, callbacks: Optional[List] = None) -> Dict[str, Any]:
+    def get_graph_args(self, callbacks: list | None = None) -> dict[str, Any]:
         """
         获取图调用（invoke/stream）所需的参数。
 

@@ -70,9 +70,8 @@
 
 # ChatPromptTemplate：构建结构化聊天提示词模板，支持多角色消息
 # MessagesPlaceholder：在提示词中预留位置，运行时动态插入历史消息列表
+
 from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
-import time
-import json
 
 # --- 导入项目内部工具函数 ---
 # 这些函数被 @tool 装饰器标记为 LangChain 工具，LLM 可"看到"描述并请求调用。
@@ -84,9 +83,12 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_global_news,
     get_news,
+    get_northbound_flow,
+    search_stock_news,
+    search_web,
 )
+
 # get_config：获取全局配置
-from tradingagents.dataflows.config import get_config
 
 
 # ============================================================================
@@ -151,7 +153,7 @@ def create_news_analyst(llm):
         # build_instrument_context() 返回类似：
         #   "The instrument to analyze is `AAPL`. Use this exact ticker ..."
         # 这个信息会被注入到 LLM 提示词中，让 Agent 知道在分析哪家公司
-        instrument_context = build_instrument_context(state["company_of_interest"])
+        instrument_context = build_instrument_context(state["company_of_interest"], state.get("analysis_horizon", "medium"))
 
         # ====================================================================
         # 定义工具列表
@@ -161,7 +163,7 @@ def create_news_analyst(llm):
         #
         # 为什么新闻分析师需要这 2 个工具？
         #
-        # get_news(query, start_date, end_date)：
+        # get_news(ticker, start_date, end_date)：
         #   用于搜索公司特定新闻或特定主题的新闻。
         #   query 参数可以传公司名称、关键词等。
         #   例如 LLM 可能调用 get_news("AAPL earnings", "2024-01-08", "2024-01-15")
@@ -178,6 +180,11 @@ def create_news_analyst(llm):
         tools = [
             get_news,
             get_global_news,
+            # A 股宏观资金面（北向资金）。非 A 股场景调用会返回无数据提示。
+            get_northbound_flow,
+            # 配置 TAVILY_API_KEY 后，可联网补充新闻/公告
+            search_web,
+            search_stock_news,
         ]
 
         # ====================================================================
@@ -196,7 +203,7 @@ def create_news_analyst(llm):
         #     关键词"trading and macroeconomics"限定关注范围——不是所有新闻，
         #     只关注影响交易和宏观经济的事件。
         #
-        # 第 3 段："Use the available tools: get_news(query, start_date, end_date)
+        # 第 3 段："Use the available tools: get_news(ticker, start_date, end_date)
         #          for company-specific or targeted news searches, and
         #          get_global_news(curr_date, look_back_days, limit) for broader
         #          macroeconomic news."
@@ -218,14 +225,16 @@ def create_news_analyst(llm):
         system_message = (
             "你是一名新闻研究员，负责分析过去一周的新闻与趋势。请撰写一份全面的报告，"
             "描述与交易和宏观经济相关的当前世界状况。请使用以下可用工具："
-            "使用 get_news(query, start_date, end_date) 进行公司特定或定向的新闻搜索，"
+            "使用 get_news(ticker, start_date, end_date) 进行公司特定或定向的新闻搜索（ticker 传入股票代码，例如 600519），"
             "使用 get_global_news(curr_date, look_back_days, limit) 获取更广泛的宏观经济新闻。"
+            "对于 A 股标的，可调用 get_northbound_flow(curr_date, look_back_days) 了解北向资金动向。"
+            "如需补充最新新闻/公告，可调用 search_web(query, max_results, days) 或 search_stock_news(ticker, curr_date)。"
             "请提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"
             + """ 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""
         )
         # [英文备份] system_message (en):
         # system_message = (
-        #     "You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(query, start_date, end_date) for company-specific or targeted news searches, and get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
+        #     "You are a news researcher tasked with analyzing recent news and trends over the past week. Please write a comprehensive report of the current state of the world that is relevant for trading and macroeconomics. Use the available tools: get_news(ticker, start_date, end_date) for company-specific or targeted news searches, and get_global_news(curr_date, look_back_days, limit) for broader macroeconomic news. Provide specific, actionable insights with supporting evidence to help traders make informed decisions."
         #     + """ Make sure to append a Markdown table at the end of the report to organize key points in the report, organized and easy to read."""
         # )
 

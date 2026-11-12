@@ -109,6 +109,11 @@
 # 在"指数退避重试"中，需要在重试前暂停一段时间等待服务器恢复
 import time
 
+# 从 typing 模块导入 Annotated
+# 用于为函数参数添加类型注解的元数据说明
+# LangChain 框架会读取这些说明作为 LLM 工具参数描述
+from typing import Annotated
+
 # 从同目录的 alpha_vantage_common 模块导入 API 请求和异常处理工具
 # . 表示相对导入——从当前包（dataflows 目录）导入
 # 导入内容：
@@ -116,17 +121,8 @@ import time
 #   - AlphaVantageRateLimitError: API 限流时抛出的自定义异常类
 #   - API_BASE_URL: Alpha Vantage API 的基础 URL（常量）
 from .alpha_vantage_common import (
-    _make_api_request,              # 统一的 API 请求函数
-    AlphaVantageRateLimitError,     # API 速率限制超限异常
-    API_BASE_URL,                   # Alpha Vantage API 基础 URL
-)
-
-# 从子模块导入所有公开函数（星号导入）
-# import * 会导入模块中所有不以 _ 开头的名称
-# 也就是只导入"公开"函数，不导入"私有"函数（以 _ 开头的）
-
-# 从 alpha_vantage_stock 模块导入：get_stock（获取股票历史价格数据）
-from .alpha_vantage_stock import *
+    AlphaVantageRateLimitError,  # API 速率限制超限异常
+    )
 
 # 从 alpha_vantage_fundamentals 模块导入：
 #   - get_fundamentals（公司概览）
@@ -145,11 +141,11 @@ from .alpha_vantage_indicator import *
 #   - get_global_news（全球新闻）
 from .alpha_vantage_news import *
 
-# 从 typing 模块导入 Annotated
-# 用于为函数参数添加类型注解的元数据说明
-# LangChain 框架会读取这些说明作为 LLM 工具参数描述
-from typing import Annotated
-
+# 从子模块导入所有公开函数（星号导入）
+# import * 会导入模块中所有不以 _ 开头的名称
+# 也就是只导入"公开"函数，不导入"私有"函数（以 _ 开头的）
+# 从 alpha_vantage_stock 模块导入：get_stock（获取股票历史价格数据）
+from .alpha_vantage_stock import *
 
 # =============================================================================
 # 模块对外公开的接口声明
