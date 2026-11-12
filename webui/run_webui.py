@@ -7,13 +7,27 @@ TradingAgents Web UI 启动脚本
     python webui/run_webui.py --reload     # 开发模式（热重载）
 """
 
-import sys
-import os
 import argparse
+import logging
+import os
+import sys
 
 # 确保项目根目录在 Python 路径中
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, project_root)
+
+os.makedirs(os.path.join(project_root, "logs"), exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(
+            os.path.join(project_root, "logs", "webui.log"),
+            encoding="utf-8",
+        ),
+    ],
+)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TradingAgents Web UI")
@@ -27,10 +41,10 @@ if __name__ == "__main__":
     print("=" * 58)
     print("  TradingAgents - 多智能体金融交易分析系统")
     print("=" * 58)
-    print(f"  Web UI 服务启动中...")
+    print("  Web UI 服务启动中...")
     print(f"  地址: http://{args.host}:{args.port}")
     print(f"  模式: {'开发模式（热重载）' if args.reload else '生产模式'}")
-    print(f"  停止: Ctrl+C")
+    print("  停止: Ctrl+C")
     print("=" * 58)
 
     uvicorn.run(
