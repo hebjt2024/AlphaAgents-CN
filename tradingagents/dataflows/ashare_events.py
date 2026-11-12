@@ -1542,6 +1542,11 @@ def _flag(check_code, name, level, value, message, detail):
 
 _LEVEL_LABEL = {"ok": "正常", "warn": "关注", "danger": "危险"}
 
+#: 应收账款增速告警的最小基础比例（占营业收入 %）。
+#: 低于该比例时，同比增速会被小基数放大到失真（例如 0.3% 的应收增长 13 倍
+#: 依然只占营收 4%），不应据此判定回款质量恶化。
+_AR_TREND_MIN_RATIO_PCT = 5.0
+
 
 def get_financial_red_flags(ticker, curr_date=None) -> dict:
     """财务排雷四项：商誉、股权质押、应收账款、经营现金流。
@@ -1609,6 +1614,17 @@ def get_financial_red_flags(ticker, curr_date=None) -> dict:
         equity = _metric(
             abstract["metrics"], "股东权益合计(净资产)", "净资产"
         )
+
+    # 资产负债表存在、净资产有效，但"商誉"字段为空 —— 在 A 股财报中这通常
+    # 意味着公司**没有商誉**（而非数据缺失）。此前会被判为"数据不足"，
+    # 于是茅台这类无商誉公司反而拿不到该项结论。
+    if (
+        goodwill is None
+        and balance is not None
+        and equity is not None
+        and equity > 0
+    ):
+        goodwill = 0.0
 
     if goodwill is None or equity is None or equity <= 0:
         checks.append(
@@ -1736,6 +1752,10 @@ def get_financial_red_flags(ticker, curr_date=None) -> dict:
         trend_warn = (
             ar_yoy is not None
             and revenue_yoy is not None
+            # 必须要求应收账款本身占营收达到有意义的基础比例，否则
+            # "应收同增 1327%" 这类小基数增速会制造大量假警报
+            # （例如茅台应收账款仅占营收 0.3%，同比增速毫无统计意义）。
+            and ratio >= _AR_TREND_MIN_RATIO_PCT
             and ar_yoy > revenue_yoy + 30
         )
         if trend_warn:

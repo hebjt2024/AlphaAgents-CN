@@ -479,6 +479,63 @@ class FinancialRedFlagTests(EventsTestBase):
         self.assertEqual(result["risk_score"], 0)
         self.assertEqual(result["level"], "低风险")
 
+    # --------------------------------------------------------------
+    # 回归：两处实测中发现的误报 / 误判
+    # --------------------------------------------------------------
+
+    def test_goodwill_nan_with_valid_balance_sheet_counts_as_zero(self):
+        """资产负债表存在、净资产有效、商誉字段为空 → 视为"无商誉"。
+
+        WHY：A 股财报中无商誉的公司该字段通常为空而不是 0。此前会被判成
+        "数据不足"，于是茅台这类公司反而拿不到该项结论。
+        """
+        abstract = self._abstract_frame(
+            {"营业收入": "1e10", "归母净利润": "1e9", "经营现金流量净额": "8e8"}
+        )
+        balance = self._balance_frame(goodwill=float("nan"))
+        pledge = self._pledge_frame(ratio=0.1)
+        self.use_ak(
+            stock_financial_abstract=lambda symbol: abstract,
+            stock_balance_sheet_by_report_em=lambda symbol: balance,
+            stock_gpzy_pledge_ratio_em=lambda date: pledge,
+        )
+
+        result = ashare_events.get_financial_red_flags(
+            "600519", curr_date="2025-12-31"
+        )
+        check = self.check_of(result, "goodwill")
+        self.assertEqual(check["level"], "ok")
+        self.assertEqual(check["value"], 0.0)
+        self.assertNotEqual(check["message"], "数据不足，无法判断")
+
+    def test_small_receivables_base_does_not_trigger_trend_warning(self):
+        """应收账款占营收极小时，同比增速再高也不应告警。
+
+        WHY：0.3% 的应收账款哪怕同比 +1300%，也只占营收 4% ——
+        小基数放大的增速没有统计意义，不能据此判定回款质量恶化。
+        """
+        result = self.run_flags(
+            accounts_rece=3e7,          # 营收 1e10 的 0.3%
+            accounts_rece_yoy=1300.0,   # 同比爆炸式增长
+            revenue=1e10,
+            revenue_yoy=2.0,
+        )
+        check = self.check_of(result, "receivables")
+        self.assertEqual(check["level"], "ok")
+        self.assertNotIn("快于营收同比", check["message"])
+
+    def test_meaningful_receivables_base_still_warns_on_trend(self):
+        """应收账款占比达到有意义水平时，增速背离仍应告警。"""
+        result = self.run_flags(
+            accounts_rece=4e9,          # 营收 1e10 的 40%
+            accounts_rece_yoy=120.0,
+            revenue=1e10,
+            revenue_yoy=5.0,
+        )
+        check = self.check_of(result, "receivables")
+        self.assertIn(check["level"], ("warn", "danger"))
+        self.assertIn("快于营收同比", check["message"])
+
 
 class EventCalendarTests(EventsTestBase):
     def test_merges_event_types_and_sorts_by_date(self):

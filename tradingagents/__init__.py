@@ -72,3 +72,11 @@ import os
 # 这意味着用户可以在系统中预先设置 PYTHONUTF8=0 来禁用此行为
 # 环境变量值始终是字符串类型，所以用 "1" 而非 1
 os.environ.setdefault("PYTHONUTF8", "1")
+
+# 在包初始化阶段加载 .env，并静默第三方库（AkShare 等）的 tqdm 进度条。
+# WHY 放在这里：任何 `import tradingagents.xxx` 都会先执行本文件，因此
+# 无论从 CLI、WebUI 还是脚本进入，日志都不会被进度条刷屏。
+try:
+    from tradingagents import bootstrap as _bootstrap  # noqa: F401
+except Exception:  # 依赖缺失时不影响包导入
+    pass
