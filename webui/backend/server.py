@@ -766,6 +766,22 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             preliminary, decision, preliminary_plan, decision_plan
         )
 
+        # 组合级校验：把决策卡放到当前账户语境下重新评估，
+        # 得到"真正可执行"的仓位（此前建议仓位与组合完全脱节）。
+        portfolio_evaluation = {}
+        try:
+            from tradingagents.services.portfolio import (
+                evaluate_plan_for_account,
+            )
+
+            portfolio_evaluation = evaluate_plan_for_account(
+                plan=decision_plan,
+                summary=(strategy_result or {}).get("summary") or {},
+                ticker=request.company,
+            )
+        except Exception as exc:
+            portfolio_evaluation = {"error": str(exc)}
+
         # 完整 reports 字段：保持与 AgentState 字段名一致，前端按 key 渲染对应卡片
         # 注意：investment_plan 是研究经理的推荐，trader_investment_plan 是交易员的执行方案
         reports = {
@@ -800,6 +816,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
                         "strategies": strategy_keys,
                         "decision_plan": decision_plan,
                         "decision_diff": decision_diff,
+                        "portfolio_evaluation": portfolio_evaluation,
                     },
                 )
             except Exception as exc:
@@ -820,6 +837,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             "strategies": strategy_keys,
             "decision_plan": decision_plan,
             "decision_diff": decision_diff,
+            "portfolio_evaluation": portfolio_evaluation,
             "cancelled": cancelled,
         }
         try:
@@ -1747,6 +1765,76 @@ async def api_check_trade_date(company: str, date: str):
         "message": message,
         "suggested_date": adjusted,
     }
+
+
+# ============================================================================
+# 组合管理 / 组合级风控 / 运行指标 API
+# ============================================================================
+
+
+@app.get("/api/portfolio")
+async def api_portfolio(account: str | None = None):
+    """返回账户持仓、组合权重与风险体检结果。"""
+    try:
+        from tradingagents.services.portfolio import portfolio_snapshot
+
+        snapshot = await run_in_threadpool(portfolio_snapshot, account)
+        return {"success": True, "portfolio": snapshot}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
+class PortfolioEvaluateRequest(BaseModel):
+    plan: dict = Field(default_factory=dict)
+    summary: dict = Field(default_factory=dict)
+    account: str | None = None
+    ticker: str = ""
+    sector: str = ""
+
+
+@app.post("/api/portfolio/evaluate")
+async def api_portfolio_evaluate(request: PortfolioEvaluateRequest):
+    """把一份决策卡放到组合语境下重新评估，给出真正可执行的仓位。"""
+    try:
+        from tradingagents.services.portfolio import evaluate_plan_for_account
+
+        result = await run_in_threadpool(
+            evaluate_plan_for_account,
+            request.plan,
+            request.summary,
+            request.account,
+            request.ticker,
+            request.sector,
+        )
+        return {"success": True, "evaluation": result}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@app.get("/api/runs")
+async def api_list_runs(ticker: str | None = None, limit: int = 50, offset: int = 0):
+    """返回最近的运行指标（token / 成本 / 耗时）。"""
+    try:
+        from tradingagents.storage import list_run_logs
+
+        logs = await run_in_threadpool(
+            list_run_logs, ticker, int(limit), int(offset)
+        )
+        return {"success": True, "runs": logs}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
+
+
+@app.get("/api/runs/aggregate")
+async def api_aggregate_runs():
+    """聚合运行指标：总 token / 总成本 / 按模型与来源拆分。"""
+    try:
+        from tradingagents.storage import aggregate_run_logs
+
+        aggregate = await run_in_threadpool(aggregate_run_logs)
+        return {"success": True, "aggregate": aggregate}
+    except Exception as exc:
+        return {"success": False, "message": str(exc)}
 
 
 # ============================================================================

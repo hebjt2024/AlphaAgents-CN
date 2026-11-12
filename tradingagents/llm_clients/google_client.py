@@ -83,7 +83,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 # 从当前包（llm_clients）的 base_client 模块导入基类和工具函数
 # BaseLLMClient：所有 LLM 客户端的抽象基类，提供通用接口
 # normalize_content：内容规范化函数，将结构化块列表转为纯字符串
-from .base_client import BaseLLMClient, normalize_content
+from .base_client import BaseLLMClient, normalize_content, observe_llm_call
 
 # 从当前包的 validators 模块导入模型验证函数
 # validate_model：检查模型名称对指定提供商是否有效
@@ -110,7 +110,15 @@ class NormalizedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
 
     Gemini 3 模型返回的内容是结构化块列表格式。
     这个子类重写 invoke() 方法，自动将内容规范化为纯字符串。
+
+    【可观测性】
+    重写的 invoke() 还会用 :func:`observe_llm_call` 包装真正的补全调用，
+    记录模型、供应商、token 用量与耗时。
     """
+
+    # 可观测性元信息：记录时写入 run 日志（provider + model）
+    observability_provider: str = "google"
+    observability_model: str = ""
 
     def invoke(self, input, config=None, **kwargs):
         """调用 LLM 并规范化返回内容。
@@ -126,8 +134,16 @@ class NormalizedChatGoogleGenerativeAI(ChatGoogleGenerativeAI):
             规范化后的 AIMessage 对象，content 为纯字符串
         """
         # super().invoke() 调用父类的原始 invoke() 方法
+        # observe_llm_call 在此处测量墙钟延迟并把 token 用量写入当前 run 的度量
+        with observe_llm_call(
+            provider=self.observability_provider,
+            model=self.observability_model or self.model,
+            prompt_input=input,
+        ) as obs:
+            response = super().invoke(input, config, **kwargs)
+            obs["response"] = response
         # normalize_content() 将返回的 AIMessage 内容规范化为纯字符串
-        return normalize_content(super().invoke(input, config, **kwargs))
+        return normalize_content(response)
 
 
 # ============================================================================
@@ -245,6 +261,12 @@ class GoogleClient(BaseLLMClient):
 
         # 使用收集的参数创建 NormalizedChatGoogleGenerativeAI 实例
         # **llm_kwargs 解包字典为关键字参数
+        #
+        # 【可观测性】
+        # observability_provider / observability_model 用于把每次调用的
+        # 供应商与模型名记录进 run 日志（成本估算按模型名查价格表）。
+        llm_kwargs["observability_provider"] = "google"
+        llm_kwargs["observability_model"] = self.model
         return NormalizedChatGoogleGenerativeAI(**llm_kwargs)
 
     def validate_model(self) -> bool:

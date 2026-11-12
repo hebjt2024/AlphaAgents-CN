@@ -121,7 +121,8 @@ from langchain_openai import ChatOpenAI
 # 从 base_client 模块导入基类和规范化函数
 # BaseLLMClient: 抽象基类，OpenAIClient 继承自它（适配器模式）
 # normalize_content: 将 LLM 响应内容规范化为纯字符串的函数
-from .base_client import BaseLLMClient, normalize_content
+# observe_llm_call: 可观测性包装器，测量 token/成本/延迟
+from .base_client import BaseLLMClient, normalize_content, observe_llm_call
 
 # 从 validators 模块导入模型验证函数
 # validate_model: 验证模型名称对特定提供商是否有效
@@ -142,13 +143,21 @@ class NormalizedChatOpenAI(ChatOpenAI):
     但 ChatOpenAI 是第三方库的类，不能直接修改它的源代码。
     创建子类并重写 invoke() 方法，是"增强"已有类的标准做法。
     这也是"装饰器模式"的一种实现——在不修改原类的情况下添加新功能。
+
+    【可观测性】
+    重写的 invoke() 还会用 :func:`observe_llm_call` 包装真正的补全调用，
+    记录模型、供应商、token 用量与耗时。
     """
+
+    # 可观测性元信息：记录时写入 run 日志（provider + model）
+    observability_provider: str = "openai"
+    observability_model: str = ""
 
     def invoke(self, input, config=None, **kwargs):
         """调用 LLM 并规范化返回内容。
 
         执行流程：
-        1. super().invoke() 调用父类（ChatOpenAI）的 invoke 方法，发送请求
+        1. observe_llm_call 包裹 super().invoke()，测量耗时并记录 token 用量
         2. normalize_content() 将返回的结构化内容转为纯字符串
         3. 返回规范化后的结果
 
@@ -167,9 +176,18 @@ class NormalizedChatOpenAI(ChatOpenAI):
         """
         # super().invoke(input, config, **kwargs) 调用父类 ChatOpenAI 的 invoke 方法
         # 这会发送 HTTP 请求到 OpenAI API，获取 LLM 的响应
+        # observe_llm_call 在此处测量墙钟延迟并把 token 用量写入当前 run 的度量
+        with observe_llm_call(
+            provider=self.observability_provider,
+            model=self.observability_model or self.model_name,
+            prompt_input=input,
+        ) as obs:
+            response = super().invoke(input, config, **kwargs)
+            obs["response"] = response
         # normalize_content(...) 对返回的响应做内容规范化
+        # 将结构化块列表 content 转换为纯字符串 content
         # 两步合在一起：先获取响应，再规范化，最后返回
-        return normalize_content(super().invoke(input, config, **kwargs))
+        return normalize_content(response)
 
 
 # 需要从用户配置转发给 ChatOpenAI 的参数名列表
@@ -327,11 +345,18 @@ class OpenAIClient(BaseLLMClient):
         # 【什么是 ** 拆包？】**dict 把字典拆成关键字参数
         # 例如 llm_kwargs = {"model": "gpt-5", "api_key": "sk-xxx"}
         #   NormalizedChatOpenAI(**llm_kwargs)
-        #   等价于 NormalizedChatOpenAI(model="gpt-5", api_key="sk-xxx")
+        # 等价于：NormalizedChatOpenAI(model="gpt-5", api_key="sk-xxx")
         # 返回创建好的 NormalizedChatOpenAI 实例（带内容规范化的 ChatOpenAI）
+        #
+        # 【可观测性】
+        # observability_provider / observability_model 用于把每次调用的
+        # 供应商与模型名记录进 run 日志（成本估算按模型名查价格表）。
+        llm_kwargs["observability_provider"] = self.provider
+        llm_kwargs["observability_model"] = self.model
         return NormalizedChatOpenAI(**llm_kwargs)
 
     def validate_model(self) -> bool:
+
         """验证模型名称对该提供商是否有效。
 
         【这是对抽象方法 validate_model() 的具体实现】

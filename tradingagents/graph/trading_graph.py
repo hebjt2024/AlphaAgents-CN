@@ -177,6 +177,7 @@
 # Path 比 os.path 更现代、更易读。
 # 例如 Path("a/b/c").mkdir(parents=True) 可以递归创建多级目录。
 import json  # JSON 序列化/反序列化，用于保存日志。
+import logging  # 日志：记录记忆读写等非关键路径的异常。
 import os  # 操作系统接口，用于创建目录、拼接路径等。
 
 # json.dump(字典, 文件) 把 Python 字典保存为 JSON 文件。
@@ -260,13 +261,37 @@ from tradingagents.default_config import DEFAULT_CONFIG
 # LLM 客户端工厂函数：根据 provider 配置创建对应的 LLM 客户端（如 OpenAI、Google 等）
 from tradingagents.llm_clients import create_llm_client
 
+# 运行指标（token / 成本 / 逐阶段耗时）。
+# WHY：此前系统没有任何 LLM 用量与耗时口径，用户无法知道一次分析花了
+# 多少钱、慢在哪一环。
+from tradingagents.services.observability import (
+    RunMetrics,
+    clear_current_metrics,
+    set_current_metrics,
+)
+
+# 记忆持久化：把角色记忆落到 SQLite，使记忆能跨分析、跨进程存活。
+# WHY：``services/runner.py`` 每次分析都会新建一个 TradingAgentsGraph，
+# 只放在内存里的记忆会随对象一起消亡，"学习闭环"从未真正闭合。
+from tradingagents.storage.memory_store import (
+    load_all_memories,
+    save_memory,
+)
+from tradingagents.storage.run_log_store import save_run_log
+
 # 从当前包导入子模块
 # 相对导入：. 表示当前包（graph 包），从同级文件导入
 from .conditional_logic import ConditionalLogic  # 条件路由逻辑：定义条件边的判断函数
 from .propagation import Propagator  # 状态传播：负责创建初始状态和图执行参数
-from .reflection import Reflector  # 决策反思：交易后根据收益反思决策质量，并更新记忆
+from .reflection import (  # 决策反思：交易后根据收益反思决策质量，并更新记忆
+    MEMORY_ROLES,
+    Reflector,
+    RuleBasedReflector,  # 规则化（非 LLM）记忆写入：分析结束即写入
+)
 from .setup import GraphSetup  # 图结构搭建：负责创建 StateGraph 并添加节点和边
 from .signal_processing import SignalProcessor  # 信号处理：从完整信号文本中提取核心决策词
+
+logger = logging.getLogger(__name__)
 
 
 # =============================================================================
@@ -495,6 +520,19 @@ class TradingAgentsGraph:
         self.portfolio_manager_memory = FinancialSituationMemory("portfolio_manager_memory", self.config)
 
         # -----------------------------------------------------------------
+        # 记忆持久化配置
+        #   memory_enabled: 是否启用记忆的读写（默认启用）
+        #   memory_load_limit: 从 SQLite 恢复记忆时每个角色最多加载的条数
+        # WHY 要恢复：TradingAgentsGraph 每次分析都会新建（见 services/runner.py），
+        # 只放在内存里的记忆会随对象消亡，检索永远为空。
+        # -----------------------------------------------------------------
+        self.memory_enabled = bool(self.config.get("memory_enabled", True))
+        self.memory_load_limit = max(1, int(self.config.get("memory_load_limit", 200)))
+
+        # 从 SQLite 恢复历史记忆，使记忆跨分析、跨进程存活
+        self._load_memories_from_store()
+
+        # -----------------------------------------------------------------
         # 创建工具节点
         # 每个分析师类型有自己专属的工具节点，内含不同的数据获取函数
         # 详见上方"前置知识-概念 5：ToolNode 的内部机制"
@@ -544,6 +582,11 @@ class TradingAgentsGraph:
         # 详见上方"前置知识-概念 7：反思机制的'为什么'"
         # 反思使用快速思考 LLM（反思是总结性任务，不需要深度推理）
         self.reflector = Reflector(self.quick_thinking_llm)
+
+        # 规则化反思写入器：**默认**的记忆写入路径。
+        # WHY 单独一个类：Reflector 每次要 5 次 LLM 调用（延迟 + 成本），
+        # 而"学习闭环"只需要把当时的情况与决策记下来。默认路径零 LLM 调用。
+        self.rule_reflector = RuleBasedReflector()
 
         # 信号处理器模块：负责从完整的交易信号文本中提取核心决策
         # 详见 signal_processing.py 的注释
@@ -840,6 +883,24 @@ flowchart TD
         self.ticker = company_name
 
         # -----------------------------------------------------------------
+        # 步骤 0：开启本次运行的指标采集（token / 成本 / 逐阶段耗时）
+        #
+        # 此前系统没有任何 LLM 用量与耗时口径，用户无法知道一次分析花了
+        # 多少钱、慢在哪里。这里建立 run 级指标对象，并在 finally 中落库。
+        #
+        # 注意：必须与 LLM 调用发生在**同一线程**（ContextVar 不跨线程），
+        # 因此 set_current_metrics 要在调用图的线程内完成 —— 本函数正是在
+        # 该线程内被调用的。
+        # -----------------------------------------------------------------
+        metrics = RunMetrics(
+            ticker=str(company_name),
+            trade_date=str(trade_date),
+            source=str(self.config.get("run_source") or "unknown"),
+            horizon=str(horizon),
+        )
+        set_current_metrics(metrics)
+
+        # -----------------------------------------------------------------
         # 步骤 1：创建初始状态
         # Propagator.create_initial_state() 返回一个字典，包含：
         #   - messages：初始消息列表（以 human 角色发送公司名）
@@ -866,35 +927,44 @@ flowchart TD
         #
         # 详见上方"前置知识-概念 3：invoke() vs stream() 的区别"
         # -----------------------------------------------------------------
-        if self.debug:
-            # 调试模式：逐块执行图
-            # graph.stream() 返回一个生成器（generator），每次 yield 一个节点的输出
-            # 生成器是 Python 的一种"惰性序列"——它不会一次性生成所有结果，
-            # 而是每次迭代时才计算下一个值，适合处理大量数据或流式输出
-            trace = []  # 用于记录所有节点的输出
-            # for chunk in ... 会逐块迭代 stream() 的输出
-            # 每次迭代，chunk 是当前节点执行后的状态快照
-            for chunk in self.graph.stream(init_agent_state, **args):
-                # 如果当前 chunk 没有消息，跳过（某些节点可能不产生消息）
-                if len(chunk["messages"]) == 0:
-                    pass
-                else:
-                    # pretty_print() 以可读格式打印最后一条消息
-                    # chunk["messages"][-1] 取消息列表的最后一条（最新消息）
-                    chunk["messages"][-1].pretty_print()
-                    # 将当前 chunk 添加到跟踪列表
-                    trace.append(chunk)
+        try:
+            if self.debug:
+                # 调试模式：逐块执行图
+                # graph.stream() 返回一个生成器（generator），每次 yield 一个节点的输出
+                # 生成器是 Python 的一种"惰性序列"——它不会一次性生成所有结果，
+                # 而是每次迭代时才计算下一个值，适合处理大量数据或流式输出
+                trace = []  # 用于记录所有节点的输出
+                # for chunk in ... 会逐块迭代 stream() 的输��
+                # 每次迭代，chunk 是当前节点执行后的状态快照
+                for chunk in self.graph.stream(init_agent_state, **args):
+                    # 如果当前 chunk 没有消息，跳过（某些节点可能不产生消息）
+                    if len(chunk["messages"]) == 0:
+                        pass
+                    else:
+                        # pretty_print() 以可读格式打印最后一条消息
+                        # chunk["messages"][-1] 取消息列表的最后一条（最新消息）
+                        chunk["messages"][-1].pretty_print()
+                        # 将当前 chunk 添加到跟踪列表
+                        trace.append(chunk)
 
-            # 最终状态是跟踪列表中的最后一个元素
-            # 因为 stream() 每次输出一个节点执行后的状态，
-            # 最后一个输出就是图执行完毕后的最终状态
-            final_state = trace[-1]
-        else:
-            # 正常模式：一次调用完成整个图执行
-            # graph.invoke() 返回图的最终状态
-            # invoke 会自动从 START 开始，按边的定义执行所有节点，直到 END
-            # **args 展开为 stream_mode="values", config={"recursion_limit": 100}
-            final_state = self.graph.invoke(init_agent_state, **args)
+                # 最终状态是跟踪列表中的最后一个元素
+                # 因为 stream() 每次输出一个节点执行后的状态，
+                # 最后一个输出就是图执行完毕后的最终状态
+                final_state = trace[-1] if trace else init_agent_state
+            else:
+                # 正常模式：一次调用完成整个图执行
+                # graph.invoke() 返回图的最终状态
+                # invoke 会自动从 START 开始，按边的定义执行所有节点，直到 END
+                # **args 展开为 stream_mode="values", config={"recursion_limit": 100}
+                final_state = self.graph.invoke(init_agent_state, **args)
+        finally:
+            # 无论成功、异常还是被取消，都要收尾指标并落库
+            metrics.finish()
+            clear_current_metrics()
+            try:
+                save_run_log(metrics.to_dict())
+            except Exception:  # 落库失败不能影响分析结果
+                logger.debug("运行指标落库失败", exc_info=True)
 
         # -----------------------------------------------------------------
         # 步骤 3：保存当前状态（用于后续反思）
@@ -906,6 +976,14 @@ flowchart TD
         # 将最终状态保存到 JSON 文件，便于后续分析
         # -----------------------------------------------------------------
         self._log_state(trade_date, final_state)
+
+        # -----------------------------------------------------------------
+        # 步骤 4.5：写入角色记忆（规则化，零 LLM 调用）
+        # 把"当时的市场状况 + 本次决策"存进各角色记忆并落库，
+        # 使下一次分析时 get_memories() 能检索到内容，
+        # 提示词中的 past_memory_str 不再是空串。
+        # -----------------------------------------------------------------
+        self.remember_analysis(final_state)
 
         # -----------------------------------------------------------------
         # 步骤 5：返回最终状态和处理后的交易信号
@@ -1024,11 +1102,143 @@ flowchart TD
             json.dump(self.log_states_dict, f, indent=4)
 
     # -------------------------------------------------------------------------
+    # 记忆管理：加载 / 写入 / 落库
+    # -------------------------------------------------------------------------
+    def _memories_by_role(self) -> dict[str, FinancialSituationMemory]:
+        """
+        返回 ``{role: 记忆实例}`` 映射。
+
+        role 与 ``reflection.MEMORY_ROLES`` 的取值一致（bull/bear/
+        invest_judge/trader/portfolio_manager），与 SQLite 中
+        ``agent_memories.role`` 的取值也一致。映射关系只在
+        ``reflection.MEMORY_ROLES`` 里定义一次，避免两处各写一份后跑偏。
+        """
+        instances = {
+            "bull_memory": self.bull_memory,
+            "bear_memory": self.bear_memory,
+            "invest_judge_memory": self.invest_judge_memory,
+            "trader_memory": self.trader_memory,
+            "portfolio_manager_memory": self.portfolio_manager_memory,
+        }
+        return {role: instances[attr] for role, attr in MEMORY_ROLES.items()}
+
+    def _load_memories_from_store(self) -> dict[str, int]:
+        """
+        从 SQLite 恢复各角色记忆。
+
+        WHY：``services/runner.py`` 每次分析都新建一个 TradingAgentsGraph，
+        内存里的记忆会随对象消亡。没有这一步，``get_memories()`` 永远返回
+        空列表，提示词里的 ``past_memory_str`` 永远是空串。
+
+        返回：
+            dict[str, int]: 每个角色恢复的条数
+        """
+        if not self.memory_enabled:
+            return {}
+        try:
+            stored = load_all_memories(limit_per_role=self.memory_load_limit)
+        except Exception as exc:  # 记忆恢复失败不应阻断分析
+            logger.warning("读取历史记忆失败，本次以空记忆运行：%s", exc)
+            return {}
+
+        loaded: dict[str, int] = {}
+        for role, memory in self._memories_by_role().items():
+            rows = stored.get(role) or []
+            pairs = [
+                (row.get("situation") or "", row.get("recommendation") or "")
+                for row in rows
+                if row.get("situation")
+            ]
+            if not pairs:
+                continue
+            # 存储按时间倒序返回，内存按写入顺序追加 → 反转后保持时间正序
+            memory.add_situations(list(reversed(pairs)))
+            loaded[role] = len(pairs)
+        return loaded
+
+    def _persist_memories_to_store(
+        self, before: dict[str, int]
+    ) -> int:
+        """
+        把"上次写入之后新增"的记忆条目落到 SQLite。
+
+        参数：
+            before (dict): 写入前的各角色条目数（``{role: count}``）
+
+        返回：
+            int: 实际落库的条数
+        """
+        if not self.memory_enabled:
+            return 0
+        written = 0
+        for role, memory in self._memories_by_role().items():
+            start = int(before.get(role, 0))
+            for index in range(start, len(memory.documents)):
+                try:
+                    save_memory(
+                        role=role,
+                        situation=memory.documents[index],
+                        recommendation=memory.recommendations[index],
+                        ticker=self.ticker or "",
+                        trade_date=str(
+                            (self.curr_state or {}).get("trade_date") or ""
+                        ),
+                        meta={"source": "reflector"},
+                    )
+                    written += 1
+                except Exception as exc:  # 落库失败不应阻断分析
+                    logger.warning("记忆落库失败（role=%s）：%s", role, exc)
+        return written
+
+    def remember_analysis(
+        self,
+        final_state: dict[str, Any] | None = None,
+        outcome: str | None = None,
+        persist: bool = True,
+    ) -> dict[str, int]:
+        """
+        规则化记忆写入（**默认路径，不调用 LLM**）。
+
+        把本次分析的"市场状况 + 最终决策"写入 5 个角色记忆，使下一次分析
+        时 ``get_memories()`` 能检索到内容，提示词中的 ``past_memory_str``
+        不再是空串。
+
+        参数：
+            final_state (dict | None): 图执行后的最终状态，默认取 ``self.curr_state``
+            outcome (str | None): 可选的结果描述（如"5 日前瞻收益 +3.2%"）
+            persist (bool): 是否同时写入 SQLite
+
+        返回：
+            dict[str, int]: 每个角色写入的条数
+        """
+        state = final_state or self.curr_state
+        if not state:
+            return {}
+        try:
+            return self.rule_reflector.write(
+                state,
+                self._memories_by_role(),
+                ticker=self.ticker or state.get("company_of_interest") or "",
+                trade_date=state.get("trade_date") or "",
+                outcome=outcome,
+                persist=persist,
+            )
+        except Exception as exc:  # 记忆写入失败不应影响分析结果
+            logger.warning("记忆写入失败：%s", exc)
+            return {}
+
+    # -------------------------------------------------------------------------
     # 反思方法：根据交易收益反思决策质量
     # -------------------------------------------------------------------------
     def reflect_and_remember(self, returns_losses):
         """
         根据交易收益反思所有代理的决策，并更新各自的记忆。
+
+        【注意：这是"显式（LLM）路径"】
+        本方法会为 5 个角色各调用一次 LLM（共 5 次模型调用），因此**不会**
+        在正常分析流程中自动触发。默认的记忆写入路径是零 LLM 调用的
+        :meth:`remember_analysis`（在 :meth:`propagate` 结束时自动执行）。
+        本方法适用于"已知真实盈亏、需要一段自然语言复盘"的场景。
 
         【反思流程】
         对以下 5 个角色分别进行反思：
@@ -1039,7 +1249,7 @@ flowchart TD
         5. 投资组合经理（Portfolio Manager）：反思风险管理的决策
 
         每个角色的反思结果会存入对应的 FinancialSituationMemory，
-        以便在未来的决策中检索相关经验。
+        以便在未来的决策中检索相关经验；随后新增条目会写入 SQLite。
 
         参数:
             returns_losses: 收益/损失数据，用于评估决策质量
@@ -1094,6 +1304,16 @@ flowchart TD
 ```
 以上是可视化的流程图：反思调用链。
         """
+        if not self.curr_state:
+            logger.warning("没有可反思的状态，跳过 reflect_and_remember")
+            return {}
+
+        # 记录写入前的条目数，便于把新增条目落到 SQLite
+        before = {
+            role: len(memory.documents)
+            for role, memory in self._memories_by_role().items()
+        }
+
         # 反思牛市研究员的分析
         self.reflector.reflect_bull_researcher(
             self.curr_state, returns_losses, self.bull_memory
@@ -1114,6 +1334,10 @@ flowchart TD
         self.reflector.reflect_portfolio_manager(
             self.curr_state, returns_losses, self.portfolio_manager_memory
         )
+
+        # 落库：让 LLM 反思出的经验也能跨进程存活
+        self._persist_memories_to_store(before)
+        return {role: 1 for role in self._memories_by_role()}
 
     # -------------------------------------------------------------------------
     # 信号处理方法：提取核心交易决策

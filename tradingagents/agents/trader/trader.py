@@ -105,7 +105,7 @@ from tradingagents.agents.utils.agent_utils import build_instrument_context
 #   内层 trader_node(state) 只接收 state，
 #   内层通过"闭包"捕获外层的 llm 变量。
 # ============================================================================
-def create_trader(llm):
+def create_trader(llm, memory=None):
     """
     创建交易员节点函数（工厂函数模式）。
 
@@ -116,6 +116,9 @@ def create_trader(llm):
 
     参数：
         llm: 大语言模型实例，驱动推理和决策
+        memory: 可选的情景记忆（FinancialSituationMemory）。
+            传入后，交易员会像牛/熊研究员一样检索历史相似情形，
+            并把"过去的经验教训"注入提示词。默认 None 表示不检索。
     """
 
     # ========================================================================
@@ -165,6 +168,27 @@ def create_trader(llm):
             f"### 新闻分析\n{_clip(state.get('news_report', ''))}\n\n"
             f"### 基本面分析\n{_clip(state.get('fundamentals_report', ''))}"
         )
+
+        # -----------------------------------------------------------------
+        # 记忆检索（与牛/熊研究员同一套机制）
+        # 把当前的分析报告拼成"当前情况"，检索历史上相似的交易方案，
+        # 作为"过去的经验教训"注入提示词。
+        # 记忆为空时 past_memory_str 为空串，不影响主流程。
+        # -----------------------------------------------------------------
+        curr_situation = (
+            f"{state.get('market_report', '')}\n\n"
+            f"{state.get('sentiment_report', '')}\n\n"
+            f"{state.get('news_report', '')}\n\n"
+            f"{state.get('fundamentals_report', '')}"
+        )
+        past_memory_str = ""
+        if memory is not None:
+            try:
+                past_memories = memory.get_memories(curr_situation, n_matches=2)
+            except Exception:
+                past_memories = []
+            for _i, rec in enumerate(past_memories, 1):
+                past_memory_str += str(rec.get("recommendation", "")) + "\n\n"
 
         # ====================================================================
         # 工具列表
@@ -280,7 +304,8 @@ def create_trader(llm):
                     " 你可以使用以下工具：{tool_names}。\n{system_message}"
                     "供你参考，当前日期为 {current_date}。{instrument_context}"
                     "分析师报告：\n{analyst_reports}\n\n"
-                    "研究经理提供的投资计划：{investment_plan}",
+                    "研究经理提供的投资计划：{investment_plan}\n\n"
+                    "类似情境的反思与经验教训：{past_memory_str}",
                 ),
                 # ==================================================================
                 # MessagesPlaceholder：运行时插入历史消息
@@ -324,6 +349,8 @@ def create_trader(llm):
         prompt = prompt.partial(investment_plan=investment_plan)
         # 填入分析师报告，确保跳过辩论时交易员仍有充分依据
         prompt = prompt.partial(analyst_reports=analyst_reports)
+        # 填入历史经验教训（记忆为空时为空串）
+        prompt = prompt.partial(past_memory_str=past_memory_str)
 
         # ====================================================================
         # 构建并执行 LangChain 链

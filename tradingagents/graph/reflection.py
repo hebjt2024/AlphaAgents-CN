@@ -103,10 +103,10 @@
 # 这个模块实现了"反思"（Reflection）机制——这是 AI 代理系统中
 # 实现"从经验中学习"的关键组件。
 # =============================================================================
-
 # ---------------------------------------------------------------------------
 # 导入依赖
 # ---------------------------------------------------------------------------
+
 from typing import Any  # 类型提示
 
 # Dict[str, Any] 表示"键为字符串、值为任意类型的字典"
@@ -117,6 +117,29 @@ from langchain_openai import ChatOpenAI  # OpenAI 兼容的聊天模型接口
                         # 可以调用 LLM 的 API 来生成文本回复
                         # .invoke(messages) 发送消息列表并获取 LLM 回复
                         # .content 属性获取回复的文本内容
+
+
+# =============================================================================
+# 角色 → 记忆实例 的映射
+# =============================================================================
+# WHY：``trading_graph.py`` 里的 5 个记忆实例名与 SQLite 中的 role 标识
+# 不完全一致（实例名带 ``_memory`` 后缀），集中在这里定义，避免两处各写
+# 一份映射后悄悄跑偏。
+MEMORY_ROLES: dict[str, str] = {
+    "bull": "bull_memory",
+    "bear": "bear_memory",
+    "invest_judge": "invest_judge_memory",
+    "trader": "trader_memory",
+    "portfolio_manager": "portfolio_manager_memory",
+}
+
+
+def _clip(text: Any, limit: int = 800) -> str:
+    """把任意值裁剪成不超过 ``limit`` 个字符的纯文本。"""
+    value = str(text or "").strip()
+    if len(value) <= limit:
+        return value
+    return value[:limit] + "..."
 
 
 # =============================================================================
@@ -776,3 +799,242 @@ Adhere strictly to these instructions, and ensure your output is detailed, accur
 
         # 步骤 4：将反思结果存入记忆
         portfolio_manager_memory.add_situations([(situation, result)])
+
+
+# =============================================================================
+# 类：RuleBasedReflector —— 规则化（非 LLM）记忆写入器
+# =============================================================================
+class RuleBasedReflector:
+    """
+    规则化反思：把"当时的市场状况 + 本次决策"写进各角色记忆。
+
+    【为什么需要它】
+    上面的 ``Reflector`` 每次反思要调用 5 次 LLM（每个角色一次），这会让
+    每次分析额外付出延迟与费用；而"学习闭环"真正需要的只是**把当时的
+    情况和决策记下来**，供下一次检索。
+
+    因此把两条路径拆开：
+
+    - **默认路径（本类）**：纯规则、零 LLM 调用。分析结束即写入记忆，
+      下一次分析时由 BM25 检索并注入提示词（``past_memory_str``）。
+    - **显式路径（``Reflector``）**：``reflect_and_remember(returns_losses=...)``
+      才触发 LLM 复盘，适合"已知真实盈亏、需要一段自然语言复盘"的场景。
+
+    【写入内容】
+    对每个角色写入一对 (situation, recommendation)：
+
+    - situation：四份分析报告 + 标的 + 交易日的压缩摘要（BM25 的检索键）
+    - recommendation：该角色的论点/决策 + 本次最终决策（命中后注入提示词）
+
+    【典型用法】
+        writer = RuleBasedReflector()
+        writer.write(final_state, {
+            "bull": graph.bull_memory,
+            "bear": graph.bear_memory,
+            ...
+        })
+    """
+
+    #: 四份分析报告 → 中文标签（用于构造 situation 摘要）
+    REPORT_LABELS: tuple[tuple[str, str], ...] = (
+        ("market_report", "市场分析"),
+        ("sentiment_report", "舆情分析"),
+        ("news_report", "新闻分析"),
+        ("fundamentals_report", "基本面分析"),
+    )
+
+    def __init__(self, max_chars: int = 2000, per_report_chars: int = 500):
+        """
+        初始化规则化写入器。
+
+        参数：
+            max_chars (int): 单条 recommendation 的最大长度
+            per_report_chars (int): 单份报告在 situation 摘要中的最大长度
+        """
+        self.max_chars = int(max_chars)
+        self.per_report_chars = int(per_report_chars)
+
+    # -------------------------------------------------------------------------
+    # 情景摘要
+    # -------------------------------------------------------------------------
+    def summarize_situation(self, state: dict[str, Any]) -> str:
+        """
+        把一次分析的"市场状况"压缩成一段文本。
+
+        内容：标的、交易日、四份分析报告的片段。
+        为什么要压缩：BM25 的文档长度归一化对超长文档不利，且检索只需要
+        关键词信号；同时写入 SQLite 也要控制单行体积。
+
+        参数：
+            state (dict): 图执行后的最终状态
+
+        返回：
+            str: 市场状况摘要
+        """
+        state = state or {}
+        lines = [
+            f"标的：{state.get('company_of_interest') or '未知'}｜"
+            f"交易日：{state.get('trade_date') or '未知'}"
+        ]
+        for field, label in self.REPORT_LABELS:
+            text = _clip(state.get(field, ""), self.per_report_chars)
+            if text:
+                lines.append(f"[{label}] {text}")
+        return "\n".join(lines)
+
+    # -------------------------------------------------------------------------
+    # 决策提取
+    # -------------------------------------------------------------------------
+    def extract_decision(self, state: dict[str, Any]) -> str:
+        """
+        提取本次分析的最终决策文本。
+
+        优先使用 Portfolio Manager 的 ``final_trade_decision``，缺失时依次
+        回退到风险辩论裁决、投资辩论裁决、交易计划。
+        """
+        state = state or {}
+        decision = (
+            state.get("final_trade_decision")
+            or (state.get("risk_debate_state") or {}).get("judge_decision")
+            or (state.get("investment_debate_state") or {}).get("judge_decision")
+            or state.get("trader_investment_plan")
+            or ""
+        )
+        return _clip(decision, self.max_chars)
+
+    def role_recommendation(
+        self, role: str, state: dict[str, Any], decision: str
+    ) -> str:
+        """
+        构造某个角色的"经验"文本（命中后注入提示词的那一段）。
+
+        参数：
+            role (str): 角色标识（bull/bear/invest_judge/trader/portfolio_manager）
+            state (dict): 图执行后的最终状态
+            decision (str): 本次最终决策文本
+
+        返回：
+            str: 该角色的经验条目
+        """
+        state = state or {}
+        investment = state.get("investment_debate_state") or {}
+        risk = state.get("risk_debate_state") or {}
+
+        if role == "bull":
+            body = investment.get("bull_history") or ""
+            title = "看多论点"
+        elif role == "bear":
+            body = investment.get("bear_history") or ""
+            title = "看空论点"
+        elif role == "invest_judge":
+            body = investment.get("judge_decision") or ""
+            title = "投资辩论裁决"
+        elif role == "trader":
+            body = state.get("trader_investment_plan") or ""
+            title = "交易方案"
+        elif role == "portfolio_manager":
+            body = (
+                risk.get("judge_decision")
+                or state.get("trader_investment_plan")
+                or ""
+            )
+            title = "组合经理裁决"
+        else:
+            body = ""
+            title = role
+
+        parts = []
+        body_text = _clip(body, self.max_chars)
+        if body_text:
+            parts.append(f"[{title}] {body_text}")
+        if decision:
+            parts.append(f"[最终决策] {_clip(decision, self.max_chars)}")
+        return "\n".join(parts) if parts else f"[{title}] 暂无内容"
+
+    # -------------------------------------------------------------------------
+    # 写入
+    # -------------------------------------------------------------------------
+    def build_entries(
+        self,
+        state: dict[str, Any],
+        outcome: str | None = None,
+    ) -> dict[str, tuple[str, str]]:
+        """
+        生成每个角色的 (situation, recommendation) 记忆对。
+
+        参数：
+            state (dict): 图执行后的最终状态
+            outcome (str | None): 可选的结果描述（如"5 日前瞻收益 +3.2%"）。
+                已知真实结果时（评估服务算出前瞻收益后回填），
+                把它拼进 recommendation，下一次检索就能看到"上次这么做
+                结果如何"。
+
+        返回：
+            dict[str, tuple[str, str]]: {role: (situation, recommendation)}
+        """
+        state = state or {}
+        situation = self.summarize_situation(state)
+        decision = self.extract_decision(state)
+
+        entries: dict[str, tuple[str, str]] = {}
+        for role in MEMORY_ROLES:
+            recommendation = self.role_recommendation(role, state, decision)
+            if outcome:
+                recommendation = f"{recommendation}\n[结果] {_clip(outcome, 400)}"
+            entries[role] = (situation, recommendation)
+        return entries
+
+    def write(
+        self,
+        state: dict[str, Any],
+        memories: dict[str, Any],
+        ticker: str | None = None,
+        trade_date: str | None = None,
+        outcome: str | None = None,
+        persist: bool = True,
+    ) -> dict[str, int]:
+        """
+        把一次分析写入各角色记忆（并可选地落库）。
+
+        参数：
+            state (dict): 图执行后的最终状态
+            memories (dict): {role: FinancialSituationMemory}
+            ticker (str | None): 标的，写入存储时用
+            trade_date (str | None): 交易日，写入存储时用
+            outcome (str | None): 可选的结果描述
+            persist (bool): 是否写入 SQLite（默认写）
+
+        返回：
+            dict[str, int]: 每个角色写入的条数（正常情况下都是 1）
+        """
+        entries = self.build_entries(state, outcome=outcome)
+        ticker = ticker or (state or {}).get("company_of_interest") or ""
+        trade_date = trade_date or (state or {}).get("trade_date") or ""
+
+        written: dict[str, int] = {}
+        for role, (situation, recommendation) in entries.items():
+            memory = (memories or {}).get(role)
+            if memory is None:
+                continue
+            memory.add_situations([(situation, recommendation)])
+            written[role] = 1
+            if persist:
+                try:
+                    from tradingagents.storage.memory_store import save_memory
+
+                    save_memory(
+                        role=role,
+                        situation=situation,
+                        recommendation=recommendation,
+                        ticker=ticker,
+                        trade_date=trade_date,
+                        meta={"source": "rule_based_reflection"},
+                    )
+                except Exception as exc:  # 落库失败不应影响分析结果
+                    import logging
+
+                    logging.getLogger(__name__).warning(
+                        "记忆写入存储失败（role=%s）：%s", role, exc
+                    )
+        return written
+

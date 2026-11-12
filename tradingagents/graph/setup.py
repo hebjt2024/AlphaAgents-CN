@@ -636,7 +636,7 @@ class GraphSetup:
         #   → LLM 返回："Based on the BUY recommendation, buy 100 shares of AAPL
         #      at current price of $185 with stop loss at $175..."
         #   → 更新 state["trader_investment_plan"]
-        trader_node = create_trader(self.quick_thinking_llm)
+        trader_node = create_trader(self.quick_thinking_llm, self.trader_memory)
 
         # 创建风险分析三方辩论节点
         # 激进分析师：主张高风险高回报策略（如加杠杆、全仓买入）

@@ -91,13 +91,318 @@
 # abstractmethod：抽象方法装饰器，子类必须实现被装饰的方法
 # 【什么是 from...import...？】从 abc 模块导入 ABC 和 abstractmethod
 # abc 是 Python 内置模块，提供抽象基类功能
+import math
+import re
+import time
 from abc import ABC, abstractmethod
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 # Any：任意类型，表示"什么类型都行"
 #   用于不确定具体类型时的类型注解
 # Optional：可选类型（可以是某种类型或 None）
 #   例如 Optional[str] 表示"字符串或 None"
 from typing import Any
+
+# =============================================================================
+# 可观测性（token / 成本 / 延迟）公共辅助函数
+# =============================================================================
+#
+# 这些函数是"与供应商无关"的，供各供应商客户端复用：
+#   - estimate_tokens()   ：没有 usage 元数据时的兜底 token 估算
+#   - extract_token_usage()：从各种响应形态中提取 token 数
+#   - observe_llm_call()  ：上下文管理器，测量延迟并记录调用
+#
+# 记录入口是 tradingagents/services/observability.py 的"当前 run"注册表。
+# 为了避免循环 import（observability -> services -> graph -> llm_clients），
+# 这里采用**惰性导入**：只有真正发生 LLM 调用时才 import。
+
+# CJK 字符范围：汉字、扩展 A、日文假名、韩文、全角标点与全角字符
+_CJK_RE = re.compile(
+    "["
+    "\u3000-\u303f"  # CJK 标点
+    "\u3040-\u30ff"  # 平假名 / 片假名
+    "\u3400-\u4dbf"  # 扩展 A
+    "\u4e00-\u9fff"  # 基本汉字
+    "\uf900-\ufaff"  # 兼容汉字
+    "\uff00-\uffef"  # 全角字符
+    "]"
+)
+
+#: 拉丁字符的"字符数 → token 数"换算比例（经验值）
+_LATIN_CHARS_PER_TOKEN = 4
+
+#: 缓存已导入的 observability 模块，避免每次调用都走 importlib
+_OBSERVABILITY_MODULE: Any = None
+
+
+def estimate_tokens(text: str) -> int:
+    """粗略估算一段文本的 token 数。
+
+    规则（经验值，仅用于供应商没有返回 usage 时的兜底）：
+
+    * 中日韩字符：约 1 个字符 ≈ 1 个 token
+    * 拉丁字符：约 4 个字符 ≈ 1 个 token
+
+    估算结果会被标记为 ``tokens_estimated=True``，下游必须知道它不是权威值。
+
+    Args:
+        text: 待估算的文本
+
+    Returns:
+        估算的 token 数（不小于 0）
+    """
+    if not text:
+        return 0
+    cjk = len(_CJK_RE.findall(text))
+    latin = len(text) - cjk
+    return int(cjk + math.ceil(latin / _LATIN_CHARS_PER_TOKEN))
+
+
+def flatten_text(value: Any) -> str:
+    """把各种形态的输入/输出摊平成纯文本，用于 token 兜底估算。
+
+    支持：字符串、消息列表、LangChain 消息对象、``{"content": ...}`` 字典、
+    OpenAI 风格的 ``{"type": "text", "text": ...}`` 内容块。
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        return "".join(flatten_text(item) for item in value)
+    if isinstance(value, dict):
+        if "content" in value:
+            return flatten_text(value["content"])
+        if "text" in value:
+            return flatten_text(value["text"])
+        return ""
+    content = getattr(value, "content", None)
+    if content is not None:
+        return flatten_text(content)
+    return ""
+
+
+def extract_token_usage(response: Any) -> tuple[int, int, bool]:
+    """从 LLM 响应中提取 ``(prompt_tokens, completion_tokens, tokens_estimated)``。
+
+    依次尝试以下来源（第一个能给出数字的即采用）：
+
+    1. ``response.usage_metadata`` —— LangChain 标准字段
+       （OpenAI / Anthropic / Google 都填这里）
+    2. ``response.response_metadata["token_usage"]`` —— OpenAI 原始字段
+    3. ``response.response_metadata["usage"]`` —— Anthropic 原始字段
+    4. ``response.usage`` —— 供应商 SDK 的 Usage 对象
+
+    全部取不到时返回 ``(0, 0, True)``，表示"需要走字符数兜底估算"。
+    """
+    usage = getattr(response, "usage_metadata", None)
+    if isinstance(usage, dict):
+        prompt = usage.get("input_tokens") or usage.get("prompt_tokens")
+        completion = usage.get("output_tokens") or usage.get("completion_tokens")
+        if prompt is not None or completion is not None:
+            return int(prompt or 0), int(completion or 0), False
+
+    metadata = getattr(response, "response_metadata", None)
+    if isinstance(metadata, dict):
+        raw = metadata.get("token_usage")
+        if isinstance(raw, dict):
+            prompt = raw.get("prompt_tokens") or raw.get("input_tokens")
+            completion = raw.get("completion_tokens") or raw.get("output_tokens")
+            if prompt is not None or completion is not None:
+                return int(prompt or 0), int(completion or 0), False
+        raw = metadata.get("usage")
+        if isinstance(raw, dict):
+            prompt = raw.get("prompt_tokens") or raw.get("input_tokens")
+            completion = raw.get("completion_tokens") or raw.get("output_tokens")
+            if prompt is not None or completion is not None:
+                return int(prompt or 0), int(completion or 0), False
+
+    raw = getattr(response, "usage", None)
+    if raw is not None:
+        prompt = getattr(raw, "prompt_tokens", None)
+        if prompt is None:
+            prompt = getattr(raw, "input_tokens", None)
+        completion = getattr(raw, "completion_tokens", None)
+        if completion is None:
+            completion = getattr(raw, "output_tokens", None)
+        if prompt is not None or completion is not None:
+            return int(prompt or 0), int(completion or 0), False
+
+    return 0, 0, True
+
+
+def _observability_module() -> Any:
+    """惰性获取 observability 模块（避免模块级循环 import）。
+
+    正常路径是 ``importlib.import_module("tradingagents.services.observability")``。
+    如果该包因可选依赖缺失而无法导入，则退化为"直接从文件加载"，
+    保证可观测性在最小化环境里依然可用（模块名保持一致，状态唯一）。
+
+    返回 ``None`` 表示该模块彻底不可用；此时所有记录都是 no-op。
+    """
+    global _OBSERVABILITY_MODULE
+    if _OBSERVABILITY_MODULE is not None:
+        return _OBSERVABILITY_MODULE
+    module = None
+    try:
+        import importlib
+
+        module = importlib.import_module("tradingagents.services.observability")
+    except Exception:
+        module = None
+    if module is None:
+        module = _load_observability_from_file()
+    _OBSERVABILITY_MODULE = module
+    return module
+
+
+def _load_observability_from_file() -> Any:
+    """兜底：绕过 ``tradingagents.services`` 包的 ``__init__`` 直接加载模块。
+
+    仅在标准 import 失败时使用（例如 ``tradingagents.services`` 的其他子模块
+    因为缺少可选依赖而无法导入）。这里必须保证：
+
+    * 模块以规范名 ``tradingagents.services.observability`` 注册到
+      ``sys.modules``，这样后续任何 ``from tradingagents.services.observability
+      import X`` 拿到的都是**同一个模块实例**（ContextVar 注册表状态唯一）；
+    * 父包 ``tradingagents.services`` 也被正确登记，属性链
+      ``tradingagents.services.observability`` 可用。
+    """
+    try:
+        import importlib.util
+        import sys
+        from pathlib import Path
+
+        name = "tradingagents.services.observability"
+        path = Path(__file__).resolve().parent.parent / "services" / "observability.py"
+        if not path.exists():
+            return None
+
+        # 父包若已导入则复用，否则尽量导入
+        parent = sys.modules.get("tradingagents.services")
+        if parent is None:
+            try:
+                import importlib
+
+                parent = importlib.import_module("tradingagents.services")
+            except Exception:
+                parent = None
+
+        spec = importlib.util.spec_from_file_location(name, path)
+        if spec is None or spec.loader is None:
+            return None
+        module = importlib.util.module_from_spec(spec)
+        # 先登记再执行，避免模块内部再次 import 自己时得到重复实例
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        except Exception:
+            sys.modules.pop(name, None)
+            return None
+        if parent is not None:
+            parent.observability = module
+        return module
+    except Exception:  # pragma: no cover - 兜底路径
+        return None
+
+
+def _record_call(
+    *,
+    provider: str,
+    model: str,
+    stage: str | None,
+    prompt_tokens: int,
+    completion_tokens: int,
+    latency_ms: float,
+    ok: bool,
+    error: str,
+    tokens_estimated: bool,
+) -> None:
+    """把一次调用写入当前 run 的度量；任何异常都被吞掉（绝不影响业务）。"""
+    module = _observability_module()
+    if module is None:
+        return
+    try:
+        module.record_llm_call(
+            stage=stage,
+            model=model,
+            provider=provider,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=latency_ms,
+            ok=ok,
+            error=error,
+            tokens_estimated=tokens_estimated,
+        )
+    except Exception:  # pragma: no cover - 度量失败绝不影响业务主流程
+        pass
+
+
+@contextmanager
+def observe_llm_call(
+    *,
+    provider: str,
+    model: str,
+    prompt_input: Any = None,
+    stage: str | None = None,
+) -> Iterator[dict[str, Any]]:
+    """包装一次 LLM 调用：测量延迟、提取 token、写入当前 run 的度量。
+
+    用法（以 ``NormalizedChatOpenAI.invoke`` 为例）::
+
+        with observe_llm_call(
+            provider=self.observability_provider,
+            model=self.observability_model,
+            prompt_input=input,
+        ) as obs:
+            response = super().invoke(input, config, **kwargs)
+            obs["response"] = response
+        return normalize_content(response)
+
+    行为约定：
+
+    * 调用成功：记录模型、供应商、token 数、耗时、估算成本。
+    * 调用失败：记录 ``ok=False`` 与错误信息，然后**原样抛出**原异常
+      （异常语义保持不变）；记录动作本身绝不会抛出新异常。
+    * 没有活动 run（未调用 ``set_current_metrics``）：完全 no-op。
+    * 供应商没有返回 usage 时：用字符数兜底估算，并标记
+      ``tokens_estimated=True``。
+    """
+    started = time.perf_counter()
+    box: dict[str, Any] = {}
+    try:
+        yield box
+    except Exception as exc:
+        _record_call(
+            provider=provider,
+            model=model,
+            stage=stage,
+            prompt_tokens=estimate_tokens(flatten_text(prompt_input)),
+            completion_tokens=0,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            ok=False,
+            error=f"{type(exc).__name__}: {exc}",
+            tokens_estimated=True,
+        )
+        raise
+    else:
+        response = box.get("response")
+        prompt_tokens, completion_tokens, estimated = extract_token_usage(response)
+        if estimated:
+            prompt_tokens = estimate_tokens(flatten_text(prompt_input))
+            completion_tokens = estimate_tokens(flatten_text(response))
+        _record_call(
+            provider=provider,
+            model=model,
+            stage=stage,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            latency_ms=(time.perf_counter() - started) * 1000,
+            ok=True,
+            error="",
+            tokens_estimated=estimated,
+        )
 
 
 def normalize_content(response):

@@ -15,12 +15,36 @@ from .job_store import (
     list_jobs,
     mark_job_running,
 )
+from .memory_store import (
+    clear_memories,
+    count_memories,
+    list_memories,
+    load_all_memories,
+    save_memory,
+)
+from .portfolio_store import (
+    add_transaction,
+    create_account,
+    delete_position,
+    get_account,
+    list_accounts,
+    list_positions,
+    list_transactions,
+    update_account_cash,
+    upsert_position,
+)
 from .report_store import (
     delete_report,
     get_report,
     init_db,
     list_reports,
     save_report,
+)
+from .run_log_store import (
+    aggregate_run_logs,
+    get_run_log,
+    list_run_logs,
+    save_run_log,
 )
 from .scheduled_store import (
     add_scheduled_job,
@@ -55,6 +79,11 @@ __all__ = [
     "get_job",
     "list_jobs",
     "delete_job",
+    "save_memory",
+    "list_memories",
+    "count_memories",
+    "clear_memories",
+    "load_all_memories",
     "add_scheduled_job",
     "list_scheduled_jobs",
     "get_scheduled_job",
@@ -66,4 +95,17 @@ __all__ = [
     "list_watchlist",
     "remove_watch",
     "get_watch",
+    "save_run_log",
+    "list_run_logs",
+    "get_run_log",
+    "aggregate_run_logs",
+    "create_account",
+    "list_accounts",
+    "get_account",
+    "update_account_cash",
+    "upsert_position",
+    "list_positions",
+    "delete_position",
+    "add_transaction",
+    "list_transactions",
 ]

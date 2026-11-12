@@ -1,6 +1,6 @@
 # =============================================================================
 # 模块名称：memory.py
-# 模块功能：基于 BM25 算法的金融情景记忆系统
+# 模块功能：基于 BM25 算法的金融情景记忆系统（中文友好分词）
 # =============================================================================
 #
 # ============================================================================
@@ -18,7 +18,7 @@
 #   - 检索：遇到新情况时，从记忆中找出最相似的历史情景
 #   - 借鉴：用历史经验辅助当前决策
 #
-#   【为什么不用 LLM 自己的记忆？】
+# 【为什么不用 LLM 自己的记忆？】
 #   - LLM 有 token 限制，记不住太多历史
 #   - LLM 每次对话是独立的，不会自动记住之前的内容
 #   - 用外部记忆系统可以存储无限量的经验，不受 LLM 限制
@@ -48,26 +48,34 @@
 #   - 与 LLM 提供商无关，换 LLM 也能用
 #   - 基于词法的匹配速度快，适合实时检索场景
 #
-# 【什么是 rank_bm25 库？】
-#   rank_bm25 是 BM25 算法的 Python 实现库。
-#   BM25Okapi 是其中最常用的变体（Okapi 是一个信息检索系统的名字）。
-#   使用方式：
-#     1. 创建索引：bm25 = BM25Okapi(分词后的文档列表)
-#     2. 查询得分：scores = bm25.get_scores(分词后的查询)
-#     3. 得分越高表示文档与查询越相关
-#
 # 【什么是分词（Tokenization）？】
 #   分词就是把一段文本拆成一个个"词"（token）。
 #   例如："High inflation rate" → ["high", "inflation", "rate"]
-#   BM25 需要先分词才能计算词频。本模块用正则表达式做简单分词。
+#   BM25 需要先分词才能计算词频。
 #
-# 【什么是正则表达式（Regular Expression, regex）？】
-#   正则表达式是一种描述文本模式的"微型语言"。
-#   例如 r'\b\w+\b' 的含义：
-#   - \b 表示"单词边界"（字母和非字母的分界处）
-#   - \w+ 表示"一个或多个字母/数字/下划线"
-#   - 整体含义：匹配所有完整的"单词"
-#   re.findall(r'\b\w+\b', text) 就是找出文本中所有单词。
+#   【本模块的分词策略（中文友好）】
+#   本系统的所有文档都是中文，因此分词器必须能处理中文。常见的做法是
+#   引入 jieba 之类的中文分词词典库，但项目不引入新的第三方依赖，因此
+#   这里采用**字符二元组（character bigram）**近似：
+#
+#     "科技股波动加剧" → ["科技", "技股", "股波", "波动", "动加", "加剧"]
+#
+#   WHY 字符二元组：
+#     - 中文没有空格分词，\b 词边界对中文无效（原先的 r'\b\w+\b' 会把一整句
+#       中文变成一个 token，导致 BM25 全部得 0 分、检索形同虚设）。
+#     - 二元组把句子切成"有意义的最小片段"，既能命中完全相同的词，
+#       也能命中部分重叠的词（"科技行业波动" 与 "科技股波动" 共享
+#       "科技"、"波动"）。
+#     - 不需要词典、不需要额外依赖，纯 Python 实现。
+#
+#   TRADE-OFF（代价，必须知道）：
+#     - 二元组无法还原真实词边界，"科技股" 与 "科技/股" 会被切成同样的
+#       二元组序列，存在少量误召回。
+#     - 单字词的语义被稀释（"股" 只以 "科技/股波" 之类的片段出现）。
+#     - 若未来允许引入 jieba，可在此处替换 _tokenize 内部实现，其余逻辑
+#       （索引、检索、持久化）无需改动。
+#
+#   英文/数字部分保持原有行为：按词边界（空格、标点）切分并转小写。
 #
 # 【什么是类（class）和 self？】
 #   类是创建对象的"模板"。用 class 定义一个类，里面可以放属性和方法。
@@ -75,7 +83,7 @@
 #   例如：self.name = "test" 表示给当前对象设置 name 属性为 "test"。
 #
 # 【什么是 __init__ 方法？】
-#   __init__ 是 Python 类的"构造函数"——创建对象时自动调用的初始化方法。
+#   __init__ 是 Python 类的"构造函数"——创建对象时自动调用。
 #   当你写 memory = FinancialSituationMemory("test") 时，
 #   Python 自动调用 __init__(self, "test") 来初始化对象。
 #
@@ -89,8 +97,8 @@
 #   每个 Python 文件都有一个特殊变量 __name__：
 #   - 当文件被直接运行（python memory.py）时，__name__ 等于 "__main__"
 #   - 当文件被 import 导入时，__name__ 等于模块名 "memory"
-#   所以 if __name__ == "__main__": 下面的代码只在直接运行时执行，
-#   被 import 时不会执行。这用于放测试代码。
+#   所以 if __name__ == "__main__": 下面的代码只在直接运行时执行。
+#   这段代码用于测试 FinancialSituationMemory 的功能是否正常。
 # ============================================================================
 #
 # 设计模式：记忆-检索模式（Memory-Retrieval Pattern）
@@ -106,40 +114,125 @@
 #
 #   第 1 步：系统之前存储过历史经验
 #     memory.add_situations([
-#       ("Tech sector high volatility", "Reduce tech exposure"),
-#       ("High inflation", "Consider defensive sectors"),
+#       ("科技股波动加剧，机构持续减持", "降低成长股敞口"),
+#       ("消费板块需求疲软", "关注防御性板块"),
 #     ])
 #     → BM25 索引被重建，包含两个文档
 #
 #   第 2 步：遇到新情况，检索相似记忆
-#     results = memory.get_memories("Tech sector showing volatility", n_matches=1)
-#     → 对查询分词：["tech", "sector", "showing", "volatility"]
-#     → BM25 计算每个文档的得分
-#     → "Tech sector high volatility" 得分最高（共享 "tech", "sector", "volatility"）
-#     → 返回 [{matched_situation: "Tech sector...", recommendation: "Reduce..."}]
+#     results = memory.get_memories("科技股波动加剧", n_matches=1)
+#     → 对查询分词：["科技", "技股", "股波", "波动"]
+#     → BM25 计算每个文档的得分（不匹配文档得 0 分，匹配文档得正分）
+#     → "科技股波动加剧，机构持续减持" 得分最高
+#     → 返回 [{matched_situation: "科技股波动加剧…", recommendation: "降低成长股敞口",
+#              similarity_score: 1.0}]
 #
 #   第 3 步：系统利用历史经验辅助决策
-#     AI 看到"之前类似情况建议减少科技股敞口"，结合当前分析做出决策
+#     AI 看到"之前类似情况建议降低成长股敞口"，结合当前分析做出决策
 # =============================================================================
 
 # ---------------------------------------------------------------------------
 # 导入区：每个导入模块的作用说明
 # ---------------------------------------------------------------------------
 
-# BM25Okapi: BM25 算法的 Python 实现
-# 使用 Okapi 变体（最常用的 BM25 版本），参数 k1=1.5, b=0.75 为默认值
-# k1 控制词频饱和程度，b 控制文档长度归一化强度
-# 【安装方式】pip install rank_bm25
-# re: Python 正则表达式模块，用于文本分词（按单词边界分割）
+# re: Python 正则表达式模块，用于文本分词（切分 CJK 片段 / 拉丁词）
 # re.findall(模式, 文本) 找出文本中所有匹配模式的子串
+# math: 标准库数学函数（log），用于计算 BM25 的 IDF
+import math
 import re
 
-# List: 列表类型注解，用于标注参数和返回值类型
-#   例如 List[str] 表示"字符串列表"，如 ["a", "b", "c"]
-# Tuple: 元组类型注解，用于标注固定长度的复合类型
-#   例如 Tuple[str, str] 表示"包含两个字符串的元组"，如 ("情景", "建议")
-# 【什么是元组（tuple）？】类似列表，但不可修改。用圆括号定义：(1, 2, 3)
-from rank_bm25 import BM25Okapi
+# Counter: 标准库计数器，用于统计词频（TF）与文档频率（DF）
+from collections import Counter
+
+
+# =============================================================================
+# 私有类：_BM25Index —— 轻量 BM25 索引
+# =============================================================================
+class _BM25Index:
+    """
+    极简 BM25（Okapi 变体）倒排索引。
+
+    【为什么要自己实现，而不是直接用 rank_bm25？】
+    rank_bm25 的 ``BM25Okapi`` 使用 ``idf = log((N - df + 0.5) / (df + 0.5))``，
+    该值在 ``df > N/2`` 时为**负数**，rank_bm25 会用一个可能为负的 epsilon
+    下限去兜底，导致"高频词反而扣分"，最终出现**所有文档同分为 0**的退化
+    情况（本项目的小语料库场景极易触发）。
+
+    这里改用 Lucene 风格的正 IDF：
+        ``idf = log(1 + (N - df + 0.5) / (df + 0.5))``
+    该式恒为正，保证：
+      - 真正命中文档的得分一定 > 0（可区分性）；
+      - 未命中文档得分为 0，归一化后 similarity_score 恰好是 0.0；
+      - 高频词的 IDF 趋近于 0（但不为负），不会反向扣分。
+
+    属性：
+        corpus_size (int): 文档数量
+        doc_lengths (list[int]): 每篇文档的 token 数
+        avgdl (float): 平均文档长度
+        term_freqs (list[Counter]): 每篇文档的词频表
+        idf (dict[str, float]): 每个 token 的 IDF 权重
+    """
+
+    def __init__(self, corpus_tokens: list[list[str]], k1: float = 1.5, b: float = 0.75):
+        """
+        构建 BM25 索引。
+
+        参数：
+            corpus_tokens (list[list[str]]): 已分词的文档集合
+            k1 (float): 词频饱和系数，默认 1.5
+            b (float): 文档长度归一化强度，默认 0.75
+        """
+        self.k1 = float(k1)
+        self.b = float(b)
+        self.corpus_size = len(corpus_tokens)
+        self.doc_lengths = [len(tokens) for tokens in corpus_tokens]
+        self.avgdl = (
+            sum(self.doc_lengths) / len(self.doc_lengths) if self.doc_lengths else 0.0
+        )
+        self.term_freqs = [Counter(tokens) for tokens in corpus_tokens]
+
+        # 文档频率：每个 token 出现在多少篇文档中
+        doc_freq: Counter = Counter()
+        for tokens in corpus_tokens:
+            doc_freq.update(set(tokens))
+
+        # IDF 权重（Lucene 风格，恒为正）
+        self.idf: dict[str, float] = {
+            token: math.log(
+                1.0 + (self.corpus_size - freq + 0.5) / (freq + 0.5)
+            )
+            for token, freq in doc_freq.items()
+        }
+
+    def get_scores(self, query_tokens: list[str]) -> list[float]:
+        """
+        计算查询与每篇文档的 BM25 得分。
+
+        参数：
+            query_tokens (list[str]): 已分词的查询
+
+        返回：
+            list[float]: 与文档等长的得分列表（未命中为 0.0）
+        """
+        scores = [0.0] * self.corpus_size
+        if not query_tokens or not self.corpus_size:
+            return scores
+
+        for token in query_tokens:
+            weight = self.idf.get(token)
+            if weight is None:
+                # 查询里出现了语料库没有的 token（OOV），直接跳过
+                continue
+            for index, counter in enumerate(self.term_freqs):
+                freq = counter.get(token, 0)
+                if not freq:
+                    continue
+                length = self.doc_lengths[index]
+                # 长度归一化：avgdl 为 0（空文档）时退化为 1，避免除零
+                norm = 1.0 - self.b + self.b * (length / self.avgdl if self.avgdl else 1.0)
+                denominator = freq + self.k1 * norm
+                scores[index] += weight * freq * (self.k1 + 1.0) / denominator
+        return scores
 
 
 # =============================================================================
@@ -158,8 +251,8 @@ from rank_bm25 import BM25Okapi
 #         S1["add_situations()<br/>传入[(情景, 建议)]列表"]
 #         S2["documents.append(情景)<br/>recommendations.append(建议)"]
 #         S3["_rebuild_index()<br/>重建BM25索引"]
-#         S3a["_tokenize()<br/>对每篇文档分词<br/>re.findall + lower"]
-#         S3b["BM25Okapi(tokenized_docs)<br/>构建倒排索引<br/>计算DF/文档长度/平均长度"]
+#         S3a["_tokenize()<br/>CJK 片段 → 字符二元组<br/>拉丁片段 → 词边界切分"]
+#         S3b["_BM25Index(tokenized_docs)<br/>正 IDF + 长度归一化"]
 #         S1 --> S2 --> S3 --> S3a --> S3b
 #     end
 #
@@ -168,14 +261,13 @@ from rank_bm25 import BM25Okapi
 #         Q2["_tokenize()<br/>对查询文本分词"]
 #         Q3["bm25.get_scores()<br/>计算每篇文档的BM25得分"]
 #         Q4["sorted + reverse=True<br/>按得分降序排列"]
-#         Q5["取前n_matches条<br/>计算归一化得分<br/>score / max_score"]
+#         Q5["取前n_matches条<br/>score / max_score（max>0 时）"]
 #         Q6["返回结果列表<br/>[{matched_situation,<br/>recommendation,<br/>similarity_score}]"]
 #         Q1 --> Q2 --> Q3 --> Q4 --> Q5 --> Q6
 #     end
 #
 #     S3b -.->|"索引就绪，可被检索"| Q3
 # ```
-#
 # ---------------------------------------------------------------------------
 # 以下是可视化的流程图：反思存储与检索的闭环时序图
 # ---------------------------------------------------------------------------
@@ -201,7 +293,7 @@ from rank_bm25 import BM25Okapi
 #     BM25-->>Memory: 索引更新完成
 #     Memory-->>Reflector: 存储成功
 #
-#     Note over Agent,BM25: 阶段2：下次交易时的记忆检索
+#     Note over Memory,Agent: 阶段2：下次交易时的记忆检索
 #     Agent->>Memory: get_memories(当前市场状况, n_matches)
 #     Memory->>BM25: get_scores(分词后的查询)
 #     BM25-->>Memory: 返回各文档得分数组
@@ -221,16 +313,31 @@ class FinancialSituationMemory:
 
     属性：
         name (str): 记忆实例的名称标识
-        documents (List[str]): 存储的情景文本列表
-        recommendations (List[str]): 存储的投资建议列表（与 documents 一一对应）
-        bm25 (BM25Okapi | None): BM25 索引对象，None 表示尚未建立索引
+        documents (list[str]): 存储的情景文本列表
+        recommendations (list[str]): 存储的投资建议列表（与 documents 一一对应）
+        bm25 (_BM25Index | None): BM25 索引对象，None 表示尚未建立索引
 
     设计优势：
         - 纯本地运行，无需外部 API
         - 无 token 限制，可存储大量情景
         - 与 LLM 提供商无关，适用范围广
         - 基于词法的相似度，速度快，适合文本匹配场景
+        - 分词对中文友好（字符二元组近似），不依赖第三方词典
+
+    持久化：
+        本类**只负责内存中的数据与检索**，不碰任何数据库/文件 I/O。
+        需要落盘时调用 :meth:`to_dict` 导出，由
+        ``tradingagents.storage.memory_store`` 负责写入 SQLite；
+        恢复时调用 :meth:`from_dict`。
     """
+
+    #: CJK 片段（含扩展 A 区与兼容汉字）在文本中的匹配模式。
+    _CJK_RE = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+    #: 文本切分：先切出 CJK 片段，再切出拉丁词。
+    #: 拉丁片段保留原有 \w 的语义：字母、数字、下划线。
+    _SEGMENT_RE = re.compile(
+        r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+|[a-z0-9_]+"
+    )
 
     def __init__(self, name: str, config: dict = None):
         """
@@ -258,39 +365,53 @@ class FinancialSituationMemory:
         # 这两个列表通过索引位置保持对应关系
         self.recommendations: list[str] = []
         # BM25 索引对象，初始为空（还没有文档，无法建索引）
-        # 添加文档后会通过 _rebuild_index() 创建 BM25Okapi 对象
+        # 添加文档后会通过 _rebuild_index() 创建 _BM25Index 对象
         self.bm25 = None
 
+    # -------------------------------------------------------------------------
+    # 分词
+    # -------------------------------------------------------------------------
     def _tokenize(self, text: str) -> list[str]:
         """
         对文本进行分词处理，供 BM25 索引使用
 
-        分词策略：
-        - 使用正则表达式 \\b\\w+\\b 匹配所有"单词"（连续字母数字字符）
-        - 将所有文本转为小写（lowercase），保证大小写不敏感
-        - 这个简单的分词策略适合英文金融文本
+        分词策略（中英文混合）：
+        - 文本统一转小写，保证大小写不敏感
+        - CJK 片段（连续汉字）切成**字符二元组**：
+          "科技股波动" → ["科技", "技股", "股波", "波动"]
+          单字片段保留该单字本身。
+        - 拉丁/数字片段按词边界切分：
+          "Tech stocks rising!" → ["tech", "stocks", "rising"]
+        - 两者混合时互不影响："RSI超买" → ["rsi", "超买"]
+
+        WHY 不使用 jieba：项目不引入新的第三方依赖。
+        WHY 使用二元组而不是整句：整句会退化成单个 token，BM25 全部得 0 分。
+        代价见模块头部说明（无法还原真实词边界）。
 
         参数：
             text (str): 待分词的原始文本
 
         返回：
-            List[str]: 分词后的 token 列表，例如：
-                      "Tech stocks rising!" -> ["tech", "stocks", "rising"]
-
-        技术说明：
-            - \\b 是单词边界断言，匹配单词开始或结束的位置
-            - \\w+ 匹配一个或多个字母、数字或下划线
-            - re.findall() 返回所有匹配的子串列表
+            list[str]: 分词后的 token 列表
         """
-        # 将文本转为小写，然后使用正则表达式提取所有单词
-        # text.lower() 把所有大写字母转成小写，保证 "Tech" 和 "tech" 被视为同一个词
-        # re.findall(r'\b\w+\b', ...) 找出所有匹配 \b\w+\b 模式的子串
-        #   \b = 单词边界（字母和非字母的交界处）
-        #   \w+ = 一个或多个字母/数字/下划线
-        # 例如："Tech stocks rising!" → lower → "tech stocks rising!"
-        #   → findall → ["tech", "stocks", "rising"]
-        # 注意感叹号 ! 不是 \w 字符，所以不会被匹配
-        tokens = re.findall(r'\b\w+\b', text.lower())
+        if not text:
+            return []
+
+        lowered = str(text).lower()
+        tokens: list[str] = []
+        for match in self._SEGMENT_RE.finditer(lowered):
+            segment = match.group(0)
+            if self._CJK_RE.fullmatch(segment):
+                # 中文片段 → 字符二元组
+                if len(segment) == 1:
+                    tokens.append(segment)
+                else:
+                    tokens.extend(
+                        segment[index : index + 2] for index in range(len(segment) - 1)
+                    )
+            else:
+                # 拉丁/数字片段 → 整体作为一个 token
+                tokens.append(segment)
         return tokens
 
     def _rebuild_index(self):
@@ -302,34 +423,23 @@ class FinancialSituationMemory:
 
         索引构建过程：
         1. 对所有文档进行分词
-        2. 将分词后的文档列表传入 BM25Okapi 构造函数
-        3. BM25Okapi 内部会计算文档频率（DF）和文档长度等统计信息
+        2. 将分词后的文档列表传入 _BM25Index 构造函数
+        3. _BM25Index 内部会计算文档频率（DF）和文档长度等统计信息
 
         特殊情况：
         - 如果文档列表为空，将 bm25 设为 None
         """
         # 检查文档列表是否非空
-        # self.documents 是一个列表，if self.documents: 在列表非空时为真
         if self.documents:
-            # 对每个文档进行分词，得到 token 列表的列表
-            # 这是一个列表推导式：对 self.documents 中的每个 doc 调用 _tokenize
-            # 例如：["High inflation...", "Tech sector..."]
-            #   → [["high", "inflation", ...], ["tech", "sector", ...]]
-            # 结果是一个"二维列表"——每个元素是一个文档的分词结果
             tokenized_docs = [self._tokenize(doc) for doc in self.documents]
-            # 使用分词后的文档创建 BM25Okapi 索引对象
-            # BM25Okapi 构造函数接收"分词后的文档列表"
-            # 内部会计算：
-            #   - 每个词在多少篇文档中出现（文档频率 DF）
-            #   - 每篇文档的长度（词数）
-            #   - 平均文档长度
-            # 这些统计信息用于后续的相似度计算
-            self.bm25 = BM25Okapi(tokenized_docs)
+            self.bm25 = _BM25Index(tokenized_docs)
         else:
             # 如果没有文档，将索引设为 None
-            # 没有文档就无法建立索引，get_memories 会检查这个条件
             self.bm25 = None
 
+    # -------------------------------------------------------------------------
+    # 写入
+    # -------------------------------------------------------------------------
     def add_situations(self, situations_and_advice: list[tuple[str, str]]):
         """
         添加金融情景及其对应的投资建议
@@ -338,44 +448,30 @@ class FinancialSituationMemory:
         现有记忆中，然后重建索引以包含新数据。
 
         参数：
-            situations_and_advice (List[Tuple[str, str]]): 元组列表，
+            situations_and_advice (list[tuple[str, str]]): 元组列表，
                 每个元组包含两个元素：
-                - 第一个元素 (str): 金融情景描述，如 "High inflation rate..."
-                - 第二个元素 (str): 对应的投资建议，如 "Consider defensive sectors..."
+                - 第一个元素 (str): 金融情景描述，如 "科技股波动加剧，机构减持"
+                - 第二个元素 (str): 对应的投资建议，如 "降低成长股敞口"
 
         使用示例：
             memory.add_situations([
-                ("High inflation rate", "Consider defensive sectors"),
-                ("Tech sector volatility", "Reduce high-growth exposure"),
+                ("科技股波动加剧，机构持续减持", "降低成长股敞口"),
+                ("消费板块需求疲软", "关注防御性板块"),
             ])
-
-        注意事项：
-            - documents 和 recommendations 两个列表通过索引位置一一对应
-            - 例如 documents[0] 的情景对应 recommendations[0] 的建议
-            - 每次添加后都会重建索引，频繁添加可能影响性能
         """
-        # 遍历每个（情景，建议）元组
-        # 【什么是元组拆包？】for situation, recommendation in ... 中，
-        # 每个元素是 ("情景", "建议") 元组，Python 自动把它拆成两个变量
         for situation, recommendation in situations_and_advice:
-            # 将情景文本追加到文档列表
-            # .append() 是列表方法，在末尾添加一个元素
             self.documents.append(situation)
-            # 将投资建议追加到建议列表（与文档列表保持索引对应）
-            # 例如 documents[3] 对应 recommendations[3]
             self.recommendations.append(recommendation)
 
         # 文档列表已更新，重建 BM25 索引以包含新文档
-        # 【为什么需要重建？】BM25 需要知道所有文档的统计信息（词频、文档长度等），
-        # 添加新文档后这些信息变了，必须重新计算
         self._rebuild_index()
 
+    # -------------------------------------------------------------------------
+    # 读取
+    # -------------------------------------------------------------------------
     def get_memories(self, current_situation: str, n_matches: int = 1) -> list[dict]:
         """
         根据当前情景检索最匹配的历史记忆
-
-        这是记忆系统的"读取"接口。使用 BM25 算法计算当前情景与所有历史情景
-        的相似度，返回最匹配的几条记录。
 
         检索流程：
         1. 对当前情景进行分词
@@ -384,83 +480,62 @@ class FinancialSituationMemory:
         4. 对得分进行归一化处理（0-1 范围）
         5. 返回包含匹配结果的结构化字典列表
 
+        归一化规则（关键）：
+        - 最高得分 max_score > 0 时：similarity_score = score / max_score
+          （命中文档得 1.0 或介于 0~1 之间的正分，未命中文档得 0.0）
+        - 最高得分 max_score == 0 时（没有任何文档命中）：全部返回 0.0，
+          **不会**出现除零错误，也不会把 0 分伪装成有效相似度。
+
         参数：
             current_situation (str): 当前的金融情景描述
             n_matches (int): 需要返回的匹配记录数量，默认为 1
 
         返回：
-            List[dict]: 匹配结果列表，每个字典包含：
+            list[dict]: 匹配结果列表，每个字典包含：
                 - "matched_situation" (str): 匹配到的历史情景
                 - "recommendation" (str): 对应的投资建议
                 - "similarity_score" (float): 归一化后的相似度得分（0-1）
-
-        边界情况：
-            - 如果文档列表为空或索引为 None，返回空列表
+                - "bm25_score" (float): 原始 BM25 得分（便于调试与排序）
         """
         # 边界检查：如果没有文档或索引未建立，直接返回空列表
-        # not self.documents 在列表为空时为 True
-        # self.bm25 is None 在索引未建立时为 True
         if not self.documents or self.bm25 is None:
             return []
 
         # 步骤1：对当前情景进行分词，得到查询 token 列表
-        # 例如："Tech sector volatility" → ["tech", "sector", "volatility"]
         query_tokens = self._tokenize(current_situation)
 
         # 步骤2：使用 BM25 索引计算所有文档的得分
-        # get_scores() 返回一个列表，长度等于文档数，每个元素是该文档与查询的相关性得分
-        # 得分越高，表示文档与查询越相关
-        # 例如：如果有 4 篇文档，scores 可能是 [3.5, 0.2, 1.1, 0.0]
-        # 表示第一篇文档最相关（得分 3.5），第四篇最不相关（得分 0）
-        scores = self.bm25.get_scores(query_tokens)
+        scores = [float(value) for value in self.bm25.get_scores(query_tokens)]
 
-        # 步骤3：获取得分最高的前 n_matches 个文档的索引
-        # 这一行比较复杂，逐步拆解：
-        #
-        # range(len(scores)) 生成所有文档的索引 [0, 1, 2, 3, ...]
-        #
-        # sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
-        # - sorted() 对索引列表排序
-        # - key=lambda i: scores[i] 指定排序依据：每个索引 i 对应的得分 scores[i]
-        #   【lambda 是什么？】lambda i: scores[i] 是一个匿名小函数，
-        #   接收 i，返回 scores[i]。等价于 def f(i): return scores[i]
-        # - reverse=True 表示降序排列（得分高的排在前面）
-        # - 结果：按得分从高到低排列的文档索引列表，如 [0, 2, 1, 3]
-        #
-        # [:n_matches] 取前 n_matches 个
-        # 例如 n_matches=2 时，取 [0, 2]（得分最高的两个文档的索引）
-        top_indices = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)[:n_matches]
+        # 步骤3：按得分降序取前 n_matches 条
+        top_indices = sorted(
+            range(len(scores)), key=lambda i: scores[i], reverse=True
+        )[: max(0, int(n_matches))]
 
-        # 步骤4：构建结果列表
+        # 步骤4：归一化。
+        # 只有在最高分为正时才做除法归一化；最高分为 0 时全部记 0.0。
+        max_score = max(scores) if scores else 0.0
+        if max_score <= 0:
+            max_score = 0.0
+
         results = []
-        # 找到最高得分，用于归一化
-        # max(scores) 返回得分列表中的最大值
-        # 如果最高得分 <= 0，使用 1 作为分母（避免除以零）
-        # 【为什么需要归一化？】BM25 的原始得分没有固定范围（可能是 0.5 或 12.3），
-        # 归一化到 0-1 范围后便于理解和比较：1.0 表示最匹配，0 表示完全不匹配
-        max_score = max(scores) if max(scores) > 0 else 1
-
-        # 遍历每个最高得分的索引
         for idx in top_indices:
-            # 步骤4a：计算归一化得分（0-1 范围）
-            # 归一化公式：得分 / 最高得分
-            # 例如：得分 3.5，最高得分 3.5 → 归一化得分 1.0（最匹配）
-            #       得分 1.75，最高得分 3.5 → 归一化得分 0.5（一半匹配）
-            # 归一化后便于比较和展示，1.0 表示最匹配
-            normalized_score = scores[idx] / max_score if max_score > 0 else 0
+            raw_score = scores[idx]
+            normalized_score = raw_score / max_score if max_score > 0 else 0.0
+            results.append(
+                {
+                    "matched_situation": self.documents[idx],       # 匹配到的历史情景
+                    "recommendation": self.recommendations[idx],    # 对应的投资建议
+                    "similarity_score": normalized_score,           # 归一化相似度得分
+                    "bm25_score": round(raw_score, 6),             # 原始 BM25 得分
+                }
+            )
 
-            # 步骤4b：构建结果字典
-            # 【什么是字典？】{键: 值} 的集合，如 {"name": "张三", "age": 25}
-            # results.append(...) 把字典添加到结果列表中
-            results.append({
-                "matched_situation": self.documents[idx],       # 匹配到的历史情景
-                "recommendation": self.recommendations[idx],    # 对应的投资建议
-                "similarity_score": normalized_score,           # 归一化相似度得分
-            })
-
-        # 返回匹配结果列表
         return results
 
+    # -------------------------------------------------------------------------
+    # 清空
+    # -------------------------------------------------------------------------
     def clear(self):
         """
         清空所有存储的记忆
@@ -470,28 +545,74 @@ class FinancialSituationMemory:
         - 建议列表清空
         - BM25 索引设为 None
         """
-        # 清空文档列表（赋值为空列表）
         self.documents = []
-        # 清空建议列表
         self.recommendations = []
-        # 清空索引（设为 None 表示无索引）
         self.bm25 = None
+
+    def reset(self):
+        """``clear()`` 的别名，语义更贴近"重置到初始状态"。"""
+        self.clear()
+
+    # -------------------------------------------------------------------------
+    # 序列化（持久化由 storage 层负责，本类不碰 I/O）
+    # -------------------------------------------------------------------------
+    def to_dict(self) -> dict:
+        """
+        导出记忆内容为可 JSON 序列化的字典。
+
+        返回：
+            dict: {"name": ..., "documents": [...], "recommendations": [...]}
+        """
+        return {
+            "name": self.name,
+            "documents": list(self.documents),
+            "recommendations": list(self.recommendations),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict, config: dict = None) -> "FinancialSituationMemory":
+        """
+        从 :meth:`to_dict` 的输出恢复记忆实例。
+
+        参数：
+            data (dict): 之前导出的字典
+            config (dict, optional): 兼容参数（当前实现不使用）
+
+        返回：
+            FinancialSituationMemory: 恢复后的记忆实例（索引已重建）
+        """
+        memory = cls(str(data.get("name") or "memory"), config)
+        documents = [str(item) for item in (data.get("documents") or [])]
+        recommendations = [
+            str(item) for item in (data.get("recommendations") or [])
+        ]
+        # 允许 recommendations 缺失或长度不一致：缺失部分补空串
+        if len(recommendations) < len(documents):
+            recommendations.extend([""] * (len(documents) - len(recommendations)))
+        memory.documents = documents[: len(recommendations)]
+        memory.recommendations = recommendations[: len(memory.documents)]
+        memory._rebuild_index()
+        return memory
+
+    def __len__(self) -> int:
+        """返回记忆条目数量。"""
+        return len(self.documents)
+
+    def __repr__(self) -> str:  # pragma: no cover - 调试辅助
+        return (
+            f"FinancialSituationMemory(name={self.name!r}, "
+            f"entries={len(self.documents)})"
+        )
 
 
 # =============================================================================
 # 模块自测代码（仅在直接运行此文件时执行）
 # =============================================================================
-# __name__ == "__main__" 是 Python 的惯用写法：
-# - 当文件被直接运行时（python memory.py），__name__ 为 "__main__"，执行此代码块
-# - 当文件被 import 导入时，__name__ 为模块名 "memory"，不执行此代码块
-# 这段代码用于测试 FinancialSituationMemory 的功能是否正常
 if __name__ == "__main__":
     # 创建一个记忆实例，名称为 "test_memory"
-    # 这会调用 __init__ 方法，初始化空的文档列表和索引
     matcher = FinancialSituationMemory("test_memory")
 
     # 准备示例数据：四个（情景，建议）元组
-    # 每个元组的第一个元素是市场情景描述，第二个元素是对应的投资建议
     example_data = [
         (
             # 情景1：高通胀 + 加息 + 消费下降
@@ -520,11 +641,9 @@ if __name__ == "__main__":
     ]
 
     # 将示例数据添加到记忆系统中
-    # 这会触发 _rebuild_index()，建立 BM25 索引
     matcher.add_situations(example_data)
 
     # 准备一个查询情景（当前市场状况）
-    # 这个情景与情景2（科技板块波动）有一些共同关键词
     current_situation = """
     Market showing increased volatility in tech sector, with institutional investors
     reducing positions and rising interest rates affecting growth stock valuations
@@ -532,23 +651,26 @@ if __name__ == "__main__":
 
     try:
         # 检索最匹配的 2 条历史记忆
-        # n_matches=2 表示返回得分最高的 2 条记录
         recommendations = matcher.get_memories(current_situation, n_matches=2)
 
-        # 打印检索结果
-        # enumerate(recommendations, 1) 遍历列表并从 1 开始编号
-        # 【什么是 enumerate？】同时获取索引和元素的函数
-        #   enumerate(["a", "b"], 1) → (1, "a"), (2, "b")
         for i, rec in enumerate(recommendations, 1):
-            print(f"\nMatch {i}:")                                    # 匹配编号
-            print(f"Similarity Score: {rec['similarity_score']:.2f}") # 相似度得分（保留两位小数）
-            # 【:.2f 是什么？】f-string 的格式化语法，.2f 表示保留两位小数
-            # 例如 0.856 → "0.86"
-            print(f"Matched Situation: {rec['matched_situation']}")   # 匹配到的历史情景
-            print(f"Recommendation: {rec['recommendation']}")         # 对应的投资建议
+            print(f"\nMatch {i}:")
+            print(f"Similarity Score: {rec['similarity_score']:.2f}")
+            print(f"Matched Situation: {rec['matched_situation']}")
+            print(f"Recommendation: {rec['recommendation']}")
+
+        # 中文自测：中文检索必须有区分度（最高分 > 0）
+        zh_memory = FinancialSituationMemory("zh_memory")
+        zh_memory.add_situations(
+            [
+                ("科技股波动加剧，机构持续减持", "降低成长股敞口"),
+                ("消费板块需求疲软，量价背离", "关注防御性板块"),
+            ]
+        )
+        zh_hits = zh_memory.get_memories("科技股波动加剧", n_matches=2)
+        print("\n[中文检索] 最高相似度：", zh_hits[0]["similarity_score"])
+        print("[中文检索] 命中情景：", zh_hits[0]["matched_situation"])
 
     except Exception as e:
         # 捕获并打印任何异常
-        # 【什么是 Exception？】所有异常的基类，能捕获大多数运行时错误
-        # str(e) 把异常对象转成字符串描述
         print(f"Error during recommendation: {str(e)}")

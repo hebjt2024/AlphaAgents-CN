@@ -83,7 +83,7 @@ from langchain_anthropic import ChatAnthropic
 # BaseLLMClient：所有 LLM 客户端的抽象基类，提供通用接口
 # normalize_content：内容规范化函数，将结构化块列表转为纯字符串
 from .auth import resolve_api_key
-from .base_client import BaseLLMClient, normalize_content
+from .base_client import BaseLLMClient, normalize_content, observe_llm_call
 
 # 从当前包的 validators 模块导入模型验证函数
 # validate_model：检查模型名称对指定提供商是否有效
@@ -132,9 +132,17 @@ class NormalizedChatAnthropic(ChatAnthropic):
     Claude 模型在使用扩展思考（extended thinking）或工具调用时，
     返回的内容可能是结构化块列表格式。
 
-    这个子类重写 invoke() 方法，自动将内容规范化为纯字符串，
+    这个子类重写 invoke() 方法，自动将返回内容规范化为纯字符串，
     确保下游智能体获得一致的数据格式。
+
+    【可观测性】
+    重写的 invoke() 还会用 :func:`observe_llm_call` 包装真正的补全调用，
+    记录模型、供应商、token 用量与耗时。
     """
+
+    # 可观测性元信息：记录时写入 run 日志（provider + model）
+    observability_provider: str = "anthropic"
+    observability_model: str = ""
 
     def invoke(self, input, config=None, **kwargs):
         """调用 LLM 并规范化返回内容。
@@ -164,12 +172,21 @@ class NormalizedChatAnthropic(ChatAnthropic):
         #   2. 向 Anthropic API 发送请求
         #   3. 等待 API 返回响应
         #   4. 将响应封装为 AIMessage 对象返回
+        # observe_llm_call 在此处测量墙钟延迟并把 token 用量写入当前 run 的度量
+        with observe_llm_call(
+            provider=self.observability_provider,
+            model=self.observability_model or self.model,
+            prompt_input=input,
+        ) as obs:
+            response = super().invoke(input, config, **kwargs)
+            obs["response"] = response
         # normalize_content() 对返回的 AIMessage 进行内容规范化
         # 将结构化块列表 content 转换为纯字符串 content
-        return normalize_content(super().invoke(input, config, **kwargs))
+        return normalize_content(response)
 
 
 # ============================================================================
+
 # 类：AnthropicClient
 # 功能：Anthropic Claude 模型的 LLM 客户端
 #
@@ -268,6 +285,17 @@ class AnthropicClient(BaseLLMClient):
         # 使用收集的参数创建 NormalizedChatAnthropic 实例
         # **llm_kwargs 解包字典为关键字参数
         # 等价于：NormalizedChatAnthropic(model="claude-sonnet-4-6", base_url="https://api.minimax.cn/anthropic", api_key="...", ...)
+        #
+        # 【可观测性】
+        # observability_provider / observability_model 用于把每次调用的
+        # 供应商与模型名记录进 run 日志（成本估算按模型名查价格表）。
+        # MiniMax 走的是 Anthropic 兼容协议，但供应商实际是 MiniMax，
+        # 这里如实记录，方便在报表里区分"谁真正提供的模型"。
+        provider = "anthropic"
+        if self.base_url and "minimax" in self.base_url.lower():
+            provider = "minimax"
+        llm_kwargs["observability_provider"] = provider
+        llm_kwargs["observability_model"] = self.model
         return NormalizedChatAnthropic(**llm_kwargs)
 
     def validate_model(self) -> bool:
