@@ -143,6 +143,38 @@ class PositionGateTests(unittest.TestCase):
             plan["reasons"],
         )
 
+    def test_single_family_does_not_get_top_score(self):
+        """只有一个独立信号族时，综合分不应接近满分。
+
+        net_score 是族内去重后的净分，一个族最多贡献一个族的分数。
+        若不按族数折减，"只有趋势族一个信号"也会拿到 95 分，
+        而综合分本应表达"多路独立证据的一致程度"。
+        """
+        data = sample_result()
+        data["summary"].update(
+            {"net_score": 85, "strength": 100, "triggered": 1, "family_count": 1}
+        )
+        single = build_decision_plan(data, "BUY")
+
+        data["summary"].update({"triggered": 3, "family_count": 3})
+        broad = build_decision_plan(data, "BUY")
+
+        self.assertLess(single["score"], broad["score"])
+        self.assertLess(single["score"], 85)
+        self.assertLess(single["confidence"], broad["confidence"])
+
+    def test_breadth_monotonic(self):
+        scores = []
+        for families in (1, 2, 3):
+            data = sample_result()
+            data["summary"].update(
+                {"net_score": 85, "strength": 100, "triggered": families,
+                 "family_count": families}
+            )
+            scores.append(build_decision_plan(data, "BUY")["score"])
+        self.assertEqual(scores, sorted(scores))
+        self.assertLess(scores[0], scores[-1])
+
     def test_conflict_between_rules_and_decision(self):
         """规则看多、决策看空 → 标记冲突且不给仓位。"""
         plan = build_decision_plan(sample_result(), "SELL")

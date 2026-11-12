@@ -29,6 +29,7 @@ from __future__ import annotations
 
 from tradingagents.strategies.base import (
     CONSENSUS_NET_THRESHOLD,
+    MIN_SIGNALS_FOR_FULL_STRENGTH,
     MIN_TRIGGERED_FOR_POSITION,
 )
 
@@ -103,13 +104,18 @@ def build_decision_plan(
     )
 
     # 综合参考分：策略净分 + 决策方向 + 共识强度
+    #
+    # 广度因子：net_score 是**族内去重**后的净分，一个族最多贡献一个族的
+    # 分数。若不按族数折减，"只有趋势族一个信号"也会拿到接近满分的综合分，
+    # 而综合分本应表达"多路独立证据的一致程度"。
+    breadth = min(1.0, max(0, family_count) / MIN_SIGNALS_FOR_FULL_STRENGTH)
     # 冲突时不再计入方向加分，避免"规则看空、模型看多"却仍得高分。
     bias_bonus = 0.0 if conflict else bias * 15
     score = (
         50
-        + max(-20, min(20, net_score * 0.4))
+        + max(-20, min(20, net_score * 0.4)) * breadth
         + bias_bonus
-        + min(10, strength * 0.1)
+        + min(10, strength * 0.1) * breadth
     )
     score = _clamp(score)
 
