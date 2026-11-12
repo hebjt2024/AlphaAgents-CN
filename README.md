@@ -23,8 +23,30 @@
 |---|---|
 | **三源容错** | AkShare → BaoStock → 本地缓存，逐级降级，网络不可用仍能出报告 |
 | **智能限流** | 信号量并发控制 + 指数退避重试 + 请求超时保护 |
-| **代码归一** | `600519` / `600519.SH` / `sh600519` / `SH600519` 全部识别为同一标的 |
-| **名称解析** | 自动解析股票简称 → 代码，含别名与拼音映射 |
+| **代码归一** | `600519` / `600519.SH` / `sh.600519` / `SH600519` / `920xxx` 全部识别为同一标的 |
+| **沪深北全覆盖** | 主板 / 创业板 / 科创板 / 北交所，自动识别涨跌停比例与 B 股排除 |
+| **交易日历** | 自动跳过周末与节假日，非交易日回退到最近交易日 |
+| **资金面** | 主力资金 / 北向资金 / 龙虎榜，辅助短线择时 |
+| **停牌提示** | 行情区间内缺失交易日自动标注（可能停牌/无成交/数据缺失） |
+| **历史估值** | 历史分析使用分析日 PE/PB，避免把实时快照当作历史值（防未来函数） |
+| **成本回测** | 内置佣金 + 印花税 + 可选滑点，贴近 A 股真实交易成本 |
+| **可编排图** | 精简 / 标准 / 深度 / 自定义，按需增删辩论、交易员与风控阶段 |
+| **并行分析** | 多个分析师并行执行，缩短首轮耗时；并发度可配置 |
+| **快速预览** | 策略规则初判，不调用 LLM；深度分析同时后台运行 |
+| **策略扫描** | 多头趋势、均线金叉、放量突破、缩量回踩、底部放量、龙头、一阳夹三阴、箱体、缠论/波浪简化、情绪周期等 15 种信号 |
+| **策略回测** | 信号触发后的 5/10/20 日收益、胜率，以及含 A 股成本的多头跟随/避险净值 |
+| **结构化决策** | 综合评分、置信度、参考价、止损、目标价、风险收益比、建议仓位 |
+| **自选股预警** | 只保留触发策略的标的，支持手动/定时推送到企业微信 / 飞书 / 通用 Webhook |
+| **市场复盘** | 指数、涨跌家数、涨跌停、行业/概念热度、行业资金流、涨停行业分布与 Markdown 复盘 |
+| **板块历史** | 同花顺行业 1/5/20 日涨跌幅、成交额与 60 日走势图 |
+| **每日简报** | 复盘 + 自选股预警 + 明日关注，支持定时推送与归档 |
+| **任务 API** | `job_id`、状态、结果、取消、删除，方便外部自动化轮询 |
+| **定时任务管理** | WebUI/API 添加、暂停、删除每只股票的定时分析 |
+| **股票搜索** | 代码/名称自动补全；涨停池热门股按连板与封板资金排序 |
+| **离线资源** | ECharts / marked / DOMPurify 本地化，不依赖 CDN |
+| **联网搜索** | 可选 Tavily，补充新闻、公告、政策与事件 |
+| **主题切换** | WebUI 支持浅色 / 深色主题 |
+| **名称解析** | 自动解析股票简称 → 代码，含别名与常用股票映射 |
 | **全中文** | Prompt、CLI、WebUI 全部中文，附零基础教学文档 |
 
 ### 🧠 多智能体辩论架构
@@ -51,14 +73,48 @@
 
 ### 🖥️ 双形态界面
 
-- **Web 工作台**：FastAPI + WebSocket 实时推送 Agent 进展，Token 级流式展示
-- **CLI**：交互式终端，支持历史报告浏览与回看
+- **Web 工作台**：FastAPI + WebSocket 实时推送 Agent 进展；
+  工作台 / 报告中心 / 设置三视图，内置可缩放 K 线（1M/3M/6M/1Y/3Y/全部，滚轮缩放、拖动平移、MA 与成交量）、
+  资金流柱状图、回测资金曲线、协同研判阶段可视化；K 线会按分析日期截断，避免展示未来行情
+- **CLI**：交互式终端，支持历史报告浏览、回测与自选股管理
+
+### 🧩 自定义图编排
+
+WebUI 的“分析编排”支持按需组合分析流程：
+
+| 预设 | 流程 |
+|---|---|
+| 精简 | 核心分析师 → 最终裁决（速度最快、成本最低） |
+| 标准 | 分析师 → 多空辩论 → 交易员 → 风险辩论 → 最终裁决 |
+| 深度 | 标准流程 + 更多辩论轮次 |
+| 自定义 | 自选分析师、是否启用多空辩论 / 交易员 / 风险辩论 |
+
+策略扫描是流程中的第一个独立阶段，WebUI 的研判进度图会展示本次启用的策略组合；
+最终裁决（Portfolio Manager）始终保留，确保一定输出 `final_trade_decision`。
 
 ---
 
 ## 🚀 快速开始
 
-### 方式一：Web 工作台（推荐）
+### 方式一：uv 隔离环境（推荐）
+
+```bash
+git clone https://github.com/hebjt2024/AlphaAgents-CN.git
+cd AlphaAgents-CN
+
+# 创建项目内虚拟环境（不会污染全局 Python）
+uv venv --python 3.11
+uv sync --extra dev
+
+# 启动 Web 工作台
+uv run python webui/run_webui.py --port 8000
+```
+
+> uv 会在项目内创建 `.venv`，避免与全局环境中的 `parsel` / `jmespath` / 阿里云 SDK
+> 等依赖互相冲突。所有命令都可以用 `uv run ...` 执行，例如
+> `uv run pytest`、`uv run ruff check .`、`uv run alphaagents analyze`。
+
+### 方式二：Web 工作台（pip）
 
 ```bash
 git clone https://github.com/hebjt2024/AlphaAgents-CN.git
@@ -77,7 +133,7 @@ python webui/run_webui.py --port 8000
 
 访问 http://localhost:8000
 
-### 方式二：命令行
+### 方式三：命令行（pip）
 
 ```bash
 pip install -r requirements.txt
@@ -90,8 +146,39 @@ alphaagents analyze
 alphaagents history
 
 # 回看某次分析
-alphaagents view
+alphaagents view 600519 2024-01-10
+
+# 轻量回测（默认计入 A 股佣金与印花税）
+alphaagents backtest 600519 --start 2023-01-01 --end 2024-12-31
+
+# 策略扫描（默认核心组合，也可指定策略或 --all）
+alphaagents strategies 600519
+alphaagents strategies 600519 --strategies bull_trend,volume_breakout
+alphaagents strategies 600519 --all
+
+# 自选股管理
+alphaagents watch add 600519 --name 贵州茅台
+alphaagents watch list
 ```
+
+### 依赖冲突排查（jmespath / 阿里云 SDK）
+
+若安装时出现：
+
+```text
+aliyun-python-sdk-core requires jmespath<1.0.0, but you have jmespath 1.1.0
+```
+
+这是 `parsel` 1.11+ 与阿里云 SDK 的版本冲突。本项目已不再依赖 `parsel`；
+如果你机器上还有其他项目需要 `parsel`，把版本降到 1.10.x 即可同时兼容：
+
+```bash
+pip install "parsel>=1.10,<1.11" "jmespath>=0.9.3,<1.0.0"
+pip check
+```
+
+如果没有其他项目依赖 `parsel`，也可以直接 `pip uninstall -y parsel`，
+再安装 `jmespath<1.0.0`。
 
 ---
 
@@ -100,18 +187,143 @@ alphaagents view
 ### 模型服务
 
 支持 OpenAI、Anthropic、Google、OpenRouter 及任何 OpenAI 兼容端点。
-通过 `.env` 或 `tradingagents/default_config.py` 配置：
+默认值从 `.env` 读取，未配置时使用代码内默认值：
 
-```python
-"llm_provider": "anthropic",        # openai / anthropic / google / openrouter
-"deep_think_llm": "MiniMax-M3",     # 深度思考模型（研究总监、组合经理）
-"quick_think_llm": "MiniMax-M2.5",  # 快速模型（分析师并行阶段）
-"backend_url": "https://api.minimaxi.com/anthropic",
-"max_debate_rounds": 1,            # 多空辩论轮次
+```bash
+TRADINGAGENTS_LLM_PROVIDER=anthropic
+TRADINGAGENTS_DEEP_THINK_LLM=MiniMax-M3
+TRADINGAGENTS_QUICK_THINK_LLM=MiniMax-M3.1-Flash
+TRADINGAGENTS_BACKEND_URL=https://api.minimax.cn/anthropic
+# TRADINGAGENTS_MAX_DEBATE_ROUNDS=1
+# TRADINGAGENTS_MAX_RISK_DISCUSS_ROUNDS=1
 ```
+
+WebUI 的 **分析设置 → 模型配置** 可以临时覆盖提供商、模型名和 API Base URL；
+点击“应用 .env 默认”可恢复 `.env` 中的配置。CLI 与定时任务使用 `.env` 默认值。
 
 > 深度思考与快速思考分离是本项目的性能设计：分析师并行阶段跑在快模型上，
 > 只有辩论与裁决环节使用强模型，可显著降低 token 成本。
+
+### 分析耗时优化
+
+- 默认开启分析师并行：市场 / 舆情 / 新闻 / 基本面同时执行
+- 并发度可调：
+
+```bash
+TRADINGAGENTS_PARALLEL_ANALYSTS=1
+TRADINGAGENTS_PARALLEL_ANALYSTS_WORKERS=4
+```
+
+- 如果模型或数据源限流，可改为 `WORKERS=2` 或 `PARALLEL_ANALYSTS=0` 回退串行
+- 快速查看可使用“精简”流水线（2 个分析师，跳过辩论/交易员/风控）
+- 点击“开始分析”会先显示**快速预览**（策略规则初判，不调用 LLM），深度结果完成后自动替换
+- 长分析建议使用任务 API 启动后离开页面，稍后查询结果
+
+### 联网搜索（可选）
+
+配置 Tavily 后，新闻/舆情分析师可以联网补充最新新闻与公告：
+
+```bash
+TAVILY_API_KEY=你的TavilyKey
+```
+
+未配置时相关工具会返回明确提示，不影响其他分析流程。
+
+### 策略扫描
+
+WebUI“策略选择”可勾选本次分析要使用的策略（默认核心 6 项，不必每次跑全部 15 个）；
+“快捷工具 → 策略扫描”支持按当前选择扫描，并可批量扫描自选股；
+“策略回测”会统计信号触发后的 5/10/20 日收益与胜率，并给出含 A 股成本的简单跟随/避险净值。
+
+分析完成后会生成**结构化决策卡**：综合评分、置信度、参考价、止损参考、目标参考、
+风险收益比和建议仓位。该卡基于策略共识 + ATR 规则估算，仅供参考，不构成投资建议。
+
+### 自选股策略预警
+
+“策略扫描 → 触发预警”只保留至少触发一个策略的自选股，并列出触发策略、方向、
+强度和理由；“推送预警”会把同样内容发送到已配置的 Webhook：
+
+```bash
+WECOM_WEBHOOK_URL=企业微信机器人地址
+FEISHU_WEBHOOK_URL=飞书机器人地址
+GENERIC_WEBHOOK_URL=通用 JSON Webhook 地址
+```
+
+未配置任何渠道时，预警仍会在页面展示，不会报错。
+
+定时预警：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_ALERTS=1
+SCHEDULE_TIME=18:00
+```
+
+每个交易日收盘后自动扫描自选股；只有出现触发信号时才推送，避免无信号噪音。
+
+### 市场复盘
+
+WebUI“快捷工具 → 市场复盘”会生成当日盘后快照：
+
+- 主要指数：上证、深证、创业板、科创50、沪深300、中证500
+- 市场情绪：上涨/下跌/平盘家数、涨跌停、真实涨跌停、活跃度
+- 行业与概念热度：领涨/领跌板块、成交额、领涨股
+- 行业资金流：净流入/净流出居前、流入/流出金额
+- 涨停行业分布
+- 板块热度历史：选择同花顺行业，查看 1/5/20 日涨跌幅和 60 日走势图
+- 一键复制 Markdown 复盘
+
+数据为 AkShare 实时快照，接口异常时会保留已获取部分并给出提示。
+API：
+
+- `GET /api/market/review?date=YYYY-MM-DD`（日期仅用于提示，不回溯历史）
+- `GET /api/market/sectors`
+- `GET /api/market/sector-history?name=半导体&days=60`
+
+盘后自动推送：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_REVIEW=1
+SCHEDULE_TIME=18:00
+```
+
+每个交易日收盘后生成复盘并发送到已配置的企业微信 / 飞书 / 通用 Webhook；
+未配置渠道时只记录日志，不影响其他定时任务。
+
+### 每日盘后简报
+
+“快捷工具 → 每日盘后简报”会把市场复盘、自选股触发预警和“明日关注”合并成一份
+Markdown 简报，支持复制、归档和推送。报告中心新增“每日简报”归档列表，
+同一天重复归档会覆盖；定时推送也会自动归档。
+
+定时推送：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_BRIEFING=1
+SCHEDULE_TIME=18:00
+```
+
+`SCHEDULE_BRIEFING=1` 时优先发送合并简报，不再单独发送 `SCHEDULE_ALERTS` /
+`SCHEDULE_REVIEW`，避免重复通知。
+
+归档 API：
+
+- `POST /api/daily-briefing/archive`
+- `GET /api/briefings`
+- `GET /api/briefings/{id}`
+- `DELETE /api/briefings/{id}`
+
+### 任务化 API 与搜索
+
+- `POST /api/analyze` 现在返回 `job_id`
+- `GET /api/jobs/{job_id}` / `GET /api/jobs/{job_id}/result` 可轮询任务
+- `POST /api/jobs/{job_id}/cancel` 取消任务
+- `GET /api/scheduled` / `POST /api/scheduled` / `PATCH /api/scheduled/{id}` / `DELETE /api/scheduled/{id}` 管理定时分析
+- `GET /api/preview?ticker=600519` 规则化快速预览
+- `GET /api/market/stock-search?q=茅台` 股票自动补全
+- `GET /api/market/hot-stocks` 涨停池热门股
 
 ### 数据源
 
@@ -139,10 +351,15 @@ AlphaAgents-CN/
 │   │   └── trader/              # 交易员
 │   ├── graph/                   # LangGraph 状态图
 │   ├── dataflows/
-│   │   ├── akshare_adapter.py   # A 股数据适配
+│   │   ├── akshare_adapter.py   # A 股数据适配（行情/财务/新闻/资金流）
 │   │   ├── baostock_adapter.py  # 历史数据兜底
+│   │   ├── ashare_rules.py      # 交易所/涨跌停/ST/北交所规则
+│   │   ├── trade_calendar.py    # A 股交易日历
 │   │   ├── cache_provider.py    # 离线缓存兜底
 │   │   └── interface.py         # 供应商路由
+│   ├── services/                # 无界面分析服务与回测
+│   ├── storage/                 # SQLite 报告中心 / 自选股
+│   ├── scheduler.py             # 每日定时分析
 │   └── llm_clients/             # 多厂商 LLM 客户端
 ├── cli/                         # 命令行界面
 ├── webui/                       # Web 工作台
@@ -156,6 +373,7 @@ AlphaAgents-CN/
 
 | 文档 | 说明 |
 |---|---|
+| [功能与 API 说明](docs/FEATURES_AND_API.md) | 功能清单、配置、CLI、HTTP API、WebSocket、定时任务 |
 | [代码流程讲解](docs/代码流程讲解.md) | 按执行顺序串联所有代码文件 |
 | [图解指南](docs/图解指南.md) | Mermaid 可视化架构图 |
 | [新手入门指南](docs/新手入门指南.md) | 面向零基础 Python 学习者 |
