@@ -234,6 +234,23 @@ class MarketApiTests(unittest.TestCase):
         self.assertEqual(data["items"][0]["ticker"], "600519")
 
     def test_analyze_returns_job_id(self):
+        """分析任务改为走有界队列，job_id 由队列分配。"""
+
+        class _FakeQueue:
+            def __init__(self):
+                self.submitted = []
+
+            def active_count(self):
+                return 0
+
+            def pending_count(self):
+                return 0
+
+            def submit(self, **kwargs):
+                self.submitted.append(kwargs)
+                return "job123"
+
+        fake_queue = _FakeQueue()
         with (
             patch.object(
                 server,
@@ -243,8 +260,7 @@ class MarketApiTests(unittest.TestCase):
             patch(
                 "tradingagents.llm_clients.auth.ensure_provider_credentials"
             ),
-            patch.object(server, "create_job", return_value="job123"),
-            patch.object(server.threading, "Thread") as thread_cls,
+            patch.object(server, "ensure_job_queue", return_value=fake_queue),
         ):
             resp = self.client.post(
                 "/api/analyze",
@@ -253,8 +269,10 @@ class MarketApiTests(unittest.TestCase):
         data = resp.json()
         self.assertTrue(data["success"])
         self.assertEqual(data["job_id"], "job123")
-        args = thread_cls.call_args.kwargs["args"]
-        self.assertEqual(args[1], "job123")
+        # 任务被提交到队列，而不是直接起线程
+        self.assertEqual(len(fake_queue.submitted), 1)
+        self.assertEqual(fake_queue.submitted[0]["company"], "600519")
+        self.assertEqual(fake_queue.submitted[0]["kind"], "analysis")
 
     def test_job_list_detail_result_endpoints(self):
         item = {

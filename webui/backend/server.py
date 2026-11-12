@@ -7,24 +7,43 @@ TradingAgents Web UI 后端服务
   分析线程 → 线程安全队列 → 主事件循环 → WebSocket → 前端实时显示进度
   分析完成 → 最终结果通过 WebSocket 推送到前端
 
+API 加固（见 webui/backend/{api_config,errors,security,middleware}.py）：
+  * 鉴权：设置 ``WEBUI_API_KEY`` 后，所有 ``/api`` 路由都要求携带密钥
+    （``X-API-Key`` 或 ``Authorization: Bearer``）；``/healthz``、``/readyz``、
+    ``/metrics``、静态前端与 ``/ws`` 豁免。
+  * 限流：按客户端 IP 的滑动窗口限流（``WEBUI_RATE_LIMIT``，默认 120 次/分）。
+  * 错误信封：所有错误统一为
+    ``{"success": false, "code", "message", "details", "request_id"}``。
+  * 探针与指标：``/healthz`` 存活、``/readyz`` 就绪（数据库/调度器/磁盘）、
+    ``/metrics`` Prometheus 文本格式。
+  * 跨域：设置 ``WEBUI_ALLOWED_ORIGINS`` 后启用 CORS。
+
 启动方式：
   python webui/run_webui.py
 """
 
 import asyncio
 import csv
+import importlib
 import io
+import logging
 import os
+import secrets
+import shutil
+import sqlite3
 import threading
+import time
 import traceback
+from contextlib import asynccontextmanager
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from starlette.concurrency import run_in_threadpool
 
 # 先加载 .env，再导入读取环境变量的 default_config
@@ -43,10 +62,10 @@ from tradingagents.graph.pipeline_presets import (
 from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.scheduler import start_scheduler, stop_scheduler
 from tradingagents.services.backtest import _load_prices, run_backtest
+from tradingagents.services.job_queue import ensure_job_queue, get_job_queue
 from tradingagents.storage import (
     add_scheduled_job,
     add_watch,
-    create_job,
     delete_briefing,
     delete_job,
     delete_report,
@@ -67,6 +86,23 @@ from tradingagents.storage import (
     update_scheduled_job,
 )
 from tradingagents.strategies import DEFAULT_STRATEGY_KEYS, STRATEGY_META
+from webui.backend.api_config import ApiConfig, load_config
+from webui.backend.errors import (
+    NotFoundResponder,
+    error_payload,
+    register_exception_handlers,
+)
+from webui.backend.middleware import (
+    RateLimitMiddleware,
+    RequestIdMiddleware,
+    TimingMiddleware,
+    metrics,
+)
+from webui.backend.security import (
+    api_key_scheme,
+    bearer_scheme,
+    require_api_key,
+)
 
 # 各 LLM 提供商的默认 API 地址。
 # 之前 WebUI 只切换 provider/model，却沿用 DEFAULT_CONFIG 里的 MiniMax 地址，
@@ -117,21 +153,21 @@ def resolve_backend_url(provider: str, model: str, requested: str | None) -> str
         )
     return PROVIDER_BASE_URLS.get(provider)
 
+
 # ============================================================================
 # FastAPI 应用初始化
 # ============================================================================
-app = FastAPI(title="TradingAgents Web UI", version="1.0.0")
-
-
-@app.on_event("startup")
-async def _startup() -> None:
-    start_scheduler()
-
-
-@app.on_event("shutdown")
-async def _shutdown() -> None:
-    stop_scheduler()
-
+# 受保护的 API 路由：所有 /api 前缀的路由都挂在 api_router 上，
+# 鉴权依赖挂在路由器级别（而不是逐个路由），新增路由默认就是受保护的。
+# api_key_scheme / bearer_scheme 只用于在 OpenAPI 里声明安全方案，
+# 真正的校验由 require_api_key 完成（这样鉴权失败也能走统一错误信封）。
+api_router = APIRouter(
+    dependencies=[
+        Depends(require_api_key),
+        Depends(api_key_scheme),
+        Depends(bearer_scheme),
+    ]
+)
 
 active_connections: set[WebSocket] = set()
 _main_loop: asyncio.AbstractEventLoop | None = None
@@ -148,6 +184,21 @@ analysis_status = {
 # 若被设置则提前退出循环，实现优雅终止（而非 kill 线程）
 # 由 /api/stop 端点设置，由 run_analysis_sync 在 finally 中清除
 analysis_cancel_event = threading.Event()
+
+# ============================================================================
+# 分析任务队列参数
+#
+# WHY：此前用一个进程级互斥锁把整个系统串行化（同时只能跑一个分析），
+# 且"是否在运行"的标志是在取锁之后才置位 —— 并发请求会全部看到空闲并
+# 全部返回"已启动"，然后全部阻塞在锁上。现在改为有界 worker 队列：
+# 超出容量才拒绝，而不是让请求无限堆积。
+# ============================================================================
+
+#: 分析任务的并发 worker 数（每个 worker 跑一次完整的多智能体分析）。
+ANALYSIS_WORKERS = int(os.getenv("WEBUI_ANALYSIS_WORKERS", "1"))
+
+#: 允许同时处于运行 + 排队状态的分析任务数上限。
+MAX_PENDING_ANALYSES = int(os.getenv("WEBUI_MAX_PENDING_ANALYSES", "3"))
 
 
 # ============================================================================
@@ -238,6 +289,140 @@ class ScheduledJobUpdateRequest(BaseModel):
     enabled: bool | None = None
 
 
+# ---------------------------------------------------------------------------
+# 响应模型
+# ---------------------------------------------------------------------------
+# 只为“形状稳定”的接口声明 response_model；无法用模型表达既有载荷的接口
+# 宁可留空，也不改变既有返回结构。
+
+
+class HealthResponse(BaseModel):
+    """存活探针响应。"""
+
+    status: str
+
+
+class ReadinessCheck(BaseModel):
+    """就绪探针的单项检查结果。"""
+
+    name: str
+    status: str
+    required: bool
+    detail: str
+
+
+class ReadyResponse(BaseModel):
+    """就绪探针响应。"""
+
+    status: str
+    ready: bool
+    checks: list[ReadinessCheck]
+    version: str
+    uptime_seconds: float
+
+
+class EnvelopeResponse(BaseModel):
+    """响应模型基类：允许保留错误信封的附加字段。
+
+    ``extra="allow"`` 让业务失败分支返回的 ``code`` / ``details`` /
+    ``request_id`` 不会在响应模型序列化时被丢掉；同时成功分支的载荷结构
+    保持原样（模型不会凭空增加字段）。
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+
+class SuccessMessageResponse(EnvelopeResponse):
+    """``{"success": bool, "message": str}`` 形态的通用响应。"""
+
+    success: bool
+    message: str
+
+
+class ItemListResponse(EnvelopeResponse):
+    """``{"success": true, "items": [...]}`` 形态的列表响应。"""
+
+    success: bool
+    items: list[dict[str, Any]]
+
+
+class WatchlistItemResponse(EnvelopeResponse):
+    """``{"success": true, "item": {...}}`` 形态的自选股响应。"""
+
+    success: bool
+    item: dict[str, Any]
+
+
+class ReportListResponse(EnvelopeResponse):
+    """报告列表响应。"""
+
+    success: bool
+    reports: list[dict[str, Any]]
+
+
+class RunListResponse(EnvelopeResponse):
+    """运行指标列表响应。"""
+
+    success: bool
+    runs: list[dict[str, Any]]
+
+
+class AggregateResponse(EnvelopeResponse):
+    """聚合指标响应。"""
+
+    success: bool
+    aggregate: dict[str, Any]
+
+
+class PortfolioResponse(EnvelopeResponse):
+    """组合快照响应。"""
+
+    success: bool
+    portfolio: dict[str, Any]
+
+
+class EvaluationResponse(EnvelopeResponse):
+    """组合级评估响应。"""
+
+    success: bool
+    evaluation: dict[str, Any]
+
+
+class SchedulerStatusResponse(EnvelopeResponse):
+    """调度器状态响应。"""
+
+    enabled: str
+    time: str
+    stocks: str
+    scheduled_jobs: int
+
+
+class PipelinePresetsResponse(EnvelopeResponse):
+    """图编排预设响应。"""
+
+    success: bool
+    presets: dict[str, Any]
+    analysts: list[dict[str, Any]]
+
+
+class StrategyMetaResponse(EnvelopeResponse):
+    """策略元数据响应。"""
+
+    success: bool
+    strategies: list[dict[str, Any]]
+    default: list[str]
+
+
+class TradeCalendarResponse(EnvelopeResponse):
+    """交易日校验响应。"""
+
+    success: bool
+    is_trading_day: bool
+    is_cn_symbol: bool
+    message: str
+    suggested_date: str | None
+
+
 # ============================================================================
 # 线程安全广播
 # ============================================================================
@@ -264,10 +449,20 @@ async def _broadcast_async(message: dict):
 # WebSocket 端点
 # ============================================================================
 
-@app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     global _main_loop
     _main_loop = asyncio.get_running_loop()
+
+    # 浏览器无法为 WebSocket 自定义请求头，因此用查询参数传递 API 密钥。
+    config = load_config()
+    if config.auth_enabled:
+        provided = websocket.query_params.get("api_key") or ""
+        expected = config.api_key or ""
+        if not provided or not secrets.compare_digest(
+            provided.encode("utf-8"), expected.encode("utf-8")
+        ):
+            await websocket.close(code=1008, reason="invalid api key")
+            return
 
     await websocket.accept()
     active_connections.add(websocket)
@@ -510,6 +705,38 @@ REPORT_FIELD_TITLES = {
 # ============================================================================
 # 分析执行线程
 # ============================================================================
+
+def _analysis_job_handler(job_id: str, payload: dict, cancel_event) -> dict:
+    """任务队列的"分析"处理器。
+
+    队列负责调度与取消；真正的分析逻辑仍在 :func:`run_analysis_sync`，
+    两者通过 ``cancel_event`` 打通 —— 队列取消会置位该事件，
+    分析循环在下一个 graph 分块边界退出。
+    """
+    request_data = dict(payload.get("request") or {})
+    request = AnalyzeRequest(**request_data)
+    # 让队列的取消事件与分析内部的取消事件联动
+    if cancel_event is not None:
+        _bridge_cancel_event(cancel_event)
+    run_analysis_sync(request, job_id)
+    return {"success": True, "job_id": job_id}
+
+
+def _bridge_cancel_event(cancel_event) -> None:
+    """把队列的取消事件桥接到分析内部使用的事件。
+
+    队列在另一个线程里取消任务时，置位它自己的 ``threading.Event``；
+    分析循环读的是模块级的 ``analysis_cancel_event``。这里起一个轻量
+    守护线程把前者翻译成后者，避免轮询。
+    """
+
+    def _relay() -> None:
+        while not cancel_event.wait(0.25):
+            continue
+        analysis_cancel_event.set()
+
+    threading.Thread(target=_relay, daemon=True, name="cancel-relay").start()
+
 
 def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
     global analysis_status
@@ -902,15 +1129,26 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
 # REST API 端点
 # ============================================================================
 
-@app.post("/api/analyze")
+@api_router.post("/analyze", tags=["分析"], summary="启动深度分析任务")
 async def start_analysis(request: AnalyzeRequest):
     # 允许用户在不重启服务的情况下新建/修改 .env 中缺失的密钥
     load_dotenv()
 
-    if analysis_status["running"]:
+    # 并发控制改为**有界队列**：
+    # 此前这里用一个进程级互斥锁把整个系统串行化，且 running 标志是在
+    # 取锁之后才置位 —— N 个并发请求会全部看到"空闲"并全部返回"已启动"，
+    # 然后 N-1 个线程无限期阻塞在锁上。现在改为有界队列：超出容量才拒绝。
+    queue = ensure_job_queue(
+        worker_count=ANALYSIS_WORKERS,
+        handlers={"analysis": _analysis_job_handler},
+    )
+    if queue.active_count() + queue.pending_count() >= MAX_PENDING_ANALYSES:
         return {
-            "success": False,
-            "message": "已有分析任务正在运行，请等待完成后再试",
+            **error_payload(
+                f"分析队列已满（运行 {queue.active_count()} 个，"
+                f"排队 {queue.pending_count()} 个），请等待完成后再试",
+                code="conflict",
+            ),
             "job_id": analysis_status.get("job_id", ""),
         }
 
@@ -919,8 +1157,7 @@ async def start_analysis(request: AnalyzeRequest):
     )
     if not date_ok:
         return {
-            "success": False,
-            "message": date_msg,
+            **error_payload(date_msg, code="bad_request"),
             "suggested_date": adjusted_date,
         }
 
@@ -935,11 +1172,13 @@ async def start_analysis(request: AnalyzeRequest):
             request.llm_provider, backend_url, None
         )
     except RuntimeError as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
-    job_id = create_job(
-        request.company,
-        request.date,
+    job_id = queue.submit(
+        payload={"request": request.model_dump()},
+        kind="analysis",
+        company=request.company,
+        trade_date=request.date,
         meta={
             "pipeline_preset": request.pipeline_preset,
             "analysts": request.analysts,
@@ -947,26 +1186,32 @@ async def start_analysis(request: AnalyzeRequest):
             "llm_provider": request.llm_provider,
         },
     )
-    thread = threading.Thread(
-        target=run_analysis_sync,
-        args=(request, job_id),
-        daemon=True,
-    )
-    thread.start()
 
     return {
         "success": True,
-        "message": f"分析任务已启动: {request.company} ({request.date})",
+        "message": f"分析任务已排队: {request.company} ({request.date})",
         "job_id": job_id,
+        "queue_position": queue.pending_count(),
     }
 
 
-@app.get("/api/status")
+@api_router.get("/status", tags=["分析"], summary="查询当前分析任务状态")
 async def get_status():
-    return analysis_status
+    status = dict(analysis_status)
+    queue = get_job_queue()
+    if queue is not None:
+        status["queue_active"] = queue.active_count()
+        status["queue_pending"] = queue.pending_count()
+        status["queue_workers"] = queue.worker_count
+    return status
 
 
-@app.post("/api/stop")
+@api_router.post(
+    "/stop",
+    tags=["分析"],
+    summary="请求停止当前分析任务",
+    response_model=SuccessMessageResponse,
+)
 async def stop_analysis():
     """
     请求停止当前正在运行的分析任务。
@@ -975,12 +1220,17 @@ async def stop_analysis():
     只能在节点之间切换时生效。
     """
     if not analysis_status["running"]:
-        return {"success": False, "message": "当前没有正在运行的分析任务"}
+        return error_payload("当前没有正在运行的分析任务")
     analysis_cancel_event.set()
     return {"success": True, "message": "已发送停止信号，任务将在当前节点完成后终止"}
 
 
-@app.get("/api/jobs")
+@api_router.get(
+    "/jobs",
+    tags=["任务"],
+    summary="查询分析任务列表",
+    response_model=ItemListResponse,
+)
 async def api_list_jobs(limit: int = 20, offset: int = 0):
     """最近的分析任务列表（不含完整报告，结果请查 /result）。"""
     return {
@@ -989,19 +1239,19 @@ async def api_list_jobs(limit: int = 20, offset: int = 0):
     }
 
 
-@app.get("/api/jobs/{job_id}")
+@api_router.get("/jobs/{job_id}", tags=["任务"], summary="查询分析任务详情")
 async def api_get_job(job_id: str):
     job = await run_in_threadpool(get_job, job_id, False)
     if not job:
-        return {"success": False, "message": "任务不存在"}
+        return error_payload("任务不存在", code="not_found")
     return {"success": True, "job": job}
 
 
-@app.get("/api/jobs/{job_id}/result")
+@api_router.get("/jobs/{job_id}/result", tags=["任务"], summary="查询分析任务结果")
 async def api_get_job_result(job_id: str):
     job = await run_in_threadpool(get_job, job_id, True)
     if not job:
-        return {"success": False, "message": "任务不存在"}
+        return error_payload("任务不存在", code="not_found")
     if job["status"] in ("completed", "cancelled") and job.get("result"):
         return {
             "success": True,
@@ -1011,35 +1261,31 @@ async def api_get_job_result(job_id: str):
         }
     if job["status"] == "failed":
         return {
-            "success": False,
+            **error_payload(job.get("error") or "任务失败"),
             "job_id": job["job_id"],
             "status": job["status"],
-            "message": job.get("error") or "任务失败",
         }
     return {
-        "success": False,
+        **error_payload("任务尚未完成"),
         "job_id": job["job_id"],
         "status": job["status"],
-        "message": "任务尚未完成",
     }
 
 
-@app.post("/api/jobs/{job_id}/cancel")
+@api_router.post("/jobs/{job_id}/cancel", tags=["任务"], summary="取消分析任务")
 async def api_cancel_job(job_id: str):
     job = await run_in_threadpool(get_job, job_id, False)
     if not job:
-        return {"success": False, "message": "任务不存在"}
+        return error_payload("任务不存在", code="not_found")
     if job["status"] not in ("queued", "running"):
         return {
-            "success": False,
+            **error_payload("任务已结束，无法取消"),
             "status": job["status"],
-            "message": "任务已结束，无法取消",
         }
     if analysis_status.get("job_id") != job_id:
         return {
-            "success": False,
+            **error_payload("该任务尚未成为当前运行任务，暂不支持取消"),
             "status": job["status"],
-            "message": "该任务尚未成为当前运行任务，暂不支持取消",
         }
     analysis_cancel_event.set()
     return {
@@ -1049,42 +1295,63 @@ async def api_cancel_job(job_id: str):
     }
 
 
-@app.delete("/api/jobs/{job_id}")
+@api_router.delete(
+    "/jobs/{job_id}",
+    tags=["任务"],
+    summary="删除分析任务",
+    response_model=SuccessMessageResponse,
+)
 async def api_delete_job(job_id: str):
     job = await run_in_threadpool(get_job, job_id, False)
     if not job:
-        return {"success": False, "message": "任务不存在"}
+        return error_payload("任务不存在", code="not_found")
     if job["status"] == "running":
-        return {"success": False, "message": "运行中的任务不能删除"}
+        return error_payload("运行中的任务不能删除")
     deleted = await run_in_threadpool(delete_job, job_id)
-    return {
-        "success": deleted,
-        "message": "已删除" if deleted else "任务不存在",
-    }
+    if not deleted:
+        return error_payload("任务不存在", code="not_found")
+    return {"success": True, "message": "已删除"}
 
 
 # ============================================================================
 # 自选股 / 意图解析 / 回测 / K 线 / 定时任务 API
 # ============================================================================
 
-@app.get("/api/watchlist")
+@api_router.get(
+    "/watchlist",
+    tags=["自选"],
+    summary="查询自选股列表",
+    response_model=ItemListResponse,
+)
 async def api_list_watchlist():
     return {"success": True, "items": list_watchlist()}
 
 
-@app.post("/api/watchlist")
+@api_router.post(
+    "/watchlist",
+    tags=["自选"],
+    summary="新增自选股",
+    response_model=WatchlistItemResponse,
+)
 async def api_add_watch(request: WatchRequest):
     item = add_watch(request.ticker, request.name)
     return {"success": True, "item": item}
 
 
-@app.delete("/api/watchlist/{ticker}")
+@api_router.delete(
+    "/watchlist/{ticker}",
+    tags=["自选"],
+    summary="删除自选股",
+    response_model=SuccessMessageResponse,
+)
 async def api_remove_watch(ticker: str):
     removed = remove_watch(ticker)
-    return {"success": removed, "message": "已删除" if removed else "不存在"}
+    if not removed:
+        return error_payload("自选股不存在", code="not_found")
+    return {"success": True, "message": "已删除"}
 
 
-@app.post("/api/intent")
+@api_router.post("/intent", tags=["分析"], summary="解析自然语言选股意图")
 async def api_parse_intent(request: IntentRequest):
     return {"success": True, "intent": parse_intent(request.query)}
 
@@ -1099,7 +1366,7 @@ def _resolve_stock_name(ticker: str) -> str:
         return ""
 
 
-@app.post("/api/backtest")
+@api_router.post("/backtest", tags=["策略"], summary="运行经典策略回测")
 async def api_backtest(request: BacktestRequest):
     try:
         result = await run_in_threadpool(
@@ -1119,10 +1386,10 @@ async def api_backtest(request: BacktestRequest):
         )
         return {"success": True, "result": result}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/market/kline")
+@api_router.get("/market/kline", tags=["市场"], summary="查询 K 线数据")
 async def api_kline(
     ticker: str,
     range: str = "6m",
@@ -1188,7 +1455,7 @@ async def api_kline(
             "items": items,
         }
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
 def _to_float(value) -> float:
@@ -1222,7 +1489,7 @@ def _parse_tickers(value: str | None) -> list[str] | None:
     return tickers or None
 
 
-@app.get("/api/preview")
+@api_router.get("/preview", tags=["策略"], summary="规则化快速预览（不调用 LLM）")
 async def api_fast_preview(
     ticker: str,
     end_date: str | None = None,
@@ -1239,10 +1506,15 @@ async def api_fast_preview(
             _parse_strategy_keys(strategies),
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/strategies/meta")
+@api_router.get(
+    "/strategies/meta",
+    tags=["策略"],
+    summary="查询策略元数据",
+    response_model=StrategyMetaResponse,
+)
 async def api_strategies_meta():
     """返回可选策略列表与默认核心组合。"""
     return {
@@ -1252,7 +1524,7 @@ async def api_strategies_meta():
     }
 
 
-@app.get("/api/strategy-backtest")
+@api_router.get("/strategy-backtest", tags=["策略"], summary="对选中策略做信号有效性回测")
 async def api_strategy_backtest(
     ticker: str,
     end_date: str | None = None,
@@ -1278,10 +1550,10 @@ async def api_strategy_backtest(
             days,
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/strategies")
+@api_router.get("/strategies", tags=["策略"], summary="运行经典策略扫描")
 async def api_strategies(
     ticker: str,
     end_date: str | None = None,
@@ -1298,10 +1570,10 @@ async def api_strategies(
             _parse_strategy_keys(strategies),
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/strategies/watchlist")
+@api_router.get("/strategies/watchlist", tags=["策略"], summary="扫描自选股的策略共识")
 async def api_strategies_watchlist(
     end_date: str | None = None,
     strategies: str | None = None,
@@ -1320,10 +1592,10 @@ async def api_strategies_watchlist(
         )
         return {"success": True, "items": results}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/strategy-alerts")
+@api_router.get("/strategy-alerts", tags=["策略"], summary="查询策略触发预警")
 async def api_strategy_alerts(
     end_date: str | None = None,
     strategies: str | None = None,
@@ -1344,10 +1616,10 @@ async def api_strategy_alerts(
             only_triggered,
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.post("/api/strategy-alerts/notify")
+@api_router.post("/strategy-alerts/notify", tags=["策略"], summary="推送策略预警到 Webhook")
 async def api_strategy_alerts_notify(request: StrategyAlertNotifyRequest):
     """扫描自选股并推送到已配置的 Webhook 渠道。"""
     try:
@@ -1364,10 +1636,10 @@ async def api_strategy_alerts_notify(request: StrategyAlertNotifyRequest):
             request.notify_empty,
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/market/review")
+@api_router.get("/market/review", tags=["市场"], summary="查询市场复盘快照")
 async def api_market_review(date: str | None = None):
     """返回指数、市场情绪、行业热度和涨停分布的复盘快照。"""
     try:
@@ -1375,10 +1647,10 @@ async def api_market_review(date: str | None = None):
 
         return await run_in_threadpool(build_market_review, date)
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/daily-briefing")
+@api_router.get("/daily-briefing", tags=["报告"], summary="查询每日盘后简报")
 async def api_daily_briefing(date: str | None = None):
     """返回市场复盘 + 自选股预警合并后的盘后简报。"""
     try:
@@ -1386,10 +1658,10 @@ async def api_daily_briefing(date: str | None = None):
 
         return await run_in_threadpool(build_daily_briefing, date)
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.post("/api/daily-briefing/notify")
+@api_router.post("/daily-briefing/notify", tags=["报告"], summary="推送每日盘后简报")
 async def api_daily_briefing_notify(request: DailyBriefingNotifyRequest):
     """生成并推送每日盘后简报。"""
     try:
@@ -1399,10 +1671,10 @@ async def api_daily_briefing_notify(request: DailyBriefingNotifyRequest):
             send_daily_briefing, request.date, "webui"
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.post("/api/daily-briefing/archive")
+@api_router.post("/daily-briefing/archive", tags=["报告"], summary="归档每日盘后简报")
 async def api_daily_briefing_archive(request: DailyBriefingNotifyRequest):
     """生成并归档每日盘后简报。"""
     try:
@@ -1414,10 +1686,15 @@ async def api_daily_briefing_archive(request: DailyBriefingNotifyRequest):
             archive_daily_briefing, request.date, "webui"
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/briefings")
+@api_router.get(
+    "/briefings",
+    tags=["报告"],
+    summary="查询盘后简报列表",
+    response_model=ItemListResponse,
+)
 async def api_list_briefings(limit: int = 50, offset: int = 0):
     return {
         "success": True,
@@ -1425,24 +1702,28 @@ async def api_list_briefings(limit: int = 50, offset: int = 0):
     }
 
 
-@app.get("/api/briefings/{briefing_id}")
+@api_router.get("/briefings/{briefing_id}", tags=["报告"], summary="查询盘后简报详情")
 async def api_get_briefing(briefing_id: int):
     item = await run_in_threadpool(get_briefing, briefing_id)
     if not item:
-        return {"success": False, "message": "简报不存在"}
+        return error_payload("简报不存在", code="not_found")
     return {"success": True, "briefing": item}
 
 
-@app.delete("/api/briefings/{briefing_id}")
+@api_router.delete(
+    "/briefings/{briefing_id}",
+    tags=["报告"],
+    summary="删除盘后简报",
+    response_model=SuccessMessageResponse,
+)
 async def api_delete_briefing(briefing_id: int):
     removed = await run_in_threadpool(delete_briefing, briefing_id)
-    return {
-        "success": removed,
-        "message": "已删除" if removed else "未找到",
-    }
+    if not removed:
+        return error_payload("简报不存在", code="not_found")
+    return {"success": True, "message": "已删除"}
 
 
-@app.get("/api/market/sectors")
+@api_router.get("/market/sectors", tags=["市场"], summary="查询行业板块列表")
 async def api_market_sectors():
     """返回同花顺行业列表，供板块历史查询使用。"""
     try:
@@ -1451,10 +1732,10 @@ async def api_market_sectors():
         items = await run_in_threadpool(list_sector_names)
         return {"success": True, "items": items}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/market/sector-history")
+@api_router.get("/market/sector-history", tags=["市场"], summary="查询行业近期走势")
 async def api_sector_history(name: str, days: int = 60):
     """返回单个行业的近期走势和 1/5/20 日涨跌幅。"""
     try:
@@ -1462,10 +1743,10 @@ async def api_sector_history(name: str, days: int = 60):
 
         return await run_in_threadpool(get_sector_history, name, days)
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/market/stock-search")
+@api_router.get("/market/stock-search", tags=["市场"], summary="搜索 A 股标的")
 async def api_stock_search(q: str = "", limit: int = 20):
     """按代码或名称搜索 A 股，供前端自动补全使用。"""
     try:
@@ -1473,10 +1754,10 @@ async def api_stock_search(q: str = "", limit: int = 20):
 
         return await run_in_threadpool(search_stocks, q, limit)
     except Exception as exc:
-        return {"success": False, "message": str(exc), "items": []}
+        return {**error_payload(str(exc)), "items": []}
 
 
-@app.get("/api/market/hot-stocks")
+@api_router.get("/market/hot-stocks", tags=["市场"], summary="查询涨停池热门股")
 async def api_hot_stocks(limit: int = 30, date: str | None = None):
     """返回涨停池热门股。"""
     try:
@@ -1484,10 +1765,10 @@ async def api_hot_stocks(limit: int = 30, date: str | None = None):
 
         return await run_in_threadpool(get_hot_stocks, limit, date)
     except Exception as exc:
-        return {"success": False, "message": str(exc), "items": []}
+        return {**error_payload(str(exc)), "items": []}
 
 
-@app.post("/api/market/review/notify")
+@api_router.post("/market/review/notify", tags=["市场"], summary="推送市场复盘到 Webhook")
 async def api_market_review_notify(request: MarketReviewNotifyRequest):
     """生成并推送市场复盘到已配置的 Webhook 渠道。"""
     try:
@@ -1495,10 +1776,10 @@ async def api_market_review_notify(request: MarketReviewNotifyRequest):
 
         return await run_in_threadpool(send_market_review, request.date)
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/market/capital-flow")
+@api_router.get("/market/capital-flow", tags=["市场"], summary="查询个股主力资金流向")
 async def api_capital_flow(ticker: str, days: int = 60):
     """返回个股主力资金流向序列，供前端绘制柱状图。"""
     try:
@@ -1512,7 +1793,7 @@ async def api_capital_flow(ticker: str, days: int = 60):
         )
         rows = _parse_flow_csv(text)
         if not rows:
-            return {"success": False, "message": text}
+            return error_payload(text)
 
         main_col = next(
             (k for k in rows[0] if "主力净流入" in k and "净额" in k), None
@@ -1533,10 +1814,10 @@ async def api_capital_flow(ticker: str, days: int = 60):
             )
         return {"success": True, "ticker": ticker, "items": items}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/market/northbound")
+@api_router.get("/market/northbound", tags=["市场"], summary="查询北向资金净流入")
 async def api_northbound(days: int = 10):
     """返回北向资金近 N 个交易日净流入序列。"""
     try:
@@ -1550,7 +1831,7 @@ async def api_northbound(days: int = 10):
         )
         rows = _parse_flow_csv(text)
         if not rows:
-            return {"success": False, "message": text}
+            return error_payload(text)
         net_col = next(
             (
                 k
@@ -1569,10 +1850,10 @@ async def api_northbound(days: int = 10):
             )
         return {"success": True, "items": items}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.post("/api/test-llm")
+@api_router.post("/test-llm", tags=["分析"], summary="测试模型端点连通性")
 async def api_test_llm(request: LLMTestRequest):
     """用一次最小请求测试模型端点连通性（不返回密钥）。"""
     load_dotenv()
@@ -1598,14 +1879,13 @@ async def api_test_llm(request: LLMTestRequest):
         }
     except Exception as exc:
         return {
-            "success": False,
+            **error_payload(f"{type(exc).__name__}: {exc}"),
             "backend_url": backend,
             "model": request.model,
-            "message": f"{type(exc).__name__}: {exc}",
         }
 
 
-@app.get("/api/config/defaults")
+@api_router.get("/config/defaults", tags=["分析"], summary="查询 WebUI 默认模型配置")
 async def api_config_defaults():
     """返回 WebUI 可用的模型/Base URL 默认值（不含密钥）。"""
     return {
@@ -1632,7 +1912,12 @@ async def api_config_defaults():
     }
 
 
-@app.get("/api/pipeline/presets")
+@api_router.get(
+    "/pipeline/presets",
+    tags=["分析"],
+    summary="查询可用的图编排预设",
+    response_model=PipelinePresetsResponse,
+)
 async def api_pipeline_presets():
     """返回可用的图编排预设与分析师元数据。"""
     return {
@@ -1642,7 +1927,7 @@ async def api_pipeline_presets():
     }
 
 
-@app.get("/api/settings/status")
+@api_router.get("/settings/status", tags=["分析"], summary="查询各 LLM 提供商的密钥配置状态")
 async def api_settings_status():
     """返回各 LLM 提供商的密钥配置状态（不返回密钥本身）。"""
     # 重新读取 .env，让新添加的 TAVILY_API_KEY 等无需重启即可显示
@@ -1669,7 +1954,12 @@ async def api_settings_status():
     }
 
 
-@app.get("/api/scheduler/status")
+@api_router.get(
+    "/scheduler/status",
+    tags=["任务"],
+    summary="查询调度器状态",
+    response_model=SchedulerStatusResponse,
+)
 async def api_scheduler_status():
     return {
         "enabled": os.getenv("SCHEDULE_ENABLED", "0"),
@@ -1679,12 +1969,17 @@ async def api_scheduler_status():
     }
 
 
-@app.get("/api/scheduled")
+@api_router.get(
+    "/scheduled",
+    tags=["任务"],
+    summary="查询定时任务列表",
+    response_model=ItemListResponse,
+)
 async def api_list_scheduled():
     return {"success": True, "items": list_scheduled_jobs()}
 
 
-@app.post("/api/scheduled")
+@api_router.post("/scheduled", tags=["任务"], summary="新增定时任务")
 async def api_add_scheduled(request: ScheduledJobRequest):
     try:
         item = add_scheduled_job(
@@ -1694,10 +1989,10 @@ async def api_add_scheduled(request: ScheduledJobRequest):
         )
         return {"success": True, "item": item}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.patch("/api/scheduled/{job_id}")
+@api_router.patch("/scheduled/{job_id}", tags=["任务"], summary="更新定时任务")
 async def api_update_scheduled(
     job_id: int, request: ScheduledJobUpdateRequest
 ):
@@ -1709,53 +2004,71 @@ async def api_update_scheduled(
             enabled=request.enabled,
         )
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
     if not item:
-        return {"success": False, "message": "定时任务不存在"}
+        return error_payload("定时任务不存在", code="not_found")
     return {"success": True, "item": item}
 
 
-@app.delete("/api/scheduled/{job_id}")
+@api_router.delete(
+    "/scheduled/{job_id}",
+    tags=["任务"],
+    summary="删除定时任务",
+    response_model=SuccessMessageResponse,
+)
 async def api_delete_scheduled(job_id: int):
     removed = delete_scheduled_job(job_id)
-    return {
-        "success": removed,
-        "message": "已删除" if removed else "定时任务不存在",
-    }
+    if not removed:
+        return error_payload("定时任务不存在", code="not_found")
+    return {"success": True, "message": "已删除"}
 
 
 # ============================================================================
 # 报告中心 / 交易日历 API
 # ============================================================================
 
-@app.get("/healthz")
 async def healthz():
+    """存活探针：只表示进程还活着，不做任何依赖检查。"""
     return {"status": "ok"}
 
 
-@app.get("/api/reports")
+@api_router.get(
+    "/reports",
+    tags=["报告"],
+    summary="查询分析报告列表",
+    response_model=ReportListResponse,
+)
 async def api_list_reports(ticker: str | None = None, limit: int = 50, offset: int = 0):
     return {"success": True, "reports": list_reports(ticker=ticker, limit=limit, offset=offset)}
 
 
-@app.get("/api/reports/{report_id}")
+@api_router.get("/reports/{report_id}", tags=["报告"], summary="查询分析报告详情")
 async def api_get_report(report_id: int):
     report = get_report(report_id)
     if not report:
-        return {"success": False, "message": "报告不存在"}
+        return error_payload("报告不存在", code="not_found")
     return {"success": True, "report": report}
 
 
-@app.delete("/api/reports/{report_id}")
+@api_router.delete(
+    "/reports/{report_id}",
+    tags=["报告"],
+    summary="删除分析报告",
+    response_model=SuccessMessageResponse,
+)
 async def api_delete_report(report_id: int):
     deleted = delete_report(report_id)
-    return {
-        "success": deleted,
-        "message": "已删除" if deleted else "报告不存在",
-    }
+    if not deleted:
+        return error_payload("报告不存在", code="not_found")
+    return {"success": True, "message": "已删除"}
 
 
-@app.get("/api/trade-calendar/check")
+@api_router.get(
+    "/trade-calendar/check",
+    tags=["报告"],
+    summary="校验交易日",
+    response_model=TradeCalendarResponse,
+)
 async def api_check_trade_date(company: str, date: str):
     ok, message, adjusted = validate_analysis_date(company, date)
     return {
@@ -1772,7 +2085,7 @@ async def api_check_trade_date(company: str, date: str):
 # ============================================================================
 
 
-@app.get("/api/portfolio")
+@api_router.get("/portfolio", tags=["组合"], summary="查询组合持仓与风险体检")
 async def api_portfolio(account: str | None = None):
     """返回账户持仓、组合权重与风险体检结果。"""
     try:
@@ -1781,7 +2094,7 @@ async def api_portfolio(account: str | None = None):
         snapshot = await run_in_threadpool(portfolio_snapshot, account)
         return {"success": True, "portfolio": snapshot}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
 class PortfolioEvaluateRequest(BaseModel):
@@ -1792,7 +2105,7 @@ class PortfolioEvaluateRequest(BaseModel):
     sector: str = ""
 
 
-@app.post("/api/portfolio/evaluate")
+@api_router.post("/portfolio/evaluate", tags=["组合"], summary="在组合语境下评估决策卡")
 async def api_portfolio_evaluate(request: PortfolioEvaluateRequest):
     """把一份决策卡放到组合语境下重新评估，给出真正可执行的仓位。"""
     try:
@@ -1808,10 +2121,10 @@ async def api_portfolio_evaluate(request: PortfolioEvaluateRequest):
         )
         return {"success": True, "evaluation": result}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/runs")
+@api_router.get("/runs", tags=["任务"], summary="查询最近运行指标")
 async def api_list_runs(ticker: str | None = None, limit: int = 50, offset: int = 0):
     """返回最近的运行指标（token / 成本 / 耗时）。"""
     try:
@@ -1822,10 +2135,10 @@ async def api_list_runs(ticker: str | None = None, limit: int = 50, offset: int 
         )
         return {"success": True, "runs": logs}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
-@app.get("/api/runs/aggregate")
+@api_router.get("/runs/aggregate", tags=["任务"], summary="查询聚合运行指标")
 async def api_aggregate_runs():
     """聚合运行指标：总 token / 总成本 / 按模型与来源拆分。"""
     try:
@@ -1834,20 +2147,339 @@ async def api_aggregate_runs():
         aggregate = await run_in_threadpool(aggregate_run_logs)
         return {"success": True, "aggregate": aggregate}
     except Exception as exc:
-        return {"success": False, "message": str(exc)}
+        return error_payload(str(exc))
 
 
 # ============================================================================
-# 静态文件服务
+# 就绪探针 / 指标 / 静态文件服务 + 应用装配
 # ============================================================================
+
+logger = logging.getLogger(__name__)
+
+APP_VERSION = "1.0.0"
 
 frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
-app.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+
+#: 就绪探针要求存在的核心数据表。
+REQUIRED_DB_TABLES: tuple[str, ...] = (
+    "reports",
+    "jobs",
+    "watchlist",
+    "scheduled_jobs",
+    "briefings",
+    "run_logs",
+)
+
+#: 进程启动时间（用于 /readyz 的 uptime）。
+_PROCESS_STARTED_AT = time.time()
 
 
-@app.get("/")
+def _ensure_db_schema() -> None:
+    """确保核心数据表存在（幂等操作，失败时由调用方兜底）。"""
+    from tradingagents.storage import init_db
+
+    init_db()
+    for module_name, func_name in (
+        ("tradingagents.storage.job_store", "_init_jobs"),
+        ("tradingagents.storage.watchlist_store", "_init_watchlist"),
+        ("tradingagents.storage.scheduled_store", "_init_scheduled"),
+        ("tradingagents.storage.briefing_store", "_init_briefings"),
+        ("tradingagents.storage.run_log_store", "_init_run_logs"),
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            init_func = getattr(module, func_name, None)
+            if callable(init_func):
+                init_func()
+        except Exception:
+            logger.debug(
+                "初始化数据表 %s.%s 失败", module_name, func_name, exc_info=True
+            )
+
+
+def _check_database() -> dict[str, Any]:
+    """数据库检查：能否打开 + 核心表是否存在。"""
+    try:
+        from tradingagents.storage.report_store import db_path
+
+        path = db_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(path), timeout=5) as conn:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        tables = {str(row[0]) for row in rows}
+        missing = [name for name in REQUIRED_DB_TABLES if name not in tables]
+        if missing:
+            _ensure_db_schema()
+            with sqlite3.connect(str(path), timeout=5) as conn:
+                rows = conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            tables = {str(row[0]) for row in rows}
+            missing = [name for name in REQUIRED_DB_TABLES if name not in tables]
+        if missing:
+            return {
+                "name": "database",
+                "status": "failed",
+                "required": True,
+                "detail": f"缺少数据表: {', '.join(missing)}",
+            }
+        return {
+            "name": "database",
+            "status": "ok",
+            "required": True,
+            "detail": f"{path}（{len(tables)} 张表）",
+        }
+    except Exception as exc:
+        return {
+            "name": "database",
+            "status": "failed",
+            "required": True,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _check_scheduler() -> dict[str, Any]:
+    """调度器检查：仅在 SCHEDULE_ENABLED 开启时要求线程存活。"""
+    enabled = os.getenv("SCHEDULE_ENABLED", "0").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    if not enabled:
+        return {
+            "name": "scheduler",
+            "status": "skipped",
+            "required": False,
+            "detail": "SCHEDULE_ENABLED 未开启，跳过调度器检查",
+        }
+    try:
+        from tradingagents import scheduler as scheduler_module
+
+        thread = getattr(scheduler_module, "_thread", None)
+        alive = bool(thread is not None and thread.is_alive())
+        if alive:
+            return {
+                "name": "scheduler",
+                "status": "ok",
+                "required": True,
+                "detail": "定时任务线程运行中",
+            }
+        return {
+            "name": "scheduler",
+            "status": "failed",
+            "required": True,
+            "detail": "定时任务线程未运行",
+        }
+    except Exception as exc:
+        return {
+            "name": "scheduler",
+            "status": "failed",
+            "required": True,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+
+
+def _check_disk() -> dict[str, Any]:
+    """磁盘检查：数据库所在分区的剩余空间（低于 500MB 视为告警）。"""
+    try:
+        from tradingagents.storage.report_store import db_path
+
+        usage = shutil.disk_usage(str(db_path().parent))
+        free_mb = usage.free / (1024 * 1024)
+        if free_mb < 500:
+            return {
+                "name": "disk",
+                "status": "failed",
+                "required": False,
+                "detail": f"剩余空间仅 {free_mb:.0f} MB",
+            }
+        return {
+            "name": "disk",
+            "status": "ok",
+            "required": False,
+            "detail": f"剩余 {free_mb:.0f} MB",
+        }
+    except Exception as exc:
+        return {
+            "name": "disk",
+            "status": "skipped",
+            "required": False,
+            "detail": f"{type(exc).__name__}: {exc}",
+        }
+
+
+async def readyz():
+    """就绪探针：真实检查数据库、调度器与磁盘，任一必需检查失败返回 503。"""
+    checks = [_check_database(), _check_scheduler(), _check_disk()]
+    failed = [c for c in checks if c["required"] and c["status"] == "failed"]
+    ready = not failed
+    content = {
+        "status": "ready" if ready else "not_ready",
+        "ready": ready,
+        "checks": checks,
+        "version": APP_VERSION,
+        "uptime_seconds": round(time.time() - _PROCESS_STARTED_AT, 3),
+    }
+    return JSONResponse(status_code=200 if ready else 503, content=content)
+
+
+async def metrics_endpoint():
+    """导出 Prometheus 文本格式的进程内指标。"""
+    return PlainTextResponse(
+        metrics.render_prometheus(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 async def serve_frontend():
     index_path = os.path.join(
         os.path.dirname(__file__), "..", "frontend", "index.html"
     )
     return FileResponse(index_path)
+
+
+def _warn_if_unauthenticated(config: ApiConfig) -> None:
+    """鉴权关闭且监听非回环地址时，打印醒目安全告警。"""
+    if config.auth_enabled:
+        logger.info(
+            "WebUI API 鉴权已启用（WEBUI_API_KEY 已设置），受保护路由需要携带密钥"
+        )
+        return
+    if config.is_loopback_host:
+        logger.info(
+            "WebUI API 鉴权未启用（WEBUI_API_KEY 未设置），仅监听回环地址 %s",
+            config.host,
+        )
+        return
+    logger.warning(
+        "【安全警告】WebUI API 未启用鉴权（WEBUI_API_KEY 未设置），"
+        "且服务监听在非回环地址 %s:%s。"
+        "任何能访问该地址的人都可以调用分析接口消耗 LLM 额度、读取全部报告、"
+        "修改自选股与定时任务、并触发外部 Webhook 推送。"
+        "请设置 WEBUI_API_KEY 环境变量，或把 WEBUI_HOST 设为 127.0.0.1 只在本机监听。",
+        config.host,
+        config.port,
+    )
+
+
+@asynccontextmanager
+async def lifespan(application: FastAPI):
+    """应用生命周期：启动任务队列与定时任务调度器，退出时优雅停止。"""
+    _warn_if_unauthenticated(load_config())
+    # 启动有界任务队列：分析任务不再直接起线程
+    try:
+        ensure_job_queue(
+            worker_count=ANALYSIS_WORKERS,
+            handlers={"analysis": _analysis_job_handler},
+        )
+    except Exception:  # 队列启动失败不应阻断服务
+        logger.warning("任务队列启动失败", exc_info=True)
+    start_scheduler()
+    try:
+        yield
+    finally:
+        stop_scheduler()
+        try:
+            from tradingagents.services.job_queue import stop_job_queue
+
+            stop_job_queue(wait=True)
+        except Exception:
+            logger.warning("任务队列停止失败", exc_info=True)
+
+
+OPENAPI_TAGS = [
+    {"name": "分析", "description": "深度分析任务的启动、状态与模型连通性。"},
+    {"name": "任务", "description": "分析任务、定时任务与运行指标。"},
+    {"name": "自选", "description": "自选股维护。"},
+    {"name": "策略", "description": "经典策略扫描、回测与预警推送。"},
+    {"name": "市场", "description": "行情、K 线、资金流与市场复盘。"},
+    {"name": "报告", "description": "分析报告、盘后简报与交易日历。"},
+    {"name": "组合", "description": "组合持仓与组合级风控评估。"},
+    {"name": "系统", "description": "健康探针、就绪探针与指标导出。"},
+]
+
+
+def create_app(config: ApiConfig | None = None) -> FastAPI:
+    """装配 WebUI 应用。
+
+    ``config`` 为 ``None`` 时使用环境变量配置；注意鉴权依赖与限流中间件都是
+    **请求期**读取配置的，因此运行期调整环境变量同样可以立即生效。
+    """
+    current = config or load_config()
+    application = FastAPI(
+        title="TradingAgents Web UI",
+        version=APP_VERSION,
+        lifespan=lifespan,
+        openapi_tags=OPENAPI_TAGS,
+    )
+    register_exception_handlers(application)
+
+    # 中间件顺序（越晚添加越靠外层）：
+    #   RequestId → CORS → Timing → RateLimit → 路由
+    application.add_middleware(TimingMiddleware)
+    application.add_middleware(RateLimitMiddleware)
+    if current.cors_enabled:
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=list(current.allowed_origins),
+            allow_credentials=False,
+            allow_methods=["*"],
+            allow_headers=["*"],
+            expose_headers=[
+                "X-Request-ID",
+                "X-Response-Time-Ms",
+                "Retry-After",
+            ],
+        )
+    application.add_middleware(RequestIdMiddleware)
+
+    # 受保护的 API 路由（鉴权依赖挂在路由器级别）
+    application.include_router(api_router, prefix=current.api_prefix)
+
+    # 豁免鉴权 / 限流的系统路由
+    application.add_api_route(
+        "/healthz",
+        healthz,
+        methods=["GET"],
+        tags=["系统"],
+        summary="存活探针",
+        response_model=HealthResponse,
+    )
+    application.add_api_route(
+        "/readyz",
+        readyz,
+        methods=["GET"],
+        tags=["系统"],
+        summary="就绪探针（检查数据库、调度器与磁盘）",
+        response_model=ReadyResponse,
+    )
+    application.add_api_route(
+        "/metrics",
+        metrics_endpoint,
+        methods=["GET"],
+        tags=["系统"],
+        summary="导出 Prometheus 文本格式指标",
+        response_class=PlainTextResponse,
+    )
+    application.add_api_route(
+        "/",
+        serve_frontend,
+        methods=["GET"],
+        tags=["系统"],
+        summary="返回 WebUI 前端页面",
+        response_class=FileResponse,
+    )
+    application.add_api_websocket_route("/ws", websocket_endpoint)
+
+    # 未匹配路由返回统一错误信封，而不是 Starlette 默认的纯文本 404
+    application.router.default = NotFoundResponder()
+
+    application.mount("/static", StaticFiles(directory=frontend_dir), name="static")
+    return application
+
+
+#: 进程级应用实例（uvicorn 入口：webui.backend.server:app）。
+app = create_app()

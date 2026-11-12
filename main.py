@@ -79,6 +79,8 @@
 #   OPENAI_API_KEY=sk-proj-xxxxxxxxxxxx
 #   ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxx
 #   GOOGLE_API_KEY=AIzaxxxxxxxxxxxx
+from datetime import datetime
+
 from dotenv import load_dotenv
 
 # 先加载 .env，再导入会在导入阶段读取环境变量的 DEFAULT_CONFIG
@@ -106,21 +108,8 @@ load_dotenv()
 # 使用 .copy() 复制默认配置，避免修改原始字典影响其他地方的引用
 # .copy() 创建字典的浅拷贝（新字典对象，但嵌套的字典/列表仍共享引用）
 # 如果直接 config = DEFAULT_CONFIG（不 copy），修改 config 会影响 DEFAULT_CONFIG
-config = DEFAULT_CONFIG.copy()
-
-# 默认直接使用 DEFAULT_CONFIG 中的 LLM 配置（MiniMax-M3 / MiniMax-M2.5）。
-# 如需改用其他提供商，请同时修改 llm_provider、backend_url、deep_think_llm、
-# quick_think_llm 四项，避免出现“模型名与 API 地址不匹配”的错误。
-# 例如使用 OpenAI：
-#   config["llm_provider"] = "openai"
-#   config["backend_url"] = "https://api.openai.com/v1"
-#   config["deep_think_llm"] = "gpt-5-mini"
-#   config["quick_think_llm"] = "gpt-5-mini"
-
-# 设置辩论轮数：多空双方研究员辩论的最大轮次
-# 设为 1 表示只进行一轮辩论，值越大辩论越充分但耗时越长
-# 每轮辩论：多头研究员发表观点 → 空头研究员反驳 → 进入下一轮
-config["max_debate_rounds"] = 1
+#
+# 注意：配置构造已移入 build_config()，避免模块导入时产生副作用。
 
 # ----------------------------------------------------------------------------
 # 配置数据供应商
@@ -146,35 +135,83 @@ config["max_debate_rounds"] = 1
 # configure_yfinance_proxy()  # 自动从环境变量 YFINANCE_PROXY / HTTPS_PROXY 读取
 # reset_yfinance_session()    # 清除限流缓存
 
-ta = TradingAgentsGraph(debug=True, config=config)
+# ----------------------------------------------------------------------------
+# 以下为真正的执行入口
+#
+# 重要：此前本文件在**模块导入时**就会执行一次完整的付费分析
+# （``ta.propagate(...)`` 位于模块顶层）。这意味着：
+#   - 任何 ``import main`` 的行为都会烧掉一次 LLM 额度；
+#   - 该文件无法被单元测试导入；
+#   - IDE / 静态分析工具一打开文件就可能触发调用。
+# 现在改为受 ``if __name__ == "__main__"`` 保护，并支持命令行参数。
+# ----------------------------------------------------------------------------
 
-# ----------------------------------------------------------------------------
-# 执行前向传播（Forward Propagation）
-# ----------------------------------------------------------------------------
-# propagate() 是核心分析方法，它会让所有智能体协作分析一支股票
-# 参数1：股票代码（ticker symbol），"NVDA" 是英伟达的股票代码
-# 参数2：分析日期，格式为 "YYYY-MM-DD"，表示基于该日期之前的数据进行分析
-# 返回值：
-#   - 第一个返回值（_）：分析过程中的中间状态数据（这里用下划线忽略）
-#   - decision：最终的投资决策，包含买入/卖出/持有建议及理由
-# Python 的多返回值解包：_, decision = ta.propagate(...)
-#   _ 是 Python 惯例，表示"不关心这个返回值"
-#   decision 是最终的投资决策文本
-_, decision = ta.propagate("海南橡胶", "2026-07-15")
 
-# 打印最终的投资决策
-# decision 通常包含：
-#   - 决策类型（BUY/SELL/HOLD）
-#   - 决策理由（详细的分析逻辑）
-#   - 建议的仓位大小
-#   - 风险提示
-print(decision)
+def build_config() -> dict:
+    """构造本次分析使用的配置（默认配置 + 可选覆盖）。"""
+    config = DEFAULT_CONFIG.copy()
 
-# ----------------------------------------------------------------------------
-# 反思与记忆（可选步骤）
-# ----------------------------------------------------------------------------
-# reflect_and_remember() 用于事后反思：根据实际收益来评估之前的决策是否正确
-# 参数 1000 表示本次投资的收益（正数=盈利，负数=亏损）
-# 这个功能帮助系统"从错误中学习"，提升未来决策质量
-# 注释掉是因为这只是演示代码，实际使用时可以根据交易结果调用
-# ta.reflect_and_remember(1000)  # 参数是持仓收益
+    # 默认直接使用 DEFAULT_CONFIG 中的 LLM 配置（MiniMax-M3 / MiniMax-M2.5）。
+    # 如需改用其他提供商，请同时修改 llm_provider、backend_url、deep_think_llm、
+    # quick_think_llm 四项，避免出现"模型名与 API 地址不匹配"的错误。
+    # 例如使用 OpenAI：
+    #   config["llm_provider"] = "openai"
+    #   config["backend_url"] = "https://api.openai.com/v1"
+    #   config["deep_think_llm"] = "gpt-5-mini"
+    #   config["quick_think_llm"] = "gpt-5-mini"
+
+    # 设置辩论轮数：多空双方研究员辩论的最大轮次
+    # 设为 1 表示只进行一轮辩论，值越大辩论越充分但耗时越长
+    # 每轮辩论：多头研究员发表观点 → 空头研究员反驳 → 进入下一轮
+    config["max_debate_rounds"] = 1
+    return config
+
+
+def main(argv: list[str] | None = None) -> str:
+    """执行一次分析并返回决策文本。"""
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="AlphaAgents-CN 命令行演示入口（单次分析）",
+    )
+    parser.add_argument("--ticker", default="600519", help="股票代码，默认 600519")
+    parser.add_argument(
+        "--date",
+        default=None,
+        help="分析日期 YYYY-MM-DD，默认今天（自动回退到最近交易日）",
+    )
+    parser.add_argument(
+        "--horizon",
+        default="medium",
+        choices=["short", "medium", "long"],
+        help="分析周期，默认 medium",
+    )
+    args = parser.parse_args(argv)
+
+    trade_date = args.date or datetime.now().strftime("%Y-%m-%d")
+
+    ta = TradingAgentsGraph(debug=True, config=build_config())
+
+    # propagate() 是核心分析方法，它会让所有智能体协作分析一支股票
+    # 参数1：股票代码（ticker symbol）
+    # 参数2：分析日期，格式为 "YYYY-MM-DD"，表示基于该日期之前的数据进行分析
+    # 返回值：
+    #   - 第一个返回值（_）：分析过程中的中间状态数据（这里用下划线忽略）
+    #   - decision：最终的投资决策，包含买入/卖出/持有建议及理由
+    _, decision = ta.propagate(args.ticker, trade_date, args.horizon)
+
+    print(decision)
+
+    # ----------------------------------------------------------------------------
+    # 反思与记忆（可选步骤）
+    #
+    # reflect_and_remember() 用于事后反思：根据实际收益来评估之前的决策是否正确
+    # 参数 1000 表示本次投资的收益（正数=盈利，负数=亏损）
+    # 这个功能帮助系统"从错误中学习"，提升未来决策质量
+    # 注释掉是因为这只是演示代码，实际使用时可以根据交易结果调用
+    # ta.reflect_and_remember(1000)  # 参数是持仓收益
+    return decision
+
+
+if __name__ == "__main__":
+    main()

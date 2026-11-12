@@ -86,9 +86,20 @@ AlphaAgents-CN 是一个面向 A 股的多智能体投研系统，基于 Trading
 | 热门股 / 涨停池 | 连板数、封板资金、炸板次数、行业 | WebUI / API |
 | 可编排流水线 | 精简 / 标准 / 深度 / 自定义 | WebUI |
 | 策略库 | 15 个经典策略，默认核心 6 个 | WebUI / CLI / API |
+| 策略族去重 | 15 个策略归并为 7 个独立假设族，族内去重后再计票 | 策略扫描 / 决策卡 |
 | 策略扫描 | 单票或自选股批量扫描 | WebUI / CLI / API |
-| 策略回测 | 信号有效性、前瞻收益、胜率、跟随/避险净值 | WebUI / API |
+| 策略回测 | 统一引擎：涨跌停不可成交、T+1、停牌、整手、滑点、ATR 止损 | WebUI / API |
+| 回测统计门槛 | 样本内/样本外切分、有效样本量、显著性检验、多重检验校正 | WebUI / API |
 | 结构化决策卡 | 评分、置信度、止损/目标、风险收益比、仓位 | WebUI / 报告 |
+| 决策分歧可见 | 规则初判与 LLM 最终决策的差异随结果返回 | API / 报告 |
+| 组合管理 | 账户、持仓账本、成交流水、组合快照 | API / 存储 |
+| 组合级风控 | 单票/行业/总仓位上限、单笔风险预算、亏损与回撤熔断 | API / 决策 |
+| 模拟盘 | T+1 批次锁定、涨跌停不可成交、整手、现金冻结、决策卡转委托单 | 服务层 |
+| 评估闭环 | 决策与前瞻收益对齐、命中率汇总、有效样本量口径 | 服务层 |
+| 反思与记忆 | 分析结束写入角色记忆并落库，下次分析可检索 | 图编排 |
+| 可观测性 | token / 成本 / 逐阶段耗时采集与落库 | API / 存储 |
+| 访问鉴权 | 可选 API Key（`WEBUI_API_KEY`）、限流、请求 ID | API |
+| 任务队列 | 有界 worker 队列、原子认领、取消、僵尸回收、优雅退出 | API / Scheduler |
 | 自选股预警 | 只保留触发信号，支持手动/定时 Webhook 推送 | WebUI / API / Scheduler |
 | 市场复盘 | 指数、情绪、行业/概念热度、资金流、涨停分布 | WebUI / API |
 | 板块历史 | 同花顺行业 1/5/20 日涨跌幅和 60 日走势 | WebUI / API |
@@ -671,6 +682,24 @@ http://127.0.0.1:8000
 }
 ```
 
+框架级错误（校验失败、404、限流、未授权等）统一使用同一套信封，
+并附带机器可读的 `code` 与 `request_id`：
+
+```json
+{
+  "success": false,
+  "code": "validation_error",
+  "message": "错误原因",
+  "details": null,
+  "request_id": "6f1c0a2e9b7d4a1e9c3f4b2d1e0a9c8b"
+}
+```
+
+`request_id` 同时通过响应头 `X-Request-ID` 返回，便于把前端提示与服务端
+日志对应起来。错误码：`bad_request`、`unauthorized`、`not_found`、
+`conflict`、`validation_error`、`rate_limited`、`internal_error`、
+`service_unavailable`、`http_error`。
+
 个别接口直接返回业务对象，例如：
 
 - `GET /api/status`
@@ -683,7 +712,9 @@ http://127.0.0.1:8000
 - 策略列表：逗号分隔，例如 `bull_trend,volume_breakout`
 - 股票代码支持常见 A 股写法，服务内部会归一化
 - 阻塞型数据请求通过线程池执行，避免阻塞 FastAPI 事件循环
-- 当前服务默认无鉴权，建议只在本机或受保护的内网使用
+- 鉴权默认关闭（便于本地使用）；配置 `WEBUI_API_KEY` 后开启，
+  详见 §10.7
+- 分析任务走有界队列：超出 `WEBUI_MAX_PENDING_ANALYSES` 时返回 409
 
 ---
 
@@ -744,7 +775,7 @@ http://127.0.0.1:8000
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/market/kline` | K 线数据 |
-| POST | `/api/backtest` | MA / 买入持有回测 |
+| POST | `/api/backtest` | MA / 买入持有回测（含 A 股执行约束） |
 | GET | `/api/market/capital-flow` | 个股主力资金流 |
 | GET | `/api/market/northbound` | 北向资金 |
 | GET | `/api/market/review` | 市场复盘 |
@@ -765,6 +796,43 @@ http://127.0.0.1:8000
 | GET | `/api/strategy-backtest` | 策略回测 |
 | GET | `/api/strategy-alerts` | 自选股触发预警 |
 | POST | `/api/strategy-alerts/notify` | 生成并推送预警 |
+
+### 10.6 组合、运行指标与系统
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/portfolio` | 账户持仓、组合权重与风险体检 |
+| POST | `/api/portfolio/evaluate` | 把决策卡放到组合语境下重新评估 |
+| GET | `/api/runs` | 最近运行的 token / 成本 / 耗时指标 |
+| GET | `/api/runs/aggregate` | 运行指标聚合（按模型与来源拆分） |
+| GET | `/healthz` | 存活探针 |
+| GET | `/readyz` | 就绪探针（检查数据库与调度器） |
+| GET | `/metrics` | Prometheus 文本格式指标 |
+
+### 10.7 鉴权与限流
+
+配置 `WEBUI_API_KEY` 后，除 `/healthz`、`/readyz`、`/metrics` 与静态资源
+外的所有 `/api` 路由都需要携带访问密钥：
+
+```bash
+curl -H "X-API-Key: your-key" http://localhost:8000/api/portfolio
+# 或
+curl -H "Authorization: Bearer your-key" http://localhost:8000/api/portfolio
+```
+
+WebSocket 无法自定义请求头，通过查询参数传递：`/ws?api_key=your-key`。
+
+限流默认按来源 IP 计数（`WEBUI_RATE_LIMIT`，默认 120 次/分钟），
+超出返回 429 与 `Retry-After`。
+
+| 环境变量 | 默认 | 说明 |
+|---|---|---|
+| `WEBUI_API_KEY` | 空（不鉴权） | 访问密钥 |
+| `WEBUI_RATE_LIMIT` | 120 | 每分钟每 IP 请求上限 |
+| `WEBUI_RATE_LIMIT_ENABLED` | 1 | 是否启用限流 |
+| `WEBUI_ALLOWED_ORIGINS` | 空（同源） | 允许的跨域来源，逗号分隔 |
+| `WEBUI_ANALYSIS_WORKERS` | 1 | 分析任务并发数 |
+| `WEBUI_MAX_PENDING_ANALYSES` | 3 | 运行 + 排队的分析任务上限 |
 
 ---
 

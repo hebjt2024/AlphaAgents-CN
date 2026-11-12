@@ -8,6 +8,7 @@
 <script src="/static/vendor/marked.min.js"></script>
 <script src="/static/vendor/purify.min.js"></script>
 <script src="/static/vendor/echarts.min.js"></script>
+<script src="/static/js/core.js"></script>
 <style>
   :root {
     --bg: #070b14;
@@ -19,7 +20,7 @@
     --border-strong: rgba(148, 163, 184, 0.28);
     --text: #e6edf7;
     --text-2: #a9b6cb;
-    --text-3: #718096;
+    --text-3: #8a9ab4;
     --accent: #4f8cff;
     --accent-2: #8b5cf6;
     --cyan: #22d3ee;
@@ -69,7 +70,7 @@
     --border-strong: rgba(15, 23, 42, 0.22);
     --text: #0f172a;
     --text-2: #334155;
-    --text-3: #64748b;
+    --text-3: #5b6b85;
     --accent: #2563eb;
     --accent-2: #7c3aed;
     --cyan: #0891b2;
@@ -606,7 +607,7 @@
     <div class="topbar-spacer"></div>
     <button class="icon-btn" id="themeBtn" onclick="toggleTheme()">🌙 深色</button>
     <button class="icon-btn" id="configToggle" onclick="toggleConfigPanel()">⚙ 分析设置</button>
-    <div class="conn"><span class="dot" id="connDot"></span><span id="connText">连接中…</span></div>
+    <div class="conn"><span class="dot" id="connDot" role="status" aria-hidden="true"></span><span id="connText" aria-live="polite">连接中…</span></div>
   </header>
 
   <div class="views">
@@ -972,7 +973,7 @@
                   <button class="icon-btn" id="scrollBtn" onclick="toggleAutoScroll()">跟随中</button>
                   <button class="icon-btn" onclick="clearLogs()">清空</button>
                 </div>
-                <div class="log-body" id="logBody">
+                <div class="log-body" id="logBody" role="log" aria-live="polite" aria-label="智能体协作过程实时日志">
                   <div class="empty"><div class="big">🧭</div><div>分析启动后，这里会实时展示智能体协作过程</div></div>
                 </div>
               </div>
@@ -1055,6 +1056,19 @@
           </div>
           <div class="provider-grid" id="providerGrid"></div>
           <div class="card card-pad">
+            <div class="section-title">访问密钥（API Key）</div>
+            <div class="row-3" style="margin-top:10px;">
+              <input class="input" id="apiKeyInput" type="password"
+                     placeholder="后端设置了 WEBUI_API_KEY 时填写" autocomplete="off">
+              <button class="btn btn-ghost btn-sm" onclick="saveApiKey()">保存</button>
+              <button class="btn btn-ghost btn-sm" onclick="clearApiKey()">清除</button>
+            </div>
+            <div class="hint">
+              仅保存在本机浏览器（localStorage），不会上传到服务端。
+              后端未配置 <code>WEBUI_API_KEY</code> 时可留空。
+            </div>
+          </div>
+          <div class="card card-pad">
             <div class="section-title">模型默认值（来自 .env）</div>
             <div id="modelDefaults" class="muted">加载中…</div>
           </div>
@@ -1080,7 +1094,7 @@
 </div>
 
 <div class="modal" id="modal" onclick="if(event.target===this) closeModal()">
-  <div class="modal-box">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
     <div class="modal-head">
       <strong id="modalTitle">报告详情</strong>
       <button class="icon-btn" onclick="closeModal()">关闭</button>
@@ -1088,7 +1102,7 @@
     <div class="modal-body" id="modalBody"></div>
   </div>
 </div>
-<div class="toasts" id="toasts"></div>
+<div class="toasts" id="toasts" role="status" aria-live="polite" aria-label="操作提示"></div>
 
 <script>
 /* ================= 基础工具 ================= */
@@ -1188,49 +1202,10 @@ const STRATEGY_FALLBACK_META = [
 ];
 const DEFAULT_STRATEGY_KEYS_JS = ['bull_trend', 'ma_golden_cross', 'volume_breakout', 'shrink_pullback', 'bottom_volume', 'box_oscillation'];
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({
-    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-  }[ch]));
-}
-function looksLikeMarkdown(text) {
-  if (!text) return false;
-  return /^\s{0,3}#{1,6}\s/m.test(text) || /(\*\*|__)[^*]+(\*\*|__)/m.test(text)
-    || /^\s{0,3}[-*+]\s/m.test(text) || /^\s{0,3}\d+\.\s/m.test(text)
-    || /\|.*\|/m.test(text) || /```/.test(text) || /^\s{0,3}>/m.test(text);
-}
-function renderMarkdown(text) {
-  if (!text) return '';
-  try {
-    if (typeof marked !== 'undefined' && typeof DOMPurify !== 'undefined') {
-      const html = marked.parse(text);
-      return DOMPurify.sanitize(html, {
-        ALLOWED_TAGS: ['h1','h2','h3','h4','h5','h6','p','br','hr','strong','em','del','code','pre','blockquote','ul','ol','li','table','thead','tbody','tr','th','td','a','img','span','div','sub','sup'],
-        ALLOWED_ATTR: ['href','src','alt','title','colspan','rowspan','target','rel'],
-      });
-    }
-  } catch (e) { console.warn('markdown render failed', e); }
-  return escapeHtml(text);
-}
-function showToast(text, type = 'ok') {
-  const box = document.createElement('div');
-  box.className = 'toast ' + type;
-  box.textContent = text;
-  $('toasts').appendChild(box);
-  setTimeout(() => { box.style.opacity = '0'; box.style.transition = '.3s'; setTimeout(() => box.remove(), 320); }, 3600);
-}
-function localDateStr(d = new Date()) {
-  const p = n => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-function fmtPct(v) { return (Number(v) * 100).toFixed(2) + '%'; }
-function fmtAmount(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return '--';
-  if (Math.abs(n) >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
-  if (Math.abs(n) >= 1e4) return (n / 1e4).toFixed(2) + ' 万';
-  return n.toFixed(2);
-}
+// 核心工具（HTML 转义 / Markdown 渲染 / API 客户端 / 轻提示 / 格式化）
+// 已抽到 /static/js/core.js，此处直接复用，避免两套实现漂移。
+const { escapeHtml, renderMarkdown, showToast, apiFetch } = window.Core;
+const { looksLikeMarkdown, localDateStr, fmtPct, fmtAmount } = window.Core;
 function decisionClass(decision) {
   const d = String(decision || '').toUpperCase();
   if (d === 'BUY' || d === 'OVERWEIGHT') return 'buy';
@@ -1260,7 +1235,11 @@ function switchView(view) {
 /* ================= WebSocket ================= */
 function connectWS() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  state.ws = new WebSocket(`${proto}//${location.host}/ws`);
+  // 鉴权开启时（后端配置了 WEBUI_API_KEY），浏览器无法为 WebSocket 设置
+  // 自定义请求头，因此通过查询参数传递。
+  const apiKey = window.Core.getApiKey();
+  const query = apiKey ? '?api_key=' + encodeURIComponent(apiKey) : '';
+  state.ws = new WebSocket(`${proto}//${location.host}/ws${query}`);
   state.ws.onopen = () => {
     state.connected = true;
     setConn('on', '已连接');
@@ -1642,8 +1621,7 @@ function onProviderChange() {
 }
 async function loadDefaults() {
   try {
-    const resp = await fetch('/api/config/defaults');
-    const data = await resp.json();
+    const data = await apiFetch('/api/config/defaults');
     if (data.success) {
       state.defaults = data;
       state.parallelAnalysts = data.parallel_analysts !== false;
@@ -1667,7 +1645,7 @@ async function testLLMConnection() {
   btn.disabled = true;
   btn.textContent = '测试中…';
   try {
-    const resp = await fetch('/api/test-llm', {
+    const data = await apiFetch('/api/test-llm', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -1676,7 +1654,6 @@ async function testLLMConnection() {
         backend_url: $('backendUrl').value.trim() || null,
       }),
     });
-    const data = await resp.json();
     showToast(data.message || (data.success ? '连接成功' : '连接失败'), data.success ? 'ok' : 'err');
   } catch (e) {
     showToast('连接测试失败: ' + e, 'err');
@@ -1688,8 +1665,7 @@ async function testLLMConnection() {
 
 async function loadStrategyMeta() {
   try {
-    const resp = await fetch('/api/strategies/meta');
-    const data = await resp.json();
+    const data = await apiFetch('/api/strategies/meta');
     state.strategyMeta = data.strategies || STRATEGY_FALLBACK_META;
     state.defaultStrategyKeys = data.default || DEFAULT_STRATEGY_KEYS_JS;
   } catch (e) {
@@ -1775,8 +1751,7 @@ async function loadFastPreview(company, date, strategies) {
     const params = new URLSearchParams({ ticker: company });
     if (date) params.set('end_date', date);
     if (strategies && strategies.length) params.set('strategies', strategies.join(','));
-    const resp = await fetch('/api/preview?' + params.toString());
-    const data = await resp.json();
+    const data = await apiFetch('/api/preview?' + params.toString());
     if (requestId !== previewRequestId) return;
     if (!data.success) {
       box.innerHTML = `<div class="fp-title">⚡ 快速预览</div><div class="muted" style="margin-top:4px;">${escapeHtml(data.message || '预览暂不可用')}，深度分析继续。</div>`;
@@ -1868,10 +1843,9 @@ async function startAnalysis() {
     strategies,
   };
   try {
-    const resp = await fetch('/api/analyze', {
+    const result = await apiFetch('/api/analyze', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
-    const result = await resp.json();
     if (!result.success) {
       state.running = false;
       setRunningUI(false);
@@ -1891,8 +1865,7 @@ async function stopAnalysis() {
   $('stopBtn').disabled = true;
   $('stopBtn').textContent = '停止中…';
   try {
-    const resp = await fetch('/api/stop', { method: 'POST' });
-    const result = await resp.json();
+    const result = await apiFetch('/api/stop', { method: 'POST' });
     if (!result.success) { $('stopBtn').disabled = false; $('stopBtn').textContent = '停止'; }
   } catch (e) {
     $('stopBtn').disabled = false; $('stopBtn').textContent = '停止';
@@ -2138,8 +2111,7 @@ async function searchCompanySuggest() {
   const box = $('companySuggest');
   if (!box || !q) { if (box) box.classList.remove('show'); return; }
   try {
-    const resp = await fetch('/api/market/stock-search?q=' + encodeURIComponent(q) + '&limit=8');
-    const data = await resp.json();
+    const data = await apiFetch('/api/market/stock-search?q=' + encodeURIComponent(q) + '&limit=8');
     const items = data.items || [];
     if (!items.length) { box.classList.remove('show'); return; }
     box.innerHTML = items.map(item => `
@@ -2182,8 +2154,7 @@ async function loadKline() {
     const endDate = $('date').value;
     const url = `/api/market/kline?ticker=${encodeURIComponent(ticker)}&range=${state.klineRange}`
       + (endDate ? `&end_date=${encodeURIComponent(endDate)}` : '');
-    const resp = await fetch(url);
-    const data = await resp.json();
+    const data = await apiFetch(url);
     if (!data.success || !(data.items || []).length) {
       if (state.klineChartInstance) {
         state.klineChartInstance.dispose();
@@ -2354,8 +2325,7 @@ async function loadCapitalFlow() {
   card.classList.add('show');
   box.innerHTML = '<div class="empty"><div>加载资金流向中…</div></div>';
   try {
-    const resp = await fetch(`/api/market/capital-flow?ticker=${encodeURIComponent(ticker)}&days=60`);
-    const data = await resp.json();
+    const data = await apiFetch(`/api/market/capital-flow?ticker=${encodeURIComponent(ticker)}&days=60`);
     if (!data.success || !(data.items || []).length) {
       box.innerHTML = `<div class="empty"><div>${escapeHtml(data.message || '暂无资金流向数据')}</div></div>`;
       return;
@@ -2395,8 +2365,7 @@ async function loadMarketReview() {
   $('marketReviewBody').innerHTML = '';
   try {
     const date = $('date') ? $('date').value : '';
-    const resp = await fetch('/api/market/review' + (date ? '?date=' + encodeURIComponent(date) : ''));
-    const data = await resp.json();
+    const data = await apiFetch('/api/market/review' + (date ? '?date=' + encodeURIComponent(date) : ''));
     if (!data.success) throw new Error(data.message || '复盘加载失败');
     state.lastMarketReview = data;
     renderMarketReview(data);
@@ -2496,12 +2465,11 @@ async function notifyMarketReview() {
   $('marketReviewSummary').innerHTML = '<span class="muted">生成并推送复盘中…</span>';
   try {
     const date = $('date') ? $('date').value : '';
-    const resp = await fetch('/api/market/review/notify', {
+    const data = await apiFetch('/api/market/review/notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: date || null }),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '复盘推送失败');
     state.lastMarketReview = data;
     renderMarketReview(data);
@@ -2519,8 +2487,7 @@ async function loadSectorNames() {
   const select = $('sectorHistoryName');
   if (!select || select.dataset.loaded === '1') return;
   try {
-    const resp = await fetch('/api/market/sectors');
-    const data = await resp.json();
+    const data = await apiFetch('/api/market/sectors');
     if (!data.success) throw new Error(data.message || '行业列表加载失败');
     const items = data.items || [];
     select.innerHTML = items.map(item =>
@@ -2539,8 +2506,7 @@ async function loadSectorHistory() {
   $('sectorHistoryStatus').textContent = '查询中…';
   $('sectorHistoryStats').innerHTML = '';
   try {
-    const resp = await fetch('/api/market/sector-history?name=' + encodeURIComponent(name) + '&days=60');
-    const data = await resp.json();
+    const data = await apiFetch('/api/market/sector-history?name=' + encodeURIComponent(name) + '&days=60');
     if (!data.success) throw new Error(data.message || '查询失败');
     renderSectorHistory(data);
   } catch (e) {
@@ -2603,8 +2569,7 @@ async function loadHotStocks() {
   $('hotStocksSummary').innerHTML = '<span class="muted">加载涨停池中…</span>';
   $('hotStocksTable').innerHTML = '';
   try {
-    const resp = await fetch('/api/market/hot-stocks?limit=30');
-    const data = await resp.json();
+    const data = await apiFetch('/api/market/hot-stocks?limit=30');
     if (!data.success) throw new Error(data.message || '加载失败');
     renderHotStocks(data);
   } catch (e) {
@@ -2645,8 +2610,7 @@ async function loadDailyBriefing() {
   $('dailyBriefingBody').innerHTML = '';
   try {
     const date = $('date') ? $('date').value : '';
-    const resp = await fetch('/api/daily-briefing' + (date ? '?date=' + encodeURIComponent(date) : ''));
-    const data = await resp.json();
+    const data = await apiFetch('/api/daily-briefing' + (date ? '?date=' + encodeURIComponent(date) : ''));
     if (!data.success) throw new Error(data.message || '简报生成失败');
     state.lastDailyBriefing = data;
     renderDailyBriefing(data);
@@ -2683,12 +2647,11 @@ async function archiveDailyBriefing() {
   $('dailyBriefingSummary').innerHTML = '<span class="muted">生成并归档简报中…</span>';
   try {
     const date = $('date') ? $('date').value : '';
-    const resp = await fetch('/api/daily-briefing/archive', {
+    const data = await apiFetch('/api/daily-briefing/archive', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: date || null }),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '简报归档失败');
     state.lastDailyBriefing = data;
     renderDailyBriefing(data);
@@ -2704,12 +2667,11 @@ async function notifyDailyBriefing() {
   $('dailyBriefingSummary').innerHTML = '<span class="muted">生成并推送简报中…</span>';
   try {
     const date = $('date') ? $('date').value : '';
-    const resp = await fetch('/api/daily-briefing/notify', {
+    const data = await apiFetch('/api/daily-briefing/notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ date: date || null }),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '简报推送失败');
     state.lastDailyBriefing = data;
     renderDailyBriefing(data);
@@ -2737,8 +2699,7 @@ async function loadStrategies() {
     if (end) params.set('end_date', end);
     const keys = selectedStrategies();
     if (keys.length) params.set('strategies', keys.join(','));
-    const resp = await fetch('/api/strategies?' + params.toString());
-    const data = await resp.json();
+    const data = await apiFetch('/api/strategies?' + params.toString());
     if (!data.success) throw new Error(data.message || '策略扫描失败');
     renderStrategies(data);
   } catch (e) {
@@ -2798,8 +2759,7 @@ async function loadWatchlistStrategies() {
     const keys = selectedStrategies();
     if (keys.length) params.set('strategies', keys.join(','));
     const qs = params.toString();
-    const resp = await fetch('/api/strategies/watchlist' + (qs ? '?' + qs : ''));
-    const data = await resp.json();
+    const data = await apiFetch('/api/strategies/watchlist' + (qs ? '?' + qs : ''));
     if (!data.success) throw new Error(data.message || '批量扫描失败');
     renderWatchlistStrategies(data.items || []);
   } catch (e) {
@@ -2850,8 +2810,7 @@ async function loadWatchlistAlerts() {
     if (end) params.set('end_date', end);
     const keys = selectedStrategies();
     if (keys.length) params.set('strategies', keys.join(','));
-    const resp = await fetch('/api/strategy-alerts?' + params.toString());
-    const data = await resp.json();
+    const data = await apiFetch('/api/strategy-alerts?' + params.toString());
     if (!data.success) throw new Error(data.message || '预警扫描失败');
     state.lastAlerts = data;
     renderWatchlistAlerts(data);
@@ -2912,12 +2871,11 @@ async function notifyWatchlistAlerts() {
     if (end) body.end_date = end;
     const keys = selectedStrategies();
     if (keys.length) body.strategies = keys;
-    const resp = await fetch('/api/strategy-alerts/notify', {
+    const data = await apiFetch('/api/strategy-alerts/notify', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '推送失败');
     state.lastAlerts = data;
     renderWatchlistAlerts(data);
@@ -2947,8 +2905,7 @@ async function loadStrategyBacktest() {
     if (end) params.set('end_date', end);
     const keys = selectedStrategies();
     if (keys.length) params.set('strategies', keys.join(','));
-    const resp = await fetch('/api/strategy-backtest?' + params.toString());
-    const data = await resp.json();
+    const data = await apiFetch('/api/strategy-backtest?' + params.toString());
     if (!data.success) throw new Error(data.message || '回测失败');
     renderStrategyBacktest(data);
   } catch (e) {
@@ -3055,11 +3012,10 @@ async function runBacktestQuick() {
   const end = new Date(), start = new Date();
   start.setFullYear(start.getFullYear() - 2);
   try {
-    const resp = await fetch('/api/backtest', {
+    const data = await apiFetch('/api/backtest', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticker, start_date: localDateStr(start), end_date: localDateStr(end), strategy: 'ma_cross', fast: 5, slow: 20 }),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '回测失败');
     renderBacktest(data.result);
   } catch (e) {
@@ -3106,8 +3062,7 @@ async function parseIntent() {
   btn.disabled = true;
   btn.textContent = '解析中…';
   try {
-    const resp = await fetch('/api/intent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
-    const data = await resp.json();
+    const data = await apiFetch('/api/intent', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query }) });
     const intent = data.intent || {};
     if (intent.ticker) {
       $('company').value = intent.ticker;
@@ -3132,8 +3087,7 @@ async function parseIntent() {
 async function loadWatchlist() {
   const box = $('watchList');
   try {
-    const resp = await fetch('/api/watchlist');
-    const data = await resp.json();
+    const data = await apiFetch('/api/watchlist');
     const items = data.items || [];
     if (!items.length) { box.innerHTML = '<span class="muted">暂无自选股</span>'; return; }
     box.innerHTML = items.map(item => `
@@ -3147,20 +3101,19 @@ function pickWatch(ticker) { $('company').value = ticker; showToast('已填入 '
 async function addWatch() {
   const ticker = $('watchTicker').value.trim();
   if (!ticker) return;
-  await fetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticker }) });
+  await apiFetch('/api/watchlist', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ticker }) });
   $('watchTicker').value = '';
   loadWatchlist();
 }
 async function removeWatch(ticker) {
-  await fetch('/api/watchlist/' + encodeURIComponent(ticker), { method: 'DELETE' });
+  await apiFetch('/api/watchlist/' + encodeURIComponent(ticker), { method: 'DELETE' });
   loadWatchlist();
 }
 
 /* ================= 报告中心 ================= */
 async function loadReports() {
   try {
-    const resp = await fetch('/api/reports?limit=200');
-    const data = await resp.json();
+    const data = await apiFetch('/api/reports?limit=200');
     state.reports = data.reports || [];
     const today = localDateStr();
     const total = state.reports.length;
@@ -3179,8 +3132,7 @@ async function loadReports() {
 }
 async function loadBriefings() {
   try {
-    const resp = await fetch('/api/briefings?limit=50');
-    const data = await resp.json();
+    const data = await apiFetch('/api/briefings?limit=50');
     if (!data.success) throw new Error(data.message || '简报加载失败');
     state.briefings = data.items || [];
     renderBriefingsTable();
@@ -3207,8 +3159,7 @@ function renderBriefingsTable() {
 }
 async function openBriefing(id) {
   try {
-    const resp = await fetch(`/api/briefings/${id}`);
-    const data = await resp.json();
+    const data = await apiFetch(`/api/briefings/${id}`);
     if (!data.success) throw new Error(data.message || '简报不存在');
     const b = data.briefing;
     $('modalTitle').textContent = `每日简报 · ${b.briefing_date || b.as_of || ''}`;
@@ -3218,7 +3169,7 @@ async function openBriefing(id) {
 }
 async function deleteBriefing(id) {
   if (!confirm('确定删除这条简报？')) return;
-  await fetch(`/api/briefings/${id}`, { method: 'DELETE' });
+  await apiFetch(`/api/briefings/${id}`, { method: 'DELETE' });
   loadBriefings();
 }
 function renderReportsTable() {
@@ -3243,8 +3194,7 @@ function renderReportsTable() {
 }
 async function openReport(id) {
   try {
-    const resp = await fetch(`/api/reports/${id}`);
-    const data = await resp.json();
+    const data = await apiFetch(`/api/reports/${id}`);
     if (!data.success) throw new Error(data.message || '报告不存在');
     const r = data.report;
     $('modalTitle').textContent = `${r.ticker} · ${r.trade_date}`;
@@ -3267,16 +3217,40 @@ async function openReport(id) {
 }
 async function deleteReport(id) {
   if (!confirm('确定删除这条报告？')) return;
-  await fetch(`/api/reports/${id}`, { method: 'DELETE' });
+  await apiFetch(`/api/reports/${id}`, { method: 'DELETE' });
   loadReports();
 }
 function closeModal() { $('modal').classList.remove('show'); }
 
+/* 访问密钥：仅保存在本机 localStorage，不上传服务器 */
+function saveApiKey() {
+  const input = $('apiKeyInput');
+  const value = (input.value || '').trim();
+  window.Core.setApiKey(value);
+  showToast(value ? '访问密钥已保存到本机' : '访问密钥已清除', 'ok');
+  // 重新建立 WebSocket，让鉴权立即生效
+  if (state.ws) { try { state.ws.close(); } catch (e) { /* ignore */ } }
+  connectWS();
+}
+function clearApiKey() {
+  window.Core.setApiKey('');
+  $('apiKeyInput').value = '';
+  showToast('访问密钥已清除', 'ok');
+  if (state.ws) { try { state.ws.close(); } catch (e) { /* ignore */ } }
+  connectWS();
+}
+
 /* ================= 设置 ================= */
 async function loadSettings() {
   try {
-    const resp = await fetch('/api/settings/status');
-    const data = await resp.json();
+    // 回填本机已保存的访问密钥（不回显明文，只提示是否已设置）
+    const savedKey = window.Core.getApiKey();
+    const keyInput = $('apiKeyInput');
+    if (keyInput && !keyInput.value) {
+      keyInput.value = savedKey;
+      keyInput.placeholder = savedKey ? '已保存（留空则不修改）' : '后端设置了 WEBUI_API_KEY 时填写';
+    }
+    const data = await apiFetch('/api/settings/status');
     const labels = { anthropic: 'Anthropic / MiniMax', openai: 'OpenAI', google: 'Google Gemini', xai: 'xAI', openrouter: 'OpenRouter', ollama: 'Ollama（本地）' };
     const envs = { anthropic: 'ANTHROPIC_API_KEY / MINIMAX_API_KEY', openai: 'OPENAI_API_KEY', google: 'GOOGLE_API_KEY', xai: 'XAI_API_KEY', openrouter: 'OPENROUTER_API_KEY', ollama: '无需密钥' };
     const providerCards = (data.providers || []).map(p => `
@@ -3297,8 +3271,7 @@ async function loadSettings() {
     $('providerGrid').innerHTML = `<div class="note">设置加载失败: ${escapeHtml(String(e))}</div>`;
   }
   try {
-    const resp = await fetch('/api/config/defaults');
-    const d = await resp.json();
+    const d = await apiFetch('/api/config/defaults');
     $('modelDefaults').innerHTML = `
       <div class="hero-chips" style="margin:0;">
         <span class="hero-chip">提供商：${escapeHtml(d.llm_provider || '-')}</span>
@@ -3312,8 +3285,7 @@ async function loadSettings() {
     $('modelDefaults').textContent = '默认配置读取失败';
   }
   try {
-    const resp = await fetch('/api/scheduler/status');
-    const s = await resp.json();
+    const s = await apiFetch('/api/scheduler/status');
     $('schedulerInfo').innerHTML = `启用：<b>${escapeHtml(String(s.enabled))}</b> · 时间：<b>${escapeHtml(s.time || '')}</b> · 环境股票：<b>${escapeHtml(s.stocks || '未配置')}</b>`;
   } catch (e) {
     $('schedulerInfo').textContent = '定时任务状态读取失败';
@@ -3333,8 +3305,7 @@ async function loadScheduledJobs() {
   const box = $('scheduledList');
   if (!box) return;
   try {
-    const resp = await fetch('/api/scheduled');
-    const data = await resp.json();
+    const data = await apiFetch('/api/scheduled');
     const items = data.items || [];
     if (!items.length) {
       box.innerHTML = '<span class="muted">暂无定时分析任务</span>';
@@ -3363,12 +3334,11 @@ async function addScheduledJob() {
   const time = $('scheduledTime').value.trim() || '18:00';
   if (!ticker) { showToast('请填写股票代码', 'err'); return; }
   try {
-    const resp = await fetch('/api/scheduled', {
+    const data = await apiFetch('/api/scheduled', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ticker, schedule_time: time }),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '添加失败');
     $('scheduledTicker').value = '';
     loadScheduledJobs();
@@ -3379,12 +3349,11 @@ async function addScheduledJob() {
 }
 async function toggleScheduledJob(id, enabled) {
   try {
-    const resp = await fetch(`/api/scheduled/${id}`, {
+    const data = await apiFetch(`/api/scheduled/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ enabled }),
     });
-    const data = await resp.json();
     if (!data.success) throw new Error(data.message || '更新失败');
     loadScheduledJobs();
   } catch (e) {
@@ -3394,8 +3363,7 @@ async function toggleScheduledJob(id, enabled) {
 async function deleteScheduledJob(id) {
   if (!confirm('确定删除这个定时分析任务？')) return;
   try {
-    const resp = await fetch(`/api/scheduled/${id}`, { method: 'DELETE' });
-    const data = await resp.json();
+    const data = await apiFetch(`/api/scheduled/${id}`, { method: 'DELETE' });
     if (!data.success) throw new Error(data.message || '删除失败');
     loadScheduledJobs();
   } catch (e) {
@@ -3406,8 +3374,7 @@ async function deleteScheduledJob(id) {
 /* ================= 初始化 ================= */
 async function loadPresets() {
   try {
-    const resp = await fetch('/api/pipeline/presets');
-    const data = await resp.json();
+    const data = await apiFetch('/api/pipeline/presets');
     state.presets = data.presets || {};
   } catch (e) { /* 使用内置回退 */ }
 }
@@ -3434,6 +3401,22 @@ function setupScrollListener() {
     if (e.key !== 'Escape') return;
     if ($('modal').classList.contains('show')) closeModal();
     if ($('klineCard').classList.contains('fullscreen')) toggleChartFullscreen();
+  });
+  // 弹窗焦点管理：打开时把焦点移入弹窗，关闭时归还给触发元素，
+  // 并在弹窗内循环 Tab，避免键盘用户 Tab 到背景内容。
+  $('modal').addEventListener('keydown', e => {
+    if (e.key !== 'Tab') return;
+    const focusables = $('modal').querySelectorAll(
+      'a[href], button:not([disabled]), input:not([disabled]), textarea, select, [tabindex]:not([tabindex="-1"])'
+    );
+    if (!focusables.length) return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey && document.activeElement === first) {
+      e.preventDefault(); last.focus();
+    } else if (!e.shiftKey && document.activeElement === last) {
+      e.preventDefault(); first.focus();
+    }
   });
   await loadPresets();
   await loadDefaults();

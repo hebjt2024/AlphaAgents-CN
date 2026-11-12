@@ -258,6 +258,11 @@ from cli.stats_handler import StatsCallbackHandler
 # 注意：这里的 * 导入会导入 utils.py 中定义的所有非私有名称
 from cli.utils import *
 
+# 显式再导入一次关键函数，避免本文件后续的同名定义（或其它星号导入的
+# 名字）把它们悄悄覆盖掉 —— 之前正是这个覆盖导致 CLI 实际使用了
+# 不做规范化的 get_ticker 版本。
+from cli.utils import get_analysis_date, get_ticker  # noqa: F811
+
 # DEFAULT_CONFIG：默认配置字典
 # 包含 LLM 模型、参数、路径等默认设置
 from tradingagents.default_config import DEFAULT_CONFIG
@@ -1202,15 +1207,17 @@ def get_user_selections():
 
 # =====================================================================
 # 函数：get_ticker()
-# 功能：获取股票代码（备用函数，实际上被 utils.py 中的同名函数覆盖）
-# 返回值：用户输入的股票代码字符串
+# 功能：获取股票代码
+#
+# 修复说明：此前本文件在第 259 行执行 ``from cli.utils import *`` 之后，
+# 又在下方重新定义了同名函数 —— 后定义者会**覆盖**星号导入进来的版本
+# （原注释写的"被 utils.py 中的同名函数覆盖"方向恰好相反）。结果是
+# CLI 实际使用的是下面这个不做任何规范化的 typer.prompt 版本，
+# " 600519 "、"" 这类输入不会被清洗，而 history / view / WebUI 路径
+# 都假设代码已经规范化。
+#
+# 现在直接复用 cli.utils 中的实现（带规范化与非空校验）。
 # =====================================================================
-def get_ticker():
-    """从用户输入获取股票代码"""
-    # typer.prompt() 创建简单的文本输入提示
-    # 第一个参数是提示文本（空字符串表示不显示额外文本）
-    # default 参数：如果用户直接按 Enter，使用此默认值
-    return typer.prompt("", default="SPY")
 
 
 # =====================================================================
@@ -1221,26 +1228,9 @@ def get_ticker():
 # 验证规则：
 #   1. 必须是有效的日期格式
 #   2. 不能是未来的日期（分析历史数据）
+#
+# 同上：原先本文件的同名定义覆盖了 cli.utils 的版本，这里一并复用。
 # =====================================================================
-def get_analysis_date():
-    """获取分析日期（基于 Typer 的非交互式版本）"""
-    while True:  # 无限循环，直到用户输入有效日期
-        date_str = typer.prompt(
-            "", default=datetime.datetime.now().strftime("%Y-%m-%d")
-        )
-        try:
-            # datetime.strptime() 将字符串解析为日期对象
-            analysis_date = datetime.datetime.strptime(date_str, "%Y-%m-%d")
-            # .date() 提取日期部分，忽略时间
-            if analysis_date.date() > datetime.datetime.now().date():
-                console.print("[red]Error: Analysis date cannot be in the future[/red]")
-                continue  # 继续循环，要求重新输入
-            return date_str
-        except ValueError:
-            # 日期格式不正确时抛出 ValueError
-            console.print(
-                "[red]Error: Invalid date format. Please use YYYY-MM-DD[/red]"
-            )
 
 
 # =====================================================================
