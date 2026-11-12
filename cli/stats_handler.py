@@ -103,7 +103,7 @@ import threading
 # Dict 表示字典类型，如 Dict[str, Any] 表示键为字符串、值为任意类型的字典
 # List 表示列表类型，如 List[str] 表示字符串列表
 # Union 表示多个类型中的任意一个，如 Union[str, int] 表示字符串或整数
-from typing import Any, Dict, List, Union
+from typing import Any
 
 # langchain_core.callbacks.BaseCallbackHandler：
 #   LangChain 回调系统的基类，所有自定义回调处理器都需要继承它
@@ -111,12 +111,6 @@ from typing import Any, Dict, List, Union
 #   基类中所有回调方法都是空的（pass），子类按需重写
 #   安装方式：pip install langchain-core
 from langchain_core.callbacks import BaseCallbackHandler
-
-# langchain_core.outputs.LLMResult：
-#   LLM 调用结果的封装类，包含生成的内容和 token 使用信息
-#   结构：LLMResult.generations[选择索引][生成索引].message
-#   通常 generations[0][0] 就是第一个（也是唯一的）生成结果
-from langchain_core.outputs import LLMResult
 
 # langchain_core.messages.AIMessage：
 #   AI 助手消息类，包含 LLM 的回复内容和元数据
@@ -127,6 +121,12 @@ from langchain_core.outputs import LLMResult
 #     - AIMessage：AI 助手的回复
 #     - ToolMessage：工具执行后返回的结果
 from langchain_core.messages import AIMessage
+
+# langchain_core.outputs.LLMResult：
+#   LLM 调用结果的封装类，包含生成的内容和 token 使用信息
+#   结构：LLMResult.generations[选择索引][生成索引].message
+#   通常 generations[0][0] 就是第一个（也是唯一的）生成结果
+from langchain_core.outputs import LLMResult
 
 
 # =====================================================================
@@ -232,8 +232,8 @@ class StatsCallbackHandler(BaseCallbackHandler):
     # ==================================================================
     def on_llm_start(
         self,
-        serialized: Dict[str, Any],
-        prompts: List[str],
+        serialized: dict[str, Any],
+        prompts: list[str],
         **kwargs: Any,
     ) -> None:
         """当 LLM 开始时，增加 LLM 调用计数器"""
@@ -272,8 +272,8 @@ class StatsCallbackHandler(BaseCallbackHandler):
     # ==================================================================
     def on_chat_model_start(
         self,
-        serialized: Dict[str, Any],
-        messages: List[List[Any]],
+        serialized: dict[str, Any],
+        messages: list[list[Any]],
         **kwargs: Any,
     ) -> None:
         """当聊天模型开始时，增加 LLM 调用计数器"""
@@ -376,7 +376,7 @@ class StatsCallbackHandler(BaseCallbackHandler):
     # ==================================================================
     def on_tool_start(
         self,
-        serialized: Dict[str, Any],
+        serialized: dict[str, Any],
         input_str: str,
         **kwargs: Any,
     ) -> None:
@@ -404,7 +404,7 @@ class StatsCallbackHandler(BaseCallbackHandler):
     #   → cli/main.py 的 update_display() 函数将统计信息显示在终端底部
     #   → 显示效果：Agents: 3/10 | LLM: 15 | Tools: 8 | Tokens: 12.0k↑ 3.5k↓ | ⏱ 02:35
     # ==================================================================
-    def get_stats(self) -> Dict[str, Any]:
+    def get_stats(self) -> dict[str, Any]:
         """返回当前统计数据"""
         with self._lock:
             return {

@@ -61,7 +61,6 @@ from enum import Enum
 # 类型注解是 Python 3.5+ 的特性，不会影响运行时行为，但能提高代码可读性
 # List 表示列表类型，Optional 表示可选值（可以是 None），Dict 表示字典类型
 # 示例：def foo(items: List[str]) -> Optional[str]: 表示函数接受字符串列表，返回可选字符串
-from typing import List, Optional, Dict
 
 # pydantic 库：一个数据验证库，BaseModel 是其核心类
 # 使用 Pydantic 可以自动验证数据类型、提供默认值、序列化/反序列化数据
@@ -72,7 +71,6 @@ from typing import List, Optional, Dict
 #       age: int = 0        # 可选字段，默认值为 0
 #   obj = MyModel(name="Alice")  # 自动验证类型
 # 在本文件中声明但未使用，为后续扩展预留（如将来添加 CLI 参数验证模型）
-from pydantic import BaseModel
 
 
 # =====================================================================

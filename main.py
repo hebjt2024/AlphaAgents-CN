@@ -72,13 +72,6 @@
 #   graph → 子包，包含图编排相关代码
 #   trading_graph → 模块文件
 #   TradingAgentsGraph → 类名
-from tradingagents.graph.trading_graph import TradingAgentsGraph
-
-# 导入默认配置字典，包含所有可配置的参数
-# DEFAULT_CONFIG 是一个字典，定义了所有参数的默认值
-# 用户可以复制此字典并修改特定字段来自定义配置
-from tradingagents.default_config import DEFAULT_CONFIG
-
 # python-dotenv 库：用于从 .env 文件中加载环境变量（如 API 密钥等敏感信息）
 # 这样可以避免在代码中硬编码密钥，更安全
 # 安装方式：pip install python-dotenv
@@ -87,6 +80,15 @@ from tradingagents.default_config import DEFAULT_CONFIG
 #   ANTHROPIC_API_KEY=sk-ant-xxxxxxxxxxxx
 #   GOOGLE_API_KEY=AIzaxxxxxxxxxxxx
 from dotenv import load_dotenv
+
+# 先加载 .env，再导入会在导入阶段读取环境变量的 DEFAULT_CONFIG
+from tradingagents import bootstrap as _bootstrap  # noqa: F401
+
+# 导入默认配置字典，包含所有可配置的参数
+# DEFAULT_CONFIG 是一个字典，定义了所有参数的默认值
+# 用户可以复制此字典并修改特定字段来自定义配置
+from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.graph.trading_graph import TradingAgentsGraph
 
 # 加载 .env 文件中的环境变量
 # .env 文件通常包含 OPENAI_API_KEY、ANTHROPIC_API_KEY 等敏感信息
@@ -106,13 +108,14 @@ load_dotenv()
 # 如果直接 config = DEFAULT_CONFIG（不 copy），修改 config 会影响 DEFAULT_CONFIG
 config = DEFAULT_CONFIG.copy()
 
-# 设置"深度思考"模型：用于需要复杂推理的任务（如分析报告、策略制定）
-# gpt-5-mini 是 OpenAI 的轻量级模型，速度快、成本低
-# 注意：生产环境建议使用 gpt-5.2 等更强的模型以获得更好的分析质量
-config["deep_think_llm"] = "gpt-5-mini"
-
-# 设置"快速思考"模型：用于简单、快速响应的任务（如数据查询、简单判断）
-config["quick_think_llm"] = "gpt-5-mini"
+# 默认直接使用 DEFAULT_CONFIG 中的 LLM 配置（MiniMax-M3 / MiniMax-M2.5）。
+# 如需改用其他提供商，请同时修改 llm_provider、backend_url、deep_think_llm、
+# quick_think_llm 四项，避免出现“模型名与 API 地址不匹配”的错误。
+# 例如使用 OpenAI：
+#   config["llm_provider"] = "openai"
+#   config["backend_url"] = "https://api.openai.com/v1"
+#   config["deep_think_llm"] = "gpt-5-mini"
+#   config["quick_think_llm"] = "gpt-5-mini"
 
 # 设置辩论轮数：多空双方研究员辩论的最大轮次
 # 设为 1 表示只进行一轮辩论，值越大辩论越充分但耗时越长

@@ -153,11 +153,18 @@
 
 # typing 模块：Python 标准库，提供类型注解
 # Optional 表示值可以是 None，常用于可选参数
-from typing import Optional
-
 # datetime 模块：Python 标准库，处理日期和时间
 # 用于记录时间戳、生成文件名、日期比较等
 import datetime
+
+# functools 模块：Python 标准库，提供高阶函数工具
+# wraps 装饰器：用于创建装饰器时保留原函数的元数据（函数名、文档字符串等）
+from functools import wraps
+
+# pathlib 模块：Python 标准库，面向对象的文件路径操作
+# Path 类提供了跨平台的文件路径操作方法
+# 比传统的 os.path 更直观、更易读
+from pathlib import Path
 
 # typer 库：现代化的 CLI 框架
 # 安装方式：pip install typer
@@ -167,25 +174,16 @@ import datetime
 #   - 支持子命令（类似 git 的 commit、push 等）
 import typer
 
-# pathlib 模块：Python 标准库，面向对象的文件路径操作
-# Path 类提供了跨平台的文件路径操作方法
-# 比传统的 os.path 更直观、更易读
-from pathlib import Path
-
-# functools 模块：Python 标准库，提供高阶函数工具
-# wraps 装饰器：用于创建装饰器时保留原函数的元数据（函数名、文档字符串等）
-from functools import wraps
-
-# rich.console.Console：Rich 库的核心输出类
-# 所有终端输出（文本、表格、面板等）都通过 Console 实例进行
-from rich.console import Console
-
 # dotenv 库：从 .env 文件加载环境变量
 # 安装方式：pip install python-dotenv
 # load_dotenv() 会读取项目根目录下的 .env 文件，
 # 将其中的键值对加载到操作系统的环境变量中（os.environ）
 # 常用于存储 API 密钥等敏感配置，避免硬编码
 from dotenv import load_dotenv
+
+# rich.console.Console：Rich 库的核心输出类
+# 所有终端输出（文本、表格、面板等）都通过 Console 实例进行
+from rich.console import Console
 
 # 在导入其他模块之前加载环境变量
 # 这样后续模块中 os.getenv() 调用就能读取到 .env 中的配置
@@ -195,51 +193,15 @@ load_dotenv()
 
 # Panel：面板组件，将内容包裹在带边框的框中
 # 可以设置标题、边框颜色、内边距等
-from rich.panel import Panel
-
-# Spinner：旋转动画组件，用于显示"正在加载"效果
-# 支持多种动画风格（dots、line、bouncingBar 等）
-from rich.spinner import Spinner
-
-# Live：实时更新组件，是 Rich 实现动态终端 UI 的核心
-# 它会创建一个可自动刷新的上下文，在上下文内更新布局即可实时显示
-# 类似于游戏引擎的渲染循环概念
-from rich.live import Live
-
-# Columns：多列布局组件，将内容排列成多列
-from rich.columns import Columns
-
-# Markdown：Markdown 渲染组件
-# 将 Markdown 格式文本渲染为终端中的富文本
-# 支持标题、列表、代码块、粗体、斜体等
-from rich.markdown import Markdown
-
-# Layout：布局组件，是 Rich 终端 UI 布局系统的核心
-# 支持将终端划分为多个区域（类似 HTML 的 div 布局）
-# 支持 split_column（垂直分割）和 split_row（水平分割）
-# 每个子布局可以设置 size（固定大小）或 ratio（比例）
-from rich.layout import Layout
-
-# Text：富文本组件，支持样式化的文本
-# 可以设置颜色、粗体、斜体等属性
-from rich.text import Text
-
-# Table：表格组件，用于显示结构化数据
-# 支持表头、列样式、边框样式等
-from rich.table import Table
+# time 模块：Python 标准库，提供时间相关函数
+# time.time() 返回当前时间戳（秒），用于计算耗时
+import time
 
 # deque：双端队列，Python 标准库 collections 中的数据结构
 # 支持从两端高效地添加和删除元素
 # 可以设置 maxlen（最大长度），超过后自动从另一端删除旧数据
 # 非常适合实现消息历史缓冲区
 from collections import deque
-
-# time 模块：Python 标准库，提供时间相关函数
-# time.time() 返回当前时间戳（秒），用于计算耗时
-import time
-
-# Tree：树形组件，用于显示层级结构数据
-from rich.tree import Tree
 
 # box：边框样式模块，提供多种表格边框风格
 # 如 SIMPLE_HEAD、MINIMAL、ROUNDED 等
@@ -249,34 +211,62 @@ from rich import box
 # 支持 left、center、right
 from rich.align import Align
 
+# Columns：多列布局组件，将内容排列成多列
+# Layout：布局组件，是 Rich 终端 UI 布局系统的核心
+# 支持将终端划分为多个区域（类似 HTML 的 div 布局）
+# 支持 split_column（垂直分割）和 split_row（水平分割）
+# 每个子布局可以设置 size（固定大小）或 ratio（比例）
+from rich.layout import Layout
+
+# Live：实时更新组件，是 Rich 实现动态终端 UI 的核心
+# 它会创建一个可自动刷新的上下文，在上下文内更新布局即可实时显示
+# 类似于游戏引擎的渲染循环概念
+from rich.live import Live
+
+# Markdown：Markdown 渲染组件
+# 将 Markdown 格式文本渲染为终端中的富文本
+# 支持标题、列表、代码块、粗体、斜体等
+from rich.markdown import Markdown
+from rich.panel import Panel
+
 # Rule：水平分割线组件
 # 用于在终端中显示一条横线，可以带标题
 from rich.rule import Rule
 
-# 从项目内部模块导入：
+# Spinner：旋转动画组件，用于显示"正在加载"效果
+# 支持多种动画风格（dots、line、bouncingBar 等）
+from rich.spinner import Spinner
 
-# TradingAgentsGraph：交易分析图，是整个分析引擎的核心
-# 它基于 LangGraph 构建，定义了 Agent 之间的协作流程
-# 包含分析师、研究团队、交易员、风险管理、投资组合管理等角色
-from tradingagents.graph.trading_graph import TradingAgentsGraph
+# Table：表格组件，用于显示结构化数据
+# 支持表头、列样式、边框样式等
+from rich.table import Table
 
-# DEFAULT_CONFIG：默认配置字典
-# 包含 LLM 模型、参数、路径等默认设置
-from tradingagents.default_config import DEFAULT_CONFIG
+# Text：富文本组件，支持样式化的文本
+# 可以设置颜色、粗体、斜体等属性
+from rich.text import Text
+
+# Tree：树形组件，用于显示层级结构数据
+# 公告系统：获取和显示公告
+from cli.announcements import display_announcements, fetch_announcements
 
 # AnalystType：分析师类型枚举（market、social、news、fundamentals）
-from cli.models import AnalystType
+# 统计回调处理器：跟踪 LLM 调用和 token 使用统计
+from cli.stats_handler import StatsCallbackHandler
 
 # 从 cli/utils.py 导入所有公共函数
 # 包括交互式问答函数（get_ticker、select_analysts 等）
 # 注意：这里的 * 导入会导入 utils.py 中定义的所有非私有名称
 from cli.utils import *
 
-# 公告系统：获取和显示公告
-from cli.announcements import fetch_announcements, display_announcements
+# DEFAULT_CONFIG：默认配置字典
+# 包含 LLM 模型、参数、路径等默认设置
+from tradingagents.default_config import DEFAULT_CONFIG
 
-# 统计回调处理器：跟踪 LLM 调用和 token 使用统计
-from cli.stats_handler import StatsCallbackHandler
+# 从项目内部模块导入：
+# TradingAgentsGraph：交易分析图，是整个分析引擎的核心
+# 它基于 LangGraph 构建，定义了 Agent 之间的协作流程
+# 包含分析师、研究团队、交易员、风险管理、投资组合管理等角色
+from tradingagents.graph.trading_graph import TradingAgentsGraph
 
 # 创建全局 Console 实例
 # Console 是 Rich 库的核心输出对象
@@ -1024,7 +1014,7 @@ def get_user_selections():
     # Path(__file__).parent 获取当前文件所在目录
     # / "static" / "welcome.txt" 拼接路径
     # with open() as f: 使用上下文管理器安全打开文件
-    with open(Path(__file__).parent / "static" / "welcome.txt", "r") as f:
+    with open(Path(__file__).parent / "static" / "welcome.txt") as f:
         welcome_ascii = f.read()
 
     # 构建欢迎内容
@@ -1092,6 +1082,29 @@ def get_user_selections():
         )
     )
     analysis_date = get_analysis_date()
+
+    # A 股交易日校验：周末 / 节假日自动回退到最近交易日，避免取不到行情。
+    # 非 A 股标的（如美股 NVDA）不做限制，保持原有行为。
+    try:
+        from tradingagents.dataflows.trade_calendar import (
+            validate_analysis_date,
+        )
+
+        ok, msg, adjusted = validate_analysis_date(
+            selected_ticker, analysis_date
+        )
+        if not ok:
+            if adjusted and adjusted != analysis_date:
+                console.print(f"[yellow]{msg}[/yellow]")
+                console.print(
+                    f"[yellow]已自动改用最近交易日 {adjusted}[/yellow]"
+                )
+                analysis_date = adjusted
+            else:
+                console.print(f"[red]{msg}[/red]")
+    except Exception:
+        # 交易日历不可用时不影响主流程
+        pass
 
     # ------------------------------------------------------------------
     # 步骤 3：选择分析师
@@ -1408,7 +1421,7 @@ def parse_final_decision(decision_text: str) -> dict:
         r"[低高]配[（(].+[)）]", r"持有", r"买入", r"卖出",
         r"Underweight", r"Overweight", r"Hold", r"Buy", r"Sell",
     ]
-    for i, line in enumerate(lines):
+    for _i, line in enumerate(lines):
         for pat in rating_patterns:
             if re.search(pat, line, re.IGNORECASE):
                 # 清理 markdown 标记
@@ -1495,7 +1508,6 @@ def sanitize_for_console(text: str) -> str:
 # =====================================================================
 def display_summary_report(record: dict, ticker: str, date: str):
     """以摘要优先模式展示分析结果"""
-    import re
 
     company = record.get("company_of_interest", ticker)
     final_decision = record.get("final_trade_decision", "")
@@ -1853,6 +1865,15 @@ def classify_message_type(message) -> tuple[str, str | None]:
         return ("User", content)
 
     if isinstance(message, ToolMessage):
+        # 模拟数据必须醒目区分，避免用户把伪造行情当成真实数据
+        if content and (
+            "[SIMULATED DATA]" in content
+            or "simulated data for testing" in content
+            or "(generated)" in content
+            or "(cached)" in content
+            or "Cached indicator data" in content
+        ):
+            return ("Simulated", content)
         return ("Data", content)
 
     if isinstance(message, AIMessage):
@@ -1925,6 +1946,23 @@ def run_analysis():
     # ==================================================================
     selections = get_user_selections()
 
+    # 校验分析日期：A 股非交易日（周末/节假日）给出提示并允许自动调整
+    try:
+        from tradingagents.dataflows.trade_calendar import validate_analysis_date
+
+        date_ok, date_msg, adjusted_date = validate_analysis_date(
+            selections["ticker"], selections["analysis_date"]
+        )
+        if not date_ok:
+            console.print(f"[yellow]Warning: {date_msg}[/yellow]")
+            if adjusted_date and typer.confirm(
+                f"是否改用最近的交易日 {adjusted_date}？", default=True
+            ):
+                selections["analysis_date"] = adjusted_date
+    except Exception:
+        # 交易日历不可用时不影响主流程
+        pass
+
     # ==================================================================
     # 步骤 2：创建配置字典
     # ==================================================================
@@ -1966,12 +2004,20 @@ def run_analysis():
     #   config：配置字典
     #   debug：是否启用调试模式
     #   callbacks：回调处理器列表，用于跟踪 LLM 和工具调用
-    graph = TradingAgentsGraph(
-        selected_analyst_keys,
-        config=config,
-        debug=True,
-        callbacks=[stats_handler],
-    )
+    try:
+        graph = TradingAgentsGraph(
+            selected_analyst_keys,
+            config=config,
+            debug=True,
+            callbacks=[stats_handler],
+        )
+    except RuntimeError as exc:
+        # 缺少 API Key 等配置错误：给出可操作提示，而不是打印长 traceback
+        console.print(f"\n[red]{exc}[/red]")
+        console.print(
+            "[yellow]请编辑项目根目录的 .env 并重启程序后重试。[/yellow]"
+        )
+        return
 
     # ==================================================================
     # 步骤 5：初始化消息缓冲区
@@ -2089,7 +2135,7 @@ def run_analysis():
     # Live 上下文管理器：创建自动刷新的终端 UI
     # refresh_per_second=4：每秒刷新 4 次（终端刷新率）
     # 在 Live 上下文中，对 layout 的修改会自动反映到终端
-    with Live(layout, refresh_per_second=4) as live:
+    with Live(layout, refresh_per_second=4):
         # 初始显示
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
@@ -2275,6 +2321,39 @@ def run_analysis():
 
         update_display(layout, stats_handler=stats_handler, start_time=start_time)
 
+    # 持久化到本地 SQLite，供 `history` / `view` 和 WebUI 报告中心使用
+    try:
+        from tradingagents.storage import save_report
+
+        report_id = save_report(
+            ticker=selections["ticker"],
+            trade_date=selections["analysis_date"],
+            decision=decision,
+            decision_text=final_state.get("final_trade_decision", ""),
+            reports={
+                "market_report": final_state.get("market_report", ""),
+                "sentiment_report": final_state.get("sentiment_report", ""),
+                "news_report": final_state.get("news_report", ""),
+                "fundamentals_report": final_state.get("fundamentals_report", ""),
+                "investment_plan": final_state.get("investment_plan", ""),
+                "trader_investment_plan": final_state.get(
+                    "trader_investment_plan", ""
+                ),
+                "final_trade_decision": final_state.get(
+                    "final_trade_decision", ""
+                ),
+            },
+            source="cli",
+            meta={
+                "llm_provider": selections.get("llm_provider"),
+                "deep_think_llm": selections.get("deep_thinker"),
+                "quick_think_llm": selections.get("shallow_thinker"),
+            },
+        )
+        console.print(f"[dim]报告已保存到本地数据库 (id={report_id})[/dim]")
+    except Exception as exc:
+        console.print(f"[yellow]报告持久化失败: {exc}[/yellow]")
+
     # ==================================================================
     # 步骤 11：分析后交互（在 Live 上下文之外）
     # ==================================================================
@@ -2310,7 +2389,7 @@ def run_analysis():
 
 @app.command()
 def history(
-    ticker: Optional[str] = typer.Argument(None, help="股票代码，不指定则显示所有记录"),
+    ticker: str | None = typer.Argument(None, help="股票代码，不指定则显示所有记录"),
 ):
     """
     查看分析历史记录
@@ -2320,6 +2399,38 @@ def history(
       tradingagents history 海南橡胶   # 显示海南橡胶的历史记录
       tradingagents history 601118    # 显示601118的历史记录
     """
+    # 优先读取 SQLite 报告中心（CLI 与 WebUI 共用）
+    try:
+        from tradingagents.storage import list_reports
+
+        db_reports = list_reports(ticker=ticker, limit=200)
+        if db_reports:
+            table = Table(title="分析历史记录（数据库）", box=box.ROUNDED)
+            table.add_column("ID", style="dim", width=6)
+            table.add_column("股票", style="cyan", no_wrap=True)
+            table.add_column("日期", style="green")
+            table.add_column("决策", style="yellow")
+            table.add_column("来源", style="magenta")
+            table.add_column("创建时间", style="dim")
+            for item in db_reports:
+                table.add_row(
+                    str(item["id"]),
+                    item["ticker"],
+                    item["trade_date"],
+                    item["decision"] or "未知",
+                    item.get("source", ""),
+                    item.get("created_at", ""),
+                )
+            console.print(table)
+            console.print(
+                f"\n[dim]共 {len(db_reports)} 条记录，使用 "
+                "tradingagents view <股票> <日期> 查看详情[/dim]"
+            )
+            return
+    except Exception:
+        # 数据库不可用时回退到旧版 eval_results JSON
+        pass
+
     results_dir = Path("eval_results")
 
     if not results_dir.exists():
@@ -2347,7 +2458,7 @@ def history(
             # 检查文件内容中的代码
             try:
                 import json
-                with open(json_files[0], "r", encoding="utf-8") as f:
+                with open(json_files[0], encoding="utf-8") as f:
                     data = json.load(f)
                 first_key = list(data.keys())[0] if data else None
                 if first_key:
@@ -2360,7 +2471,7 @@ def history(
         for json_file in sorted(log_dir.glob("full_states_log_*.json"), reverse=True):
             try:
                 import json
-                with open(json_file, "r", encoding="utf-8") as f:
+                with open(json_file, encoding="utf-8") as f:
                     data = json.load(f)
 
                 for date_key, record in data.items():
@@ -2420,7 +2531,7 @@ def history(
 @app.command()
 def view(
     ticker: str = typer.Argument(..., help="股票代码或名称"),
-    date: Optional[str] = typer.Argument(None, help="分析日期 (YYYY-MM-DD)，不指定则显示最新"),
+    date: str | None = typer.Argument(None, help="分析日期 (YYYY-MM-DD)，不指定则显示最新"),
 ):
     """
     查看特定股票的分析报告
@@ -2429,8 +2540,50 @@ def view(
       tradingagents view 海南橡胶 2026-07-15
       tradingagents view 601118              # 显示最新报告
     """
+    # 优先读取 SQLite 报告中心
+    try:
+        from tradingagents.storage import list_reports
+
+        db_reports = list_reports(ticker=ticker, limit=200)
+        if not db_reports:
+            # 允许用中文名/代码互相查找
+            all_reports = list_reports(limit=200)
+            db_reports = [
+                r for r in all_reports if ticker in r["ticker"]
+            ]
+        target = None
+        if date:
+            target = next(
+                (r for r in db_reports if r["trade_date"] == date), None
+            )
+        elif db_reports:
+            target = db_reports[0]
+
+        if target:
+            flat = dict(target.get("reports") or {})
+            flat.update(
+                {
+                    "company_of_interest": target["ticker"],
+                    "trade_date": target["trade_date"],
+                    "final_trade_decision": flat.get(
+                        "final_trade_decision", target.get("decision_text", "")
+                    ),
+                }
+            )
+            display_summary_report(flat, target["ticker"], target["trade_date"])
+            console.print(
+                f"\n[dim]数据库记录 id={target['id']}，创建于 {target['created_at']}[/dim]"
+            )
+            return
+    except Exception:
+        pass
+
     results_dir = Path("eval_results")
     stock_dir = results_dir / ticker
+
+    if not results_dir.exists():
+        console.print(f"[red]未找到股票 {ticker} 的分析记录[/red]")
+        return
 
     if not stock_dir.exists():
         # 尝试查找包含该ticker的目录
@@ -2441,9 +2594,9 @@ def view(
                     for json_file in log_dir.glob("full_states_log_*.json"):
                         try:
                             import json
-                            with open(json_file, "r", encoding="utf-8") as f:
+                            with open(json_file, encoding="utf-8") as f:
                                 data = json.load(f)
-                            for k, v in data.items():
+                            for _k, v in data.items():
                                 if ticker in v.get("company_of_interest", ""):
                                     stock_dir = d
                                     break
@@ -2484,7 +2637,7 @@ def view(
 
     try:
         import json
-        with open(target_file, "r", encoding="utf-8") as f:
+        with open(target_file, encoding="utf-8") as f:
             data = json.load(f)
 
         # 获取第一个（也是唯一的）日期记录
@@ -2500,6 +2653,189 @@ def view(
     except Exception as e:
         error_msg = str(e).replace("\u2022", "-").replace("\u2023", "-").replace("\u25cf", "-").replace("\u25cb", "-")
         console.print(f"[red]Failed to read log file: {error_msg}[/red]")
+
+
+@app.command()
+def backtest(
+    ticker: str = typer.Argument(..., help="股票代码或名称，如 600519 / 贵州茅台"),
+    start: str | None = typer.Option(None, "--start", help="开始日期 YYYY-MM-DD，默认两年前"),
+    end: str | None = typer.Option(None, "--end", help="结束日期 YYYY-MM-DD，默认今天"),
+    strategy: str = typer.Option("ma_cross", "--strategy", help="策略：ma_cross 或 buy_hold"),
+    fast: int = typer.Option(5, "--fast", help="快均线周期"),
+    slow: int = typer.Option(20, "--slow", help="慢均线周期"),
+    initial_cash: float = typer.Option(100000.0, "--cash", help="初始资金"),
+):
+    """轻量回测（内置 A 股交易成本：佣金 + 印花税）。
+
+    示例：
+      alphaagents backtest 600519
+      alphaagents backtest 贵州茅台 --start 2023-01-01 --end 2024-12-31
+      alphaagents backtest 000001 --strategy buy_hold
+    """
+    from tradingagents.services.backtest import run_backtest
+
+    end_date = end or datetime.datetime.now().strftime("%Y-%m-%d")
+    if start:
+        start_date = start
+    else:
+        end_dt = datetime.datetime.strptime(end_date, "%Y-%m-%d")
+        start_date = (end_dt - datetime.timedelta(days=730)).strftime("%Y-%m-%d")
+
+    console.print(
+        f"[dim]回测 {ticker}：{start_date} ~ {end_date}，策略 {strategy}[/dim]"
+    )
+    try:
+        result = run_backtest(
+            ticker=ticker,
+            start_date=start_date,
+            end_date=end_date,
+            strategy=strategy,
+            fast=fast,
+            slow=slow,
+            initial_cash=initial_cash,
+        )
+    except Exception as exc:
+        console.print(f"[red]回测失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    table = Table(title=f"{result['ticker']} 回测结果", box=box.ROUNDED)
+    table.add_column("指标", style="cyan")
+    table.add_column("数值", style="green")
+    rows = [
+        ("区间", f"{result['start_date']} ~ {result['end_date']}"),
+        ("策略", result["strategy"]),
+        ("K线数量", str(result["bars"])),
+        ("初始资金", f"{result['initial_cash']:,.0f}"),
+        ("期末权益", f"{result['final_equity']:,.2f}"),
+        ("总收益", f"{result['total_return'] * 100:.2f}%"),
+        ("毛收益(不含成本)", f"{result.get('gross_return', 0) * 100:.2f}%"),
+        ("年化收益", f"{result['annualized_return'] * 100:.2f}%"),
+        ("最大回撤", f"{result['max_drawdown'] * 100:.2f}%"),
+        ("夏普比率", f"{result['sharpe']:.3f}"),
+        ("交易次数", str(result["trade_count"])),
+        ("胜率", f"{result['win_rate'] * 100:.1f}%"),
+    ]
+    for label, value in rows:
+        table.add_row(label, value)
+    console.print(table)
+    console.print(
+        "[dim]已计入佣金与卖出印花税；结果为历史回测，不构成投资建议。[/dim]"
+    )
+
+
+@app.command("strategies")
+def strategy_scan(
+    ticker: str = typer.Argument(..., help="股票代码或名称，如 600519 / 贵州茅台"),
+    date: str | None = typer.Option(None, "--date", help="分析日期 YYYY-MM-DD，默认最新"),
+    strategies: str | None = typer.Option(
+        None, "--strategies", help="逗号分隔的策略 key，如 bull_trend,volume_breakout"
+    ),
+    run_all: bool = typer.Option(False, "--all", help="运行全部 15 个策略"),
+    json_output: bool = typer.Option(False, "--json", help="输出完整 JSON"),
+):
+    """运行选中的经典策略（默认核心组合）。
+
+    示例：
+      alphaagents strategies 600519
+      alphaagents strategies 600519 --strategies bull_trend,volume_breakout
+      alphaagents strategies 600519 --all
+      alphaagents strategies 贵州茅台 --date 2026-01-02 --json
+    """
+    import json
+
+    from tradingagents.strategies import STRATEGY_META, scan_all_strategies
+
+    keys = None
+    if run_all:
+        keys = [item["key"] for item in STRATEGY_META]
+    elif strategies:
+        keys = [item.strip() for item in strategies.split(",") if item.strip()]
+
+    try:
+        result = scan_all_strategies(ticker, date, keys)
+    except Exception as exc:
+        console.print(f"[red]策略扫描失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    summary = result["summary"]
+    price = result["price"]
+    console.print(
+        f"[bold]{result['ticker']}[/bold] · {result['as_of']} · "
+        f"共识 [cyan]{summary['consensus']}[/cyan]（强度 {summary['strength']}%）· "
+        f"触发 {summary['triggered']} 个（多 {summary['bullish']} / 空 {summary['bearish']}）"
+    )
+    console.print(
+        f"[dim]收盘 {price['close']}（{price['change_pct']}%） · "
+        f"MA20 {price['ma20']} · RSI {price['rsi']} · 量比 {price['volume_ratio']}[/dim]"
+    )
+
+    table = Table(title="触发策略", box=box.ROUNDED)
+    table.add_column("策略", style="cyan")
+    table.add_column("方向", style="yellow")
+    table.add_column("评分", justify="right")
+    table.add_column("说明")
+    triggered = [s for s in result["signals"] if s["triggered"]]
+    if not triggered:
+        console.print("[yellow]本次没有触发策略[/yellow]")
+        return
+    for signal in triggered:
+        table.add_row(
+            signal["name"],
+            "偏多" if signal["direction"] == "bullish" else "偏空",
+            str(signal["score"]),
+            signal["summary"],
+        )
+    console.print(table)
+    console.print("[dim]策略结果为规则化近似，仅供研究参考。[/dim]")
+
+
+watch_app = typer.Typer(help="自选股管理")
+app.add_typer(watch_app, name="watch")
+
+
+@watch_app.command("add")
+def watch_add(
+    ticker: str = typer.Argument(..., help="股票代码或名称"),
+    name: str = typer.Option("", "--name", help="备注名称"),
+):
+    """添加自选股。"""
+    from tradingagents.storage import add_watch
+
+    item = add_watch(ticker, name)
+    console.print(f"[green]已添加自选股:[/green] {item.get('ticker')} {item.get('name', '')}")
+
+
+@watch_app.command("list")
+def watch_list():
+    """列出自选股。"""
+    from tradingagents.storage import list_watchlist
+
+    items = list_watchlist()
+    if not items:
+        console.print("[yellow]暂无自选股[/yellow]")
+        return
+    table = Table(title="自选股", box=box.ROUNDED)
+    table.add_column("代码", style="cyan")
+    table.add_column("名称")
+    table.add_column("添加时间", style="dim")
+    for item in items:
+        table.add_row(item["ticker"], item.get("name", ""), item.get("created_at", ""))
+    console.print(table)
+
+
+@watch_app.command("remove")
+def watch_remove(ticker: str = typer.Argument(..., help="股票代码")):
+    """删除自选股。"""
+    from tradingagents.storage import remove_watch
+
+    if remove_watch(ticker):
+        console.print(f"[green]已删除:[/green] {ticker}")
+    else:
+        console.print(f"[yellow]未找到:[/yellow] {ticker}")
 
 
 @app.command()

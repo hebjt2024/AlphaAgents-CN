@@ -73,12 +73,11 @@
 # 基本用法：
 #   answer = questionary.text("你的名字是？").ask()  # 等待用户输入
 #   choice = questionary.select("选一个", choices=["A", "B", "C"]).ask()
-import questionary
-
 # typing 模块：Python 标准库，提供类型注解支持
 # List 用于标注列表类型，Optional 表示值可以为 None
 # Tuple 用于标注元组类型（固定长度、不同类型的序列），Dict 用于标注字典类型
-from typing import List, Optional, Tuple, Dict
+
+import questionary
 
 # rich.console.Console：Rich 库的核心输出类
 # Rich 是一个终端格式化库，可以在终端中输出彩色文本、表格、面板等
@@ -230,6 +229,7 @@ def get_analysis_date() -> str:
     # re 模块：Python 标准库，用于正则表达式操作
     # 正则表达式是一种模式匹配语言，用于字符串的搜索和验证
     import re
+
     # datetime 模块：Python 标准库，用于日期和时间处理
     from datetime import datetime
 
@@ -308,7 +308,7 @@ def get_analysis_date() -> str:
 #   → choices = [AnalystType.MARKET, AnalystType.NEWS]
 #   → 返回 [AnalystType.MARKET, AnalystType.NEWS]
 # =====================================================================
-def select_analysts() -> List[AnalystType]:
+def select_analysts() -> list[AnalystType]:
     """使用交互式复选框选择分析师团队"""
 
     # questionary.checkbox() 创建一个多选复选框问题

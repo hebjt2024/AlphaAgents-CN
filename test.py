@@ -59,16 +59,25 @@
 # time.time() 返回当前时间的 Unix 时间戳（从 1970-01-01 00:00:00 开始的秒数）
 import time
 
+from tradingagents.dataflows.y_finance import (
+    get_balance_sheet as get_yfinance_balance_sheet,  # 获取资产负债表（别名简化）
+)
+from tradingagents.dataflows.y_finance import (
+    get_cashflow as get_yfinance_cashflow,  # 获取现金流量表（别名简化）
+)
+from tradingagents.dataflows.y_finance import (
+    get_income_statement as get_yfinance_income_statement,  # 获取利润表（别名简化）
+)
+from tradingagents.dataflows.y_finance import (
+    get_insider_transactions as get_yfinance_insider_transactions,  # 获取内部交易（别名简化）
+)
+
 # 从 dataflows 层导入多个数据获取函数
 # 这些函数封装了对 Yahoo Finance 数据的访问
 # 使用 as 关键字给函数起别名，使代码更简洁易读
 from tradingagents.dataflows.y_finance import (
-    get_YFin_data_online,                    # 获取在线股票数据（日线等）
-    get_stock_stats_indicators_window,       # 获取技术指标（带时间窗口）
-    get_balance_sheet as get_yfinance_balance_sheet,       # 获取资产负债表（别名简化）
-    get_cashflow as get_yfinance_cashflow,                 # 获取现金流量表（别名简化）
-    get_income_statement as get_yfinance_income_statement, # 获取利润表（别名简化）
-    get_insider_transactions as get_yfinance_insider_transactions  # 获取内部交易（别名简化）
+    get_stock_stats_indicators_window,  # 获取技术指标（带时间窗口）
+    get_YFin_data_online,  # 获取在线股票数据（日线等）
 )
 
 # ----------------------------------------------------------------------------
