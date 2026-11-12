@@ -157,11 +157,39 @@ class MarketApiTests(unittest.TestCase):
 
     def test_analyze_request_accepts_strategy_selection(self):
         req = server.AnalyzeRequest(
-            strategies=["bull_trend", "volume_breakout"]
+            company="600519",
+            date="2026-11-11",
+            strategies=["bull_trend", "volume_breakout"],
         )
         self.assertEqual(
             req.strategies, ["bull_trend", "volume_breakout"]
         )
+
+    def test_analyze_request_requires_company_and_date(self):
+        """标的与日期必须显式给出，不能落到 "NVDA / 2024-05-10" 这种默认值。"""
+        from pydantic import ValidationError
+
+        with self.assertRaises(ValidationError):
+            server.AnalyzeRequest(strategies=["bull_trend"])
+
+    def test_non_a_share_is_rejected(self):
+        """仅 A 股模式下，非 A 股标的在提交任务前就被拒绝。"""
+        with (
+            patch.object(
+                server,
+                "validate_analysis_date",
+                return_value=(True, "", "2026-11-11"),
+            ),
+            patch.object(server, "ensure_job_queue") as queue_factory,
+        ):
+            resp = self.client.post(
+                "/api/analyze",
+                json={"company": "NVDA", "date": "2026-11-11"},
+            )
+        data = resp.json()
+        self.assertFalse(data["success"])
+        self.assertIn("仅 A 股", data["message"])
+        queue_factory.assert_not_called()
 
     def test_strategy_backtest_endpoint(self):
         fake = {

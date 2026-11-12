@@ -2302,13 +2302,15 @@ SCHEDULE_BRIEFING=1
 ### 16.1 行情与财务
 
 ```text
-AkShare → BaoStock → 本地缓存
+AkShare → BaoStock        （默认，仅 A 股）
 ```
 
-- AkShare：主数据源
-- BaoStock：备用历史数据
-- 本地缓存：断网时返回上次结果
-- yfinance / Alpha Vantage：可选，适合海外标的
+- `data_vendors` 中列出的供应商**就是完整的降级链**，未列出的供应商不会被调用
+- 默认只配置 `akshare,baostock`，因此不会再触达 yfinance / Alpha Vantage
+- `ALLOW_UNCONFIGURED_VENDORS=1` 可恢复旧行为（把所有可用供应商追加到链尾）
+- `A_SHARE_ONLY=1`（默认）：非 A 股标的（AAPL / NVDA / 0700.HK）
+  在取数前就被拒绝，不会触发美股数据源
+- `ALLOW_SYNTHETIC_DATA=0`（默认）：不使用模拟数据兜底
 
 ### 16.2 市场复盘
 
@@ -2333,6 +2335,16 @@ AkShare → BaoStock → 本地缓存
 - `ALLOW_SYNTHETIC_DATA=0` 时，真实数据全部失败会直接报错
 - 不使用模拟数据生成投资结论
 - 历史估值按报告可用日期过滤，避免未来函数
+
+### 16.5 市场范围与启动行为
+
+- **默认只做 A 股**：非 A 股标的在取数前被拒绝（`A_SHARE_ONLY=1`）
+- **启动不自动分析**：不设置 `SCHEDULE_ENABLED=1` 时，WebUI 启动不会拉起
+  调度器，也不会自动执行任何分析；任务队列也不会恢复上次遗留的排队任务
+- 分析只能由用户在页面上点击“开始分析”，或显式调用 `POST /api/analyze` 触发
+- `POST /api/analyze` 的 `company` 与 `date` 为**必填**，不再有
+  `NVDA / 2024-05-10` 这类默认值
+
 
 ---
 

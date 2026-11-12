@@ -176,6 +176,7 @@
 # logging 模块：Python 标准的日志记录库（不使用 print，避免污染标准输出）
 
 import logging
+import os
 from dataclasses import dataclass
 
 # 从 y_finance 模块导入 Yahoo Finance 供应商的具体实现函数。
@@ -242,6 +243,9 @@ from .alpha_vantage import (
 # AlphaVantageRateLimitError 是一种自定义异常，表示"调用太频繁，被限流了"。
 # route_to_vendor 会捕获这个特定异常来触发降级。
 from .alpha_vantage_common import AlphaVantageRateLimitError
+
+# A 股标的判定：用于"仅 A 股"闸门（拒绝 NVDA/AAPL 等美股标的）
+from .ashare_rules import contains_cjk, is_a_share_code
 
 # 从 baostock_adapter 模块导入 BaoStock 供应商（A 股数据备选方案）
 # BaoStock 免费、无需注册，数据来源稳定，作为 akshare 的首选降级方案
@@ -782,6 +786,73 @@ def _is_synthetic_payload(result) -> bool:
     return bool(getattr(result, "is_synthetic", False))
 
 
+# ---------------------------------------------------------------------------
+# A 股模式（默认开启）
+#
+# 本项目当前只面向 A 股。开启该模式后：
+#   1. 非 A 股标的在做任何取数之前就被拒绝，不会打到 yfinance 等美股源；
+#   2. 降级链只使用显式配置的供应商（见 route_to_vendor 步骤 4）。
+# 需要恢复多市场能力时设置 A_SHARE_ONLY=0。
+# ---------------------------------------------------------------------------
+
+#: 这些方法的第一个位置参数是标的代码，需要做 A 股校验。
+_TICKER_METHODS = frozenset(
+    {
+        "get_stock_data",
+        "get_indicators",
+        "get_fundamentals",
+        "get_balance_sheet",
+        "get_cashflow",
+        "get_income_statement",
+        "get_news",
+        "get_insider_transactions",
+        "get_capital_flow",
+        "get_northbound_flow",
+        "get_dragon_tiger",
+    }
+)
+
+
+def _is_a_share_only() -> bool:
+    """是否启用"仅 A 股"模式（默认启用）。"""
+    env_value = os.getenv("A_SHARE_ONLY")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+    return bool(get_config().get("a_share_only", True))
+
+
+def _first_symbol_arg(method: str, args, kwargs) -> str:
+    """取出方法调用中的标的代码（没有则返回空串）。"""
+    if method not in _TICKER_METHODS:
+        return ""
+    if args:
+        return str(args[0] or "").strip()
+    for key in ("ticker", "symbol", "code"):
+        if key in kwargs and kwargs[key]:
+            return str(kwargs[key]).strip()
+    return ""
+
+
+def _looks_like_a_share(symbol: str) -> bool:
+    """判断标的看起来是否属于 A 股。
+
+    - 6 位数字代码（含 sh/sz/bj 前缀、.SH 后缀等写法）→ A 股；
+    - 中文名称（如"贵州茅台"）→ 视为 A 股意图，交由后续代码归一化；
+    - 其他（AAPL / NVDA / 0700.HK …）→ 非 A 股。
+    """
+    text = str(symbol or "").strip()
+    if not text:
+        return True
+    if is_a_share_code(text):
+        return True
+    if contains_cjk(text):
+        return True
+    # 允许纯数字（可能需要补零）——例如 "1"、"000001"
+    if text.isdigit() and len(text) <= 6:
+        return True
+    return False
+
+
 def route_to_vendor(method: str, *args, **kwargs):
     """
     将方法调用路由到合适的供应商实现，并支持自动降级（Fallback）。
@@ -827,6 +898,23 @@ def route_to_vendor(method: str, *args, **kwargs):
         频率限制、超时等异常同样会触发降级；
         只有在所有供应商都失败时才统一给出失败结论。
     """
+    # ---------------------------------------------------------------------------
+    # A 股模式闸门：默认只分析 A 股，非 A 股标的直接拒绝
+    #
+    # WHY：项目当前只服务 A 股。若放任 NVDA/AAPL 这类标的进入链路，
+    # 会一路打到 yfinance（美股数据源），既产生 429 噪音，也把不属于
+    # 本系统口径的数据混进分析。这里在做任何取数之前就短路返回。
+    # 需要恢复多市场能力时，设置 A_SHARE_ONLY=0 即可。
+    # ---------------------------------------------------------------------------
+    if _is_a_share_only():
+        symbol = _first_symbol_arg(method, args, kwargs)
+        if symbol and not _looks_like_a_share(symbol):
+            return (
+                f"[不适用] 当前配置为仅分析 A 股（A_SHARE_ONLY=1），"
+                f"已拒绝非 A 股标的：{symbol}。"
+                "如需分析美股/港股，请设置 A_SHARE_ONLY=0。"
+            )
+
     # ---------------------------------------------------------------------------
     # 以下是可视化的流程图：降级链的构建与尝试过程
     # ---------------------------------------------------------------------------
@@ -891,23 +979,28 @@ def route_to_vendor(method: str, *args, **kwargs):
         raise ValueError(f"Method '{method}' not supported")
 
     # 步骤4：构建降级链
-    # 先放主供应商（按配置顺序），然后追加其他可用的供应商
-    # list(VENDOR_METHODS[method].keys()) 获取该方法所有可用的供应商列表
-    # 例如 VENDOR_METHODS["get_stock_data"].keys() → ["alpha_vantage", "yfinance"]
+    # 只使用**显式配置**的供应商。
+    #
+    # WHY（重要修复）：此前这里会把 VENDOR_METHODS 里的**所有**供应商
+    # 无条件追加到降级链末尾，于是哪怕配置里只写了 akshare,baostock，
+    # 取数失败后仍会依次去打 Alpha Vantage 与 Yahoo Finance。后果是：
+    #   - A 股分析失败时产生大量 yfinance 429 / YFRateLimitError 噪音；
+    #   - 美股数据源会被无谓地唤醒（本项目当前只做 A 股）；
+    #   - 配置项实际上只能调整优先级，无法真正"禁用"某个数据源。
+    # 现在只有显式配置的供应商才会被调用；确需"尽力而为"时可通过
+    # allow_unconfigured_vendors 打开旧行为。
     all_available_vendors = list(VENDOR_METHODS[method].keys())
 
     # 复制主供应商列表（用 .copy() 是为了避免修改原始列表）
     fallback_vendors = primary_vendors.copy()
 
-    # 将不在主供应商列表中的其他供应商追加到末尾
-    # 这样就形成了一个完整的降级链：
-    #   [主供应商1, 主供应商2, ...其他可用供应商]
-    for vendor in all_available_vendors:
-        if vendor not in fallback_vendors:  # 如果这个供应商还不在降级链中
-            fallback_vendors.append(vendor)  # 追加到末尾
+    if bool(get_config().get("allow_unconfigured_vendors", False)):
+        for vendor in all_available_vendors:
+            if vendor not in fallback_vendors:
+                fallback_vendors.append(vendor)
 
-    # 确保 cache（内置缓存）始终作为最后降级选项
-    # 当所有外部数据源都不可用时，使用缓存/模拟数据确保流水线可运行
+    # 确保 cache（内置缓存）作为最后降级选项 —— 但它默认是关闭的
+    # （见下方 allow_synthetic），是否真的使用由配置决定。
     if "cache" in all_available_vendors and "cache" not in fallback_vendors:
         fallback_vendors.append("cache")
     # 如果 cache 已经在列表中但不在最后，移到末尾

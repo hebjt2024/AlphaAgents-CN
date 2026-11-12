@@ -174,6 +174,7 @@ import logging
 #   - os.path.join(目录, 文件名)：跨平台拼接路径（Windows 用 \，Linux 用 /）
 #   - os.makedirs(目录, exist_ok=True)：创建目录（已存在不报错）
 import os
+import random
 import time
 
 # typing.Annotated：Python 的类型注解增强工具。
@@ -361,28 +362,41 @@ def yf_retry(func, max_retries=1, base_delay=2.0):
     # range(max_retries + 1) 生成从 0 到 max_retries 的整数序列
     # 例如 max_retries=3 时，range(4) 生成 [0, 1, 2, 3]
     # attempt 变量在每次循环中依次取这些值
+    #
+    # 退避策略：base_delay * 2^attempt + 随机抖动
+    # WHY 加抖动：多个分析师线程同时收到 429 时，若都按同一个确定值等待，
+    # 会在同一时刻再次同时发起请求（惊群），反而更容易继续被限流。
+    # WHY 只在首次重试时重置会话：reset_yfinance_session() 会清空**整个进程**
+    # 的 Yahoo cookie jar，每次重试都调用会让并发的其它请求一起失效。
     for attempt in range(max_retries + 1):
         try:
             return func()
         except YFRateLimitError:
             if attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1.0)
                 logger.warning(
-                    f"Yahoo Finance rate limited, retrying in {delay:.0f}s "
-                    f"(attempt {attempt + 1}/{max_retries})"
+                    "Yahoo Finance rate limited, retrying in %.1fs (attempt %s/%s)",
+                    delay,
+                    attempt + 1,
+                    max_retries,
                 )
-                reset_yfinance_session()
+                if attempt == 0:
+                    reset_yfinance_session()
                 time.sleep(delay)
             else:
                 raise
         except (ConnectionError, TimeoutError, OSError) as e:
             if attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1.0)
                 logger.warning(
-                    f"Yahoo Finance network error ({type(e).__name__}), "
-                    f"retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})"
+                    "Yahoo Finance network error (%s), retrying in %.1fs (attempt %s/%s)",
+                    type(e).__name__,
+                    delay,
+                    attempt + 1,
+                    max_retries,
                 )
-                reset_yfinance_session()
+                if attempt == 0:
+                    reset_yfinance_session()
                 time.sleep(delay)
             else:
                 raise
@@ -391,12 +405,17 @@ def yf_retry(func, max_retries=1, base_delay=2.0):
             # 但某些版本也会直接抛出其他异常类型
             # 这里的兜底捕获确保任何异常都触发重试和降级
             if attempt < max_retries:
-                delay = base_delay * (2 ** attempt)
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1.0)
                 logger.warning(
-                    f"Yahoo Finance error ({type(e).__name__}: {e}), "
-                    f"retrying in {delay:.0f}s (attempt {attempt + 1}/{max_retries})"
+                    "Yahoo Finance error (%s: %s), retrying in %.1fs (attempt %s/%s)",
+                    type(e).__name__,
+                    e,
+                    delay,
+                    attempt + 1,
+                    max_retries,
                 )
-                reset_yfinance_session()
+                if attempt == 0:
+                    reset_yfinance_session()
                 time.sleep(delay)
             else:
                 raise

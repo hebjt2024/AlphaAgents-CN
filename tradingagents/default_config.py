@@ -209,7 +209,9 @@ DEFAULT_CONFIG = {
 
     # ====== 数据供应商配置 ======
     # 类别级别的数据源配置：为每类数据指定默认供应商
-    # 每个键对应的值可以是 "yfinance"（免费，无需 API 密钥）或 "alpha_vantage"（需要免费 API 密钥）
+    # 注意：这里列出的供应商**就是**完整的降级链。未列出的供应商不会被调用。
+    # 之前的行为是"配置只决定优先级，其余供应商一律追加到链尾"，
+    # 导致只配 akshare/baostock 时仍会去打 Yahoo Finance，产生大量 429 噪音。
     "data_vendors": {
         "core_stock_apis": "akshare,baostock",       # 核心股票数据：akshare 优先，baostock 备选
         "technical_indicators": "akshare",            # 技术指标：akshare（baostock 不支持）
@@ -217,6 +219,19 @@ DEFAULT_CONFIG = {
         "news_data": "akshare",                       # 新闻数据：akshare（baostock 不支持）
         "capital_flow": "akshare",                    # 资金流向：akshare（东方财富）
     },
+
+    # 是否允许调用"未在 data_vendors 中配置"的供应商。
+    # 默认 False —— 配置即白名单。设为 True 可恢复旧的"尽力而为"行为
+    # （会把 Alpha Vantage / yfinance 追加到降级链末尾）。
+    "allow_unconfigured_vendors": os.getenv(
+        "ALLOW_UNCONFIGURED_VENDORS", "0"
+    ).lower()
+    in ("1", "true", "yes", "on"),
+
+    # 仅分析 A 股。开启后非 A 股标的（AAPL / NVDA / 0700.HK …）会在取数前
+    # 直接被拒绝，不会触发美股数据源。
+    "a_share_only": os.getenv("A_SHARE_ONLY", "1").lower()
+    in ("1", "true", "yes", "on"),
 
     # ====== 模拟数据开关 ======
     # 默认关闭（fail-closed）：当 AkShare / BaoStock / yfinance 等真实数据源

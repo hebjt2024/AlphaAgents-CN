@@ -243,14 +243,21 @@ class SyntheticDataGuardTests(unittest.TestCase):
             "Date,Open,High,Low,Close,Volume\n"
             "2024-01-02,1.0,1.1,0.9,1.05,100 (cached)\n"
         )
-        interface.VENDOR_METHODS["get_indicators"] = {
-            "yfinance": lambda *args, **kwargs: payload
-        }
-        set_config({"allow_synthetic_data": False})
+        original = interface.VENDOR_METHODS["get_indicators"]
+        try:
+            interface.VENDOR_METHODS["get_indicators"] = {
+                "yfinance": lambda *args, **kwargs: payload
+            }
+            set_config({"allow_synthetic_data": False})
+            # 降级链现在以 data_vendors 配置为白名单，显式指向被测实现
+            with patch.object(interface, "get_vendor", return_value="yfinance"):
+                result = interface.route_to_vendor(
+                    "get_indicators", "600519", "rsi", "2024-01-01", 5
+                )
+        finally:
+            interface.VENDOR_METHODS["get_indicators"] = original
+            set_config({"allow_synthetic_data": False})
 
-        result = interface.route_to_vendor(
-            "get_indicators", "600519", "rsi", "2024-01-01", 5
-        )
         self.assertEqual(result, payload)
         self.assertFalse(interface.is_error_result(result)[0])
 

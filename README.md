@@ -374,11 +374,27 @@ uv run python -m tradingagents.scheduler --loop
 无需配置即可运行，内置优先级：
 
 ```
-AkShare  →  BaoStock  →  本地缓存
+AkShare  →  BaoStock
 ```
 
+- `data_vendors` 中列出的供应商就是**完整的降级链**，未列出的不会被调用
+  （此前会把 yfinance / Alpha Vantage 无条件追加到链尾，A 股取数失败后
+  仍会去打 Yahoo，产生大量 429 噪音）
+- 默认 `A_SHARE_ONLY=1`：非 A 股标的在取数前即被拒绝
+- 需要多市场能力时设置 `A_SHARE_ONLY=0`，并在 `data_vendors` 中显式加入
+  `yfinance` 或 `alpha_vantage`
+
 `akshare_adapter.py` 实现了限流、退避、超时与列名归一，`baostock_adapter.py`
-提供历史数据兜底，`cache_provider.py` 在完全断网时仍可返回上次结果。
+提供历史数据兜底。
+
+### 启动行为
+
+**打开 WebUI 不会自动执行任何分析。** 分析只能由用户点击“开始分析”或
+显式调用 `POST /api/analyze` 触发。定时任务需要显式开启：
+
+```bash
+SCHEDULE_ENABLED=1
+```
 
 ---
 

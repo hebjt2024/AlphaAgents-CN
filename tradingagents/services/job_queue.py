@@ -93,6 +93,7 @@ class JobQueue:
         stale_after_seconds: int = 1800,
         name: str = "alphaagents-jobs",
         scope: str = "default",
+        recover_pending: bool = False,
     ) -> None:
         self.name = name
         self.scope = scope or "default"
@@ -100,6 +101,13 @@ class JobQueue:
         self.poll_interval = max(0.01, float(poll_interval))
         self.heartbeat_interval = max(0.05, float(heartbeat_interval))
         self.stale_after_seconds = max(60, int(stale_after_seconds))
+        #: 启动时是否把数据库里遗留的 queued 任务重新排队执行。
+        #:
+        #: 默认 **False**：进程重启不应该"自己开始干活"。此前默认恢复，
+        #: 导致 WebUI 启动时会把上次没跑完的排队任务直接执行 ——
+        #: 用户只是打开页面，却看到系统在自动分析某只股票。
+        #: 需要断点续跑时显式传入 True。
+        self.recover_pending = bool(recover_pending)
 
         self._handlers: dict[str, JobHandler] = {}
         self._pending: deque[str] = deque()
@@ -137,9 +145,10 @@ class JobQueue:
         if reaped:
             logger.warning("回收僵尸任务 %s 个: %s", len(reaped), ", ".join(reaped))
 
-        pending = self._recover_pending()
-        if pending:
-            logger.info("从数据库恢复排队任务 %s 个", len(pending))
+        if self.recover_pending:
+            pending = self._recover_pending()
+            if pending:
+                logger.info("从数据库恢复排队任务 %s 个", len(pending))
 
         for index in range(self.worker_count):
             thread = threading.Thread(

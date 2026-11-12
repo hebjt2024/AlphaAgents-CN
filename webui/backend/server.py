@@ -206,8 +206,14 @@ MAX_PENDING_ANALYSES = int(os.getenv("WEBUI_MAX_PENDING_ANALYSES", "3"))
 # ============================================================================
 
 class AnalyzeRequest(BaseModel):
-    company: str = "NVDA"
-    date: str = "2024-05-10"
+    # 标的与日期改为**必填**。
+    #
+    # WHY：此前默认值是 company="NVDA"、date="2024-05-10"。任何只发了
+    # 部分字段（或空 body）的请求都会被静默地变成"分析 NVDA 2024-05-10"——
+    # 既会烧掉一次 LLM 额度，也会把美股数据混进 A 股系统。现在缺字段
+    # 会直接返回 422，而不是替用户决定分析什么。
+    company: str = Field(..., min_length=1, description="股票代码或名称")
+    date: str = Field(..., min_length=1, description="分析日期 YYYY-MM-DD")
     horizon: str = "medium"
     llm_provider: str = DEFAULT_CONFIG.get("llm_provider", "anthropic")
     deep_think_llm: str = DEFAULT_CONFIG.get("deep_think_llm", "MiniMax-M3")
@@ -1134,6 +1140,36 @@ async def start_analysis(request: AnalyzeRequest):
     # 允许用户在不重启服务的情况下新建/修改 .env 中缺失的密钥
     load_dotenv()
 
+    # 先做参数校验，再检查队列容量 —— 无效请求不应该先占用/探测队列。
+    date_ok, date_msg, adjusted_date = validate_analysis_date(
+        request.company, request.date
+    )
+    if not date_ok:
+        return {
+            **error_payload(date_msg, code="bad_request"),
+            "suggested_date": adjusted_date,
+        }
+
+    # 仅 A 股模式：非 A 股标的在提交任务前就拒绝，
+    # 避免任务进入队列后再一路打到美股数据源。
+    if DEFAULT_CONFIG.get("a_share_only", True):
+        from tradingagents.dataflows.ashare_rules import (
+            contains_cjk,
+            is_a_share_code,
+        )
+
+        company = str(request.company).strip()
+        if not (
+            is_a_share_code(company)
+            or contains_cjk(company)
+            or (company.isdigit() and len(company) <= 6)
+        ):
+            return error_payload(
+                f"当前为仅 A 股模式，已拒绝非 A 股标的：{company}"
+                "（如需分析美股/港股，请设置 A_SHARE_ONLY=0）",
+                code="bad_request",
+            )
+
     # 并发控制改为**有界队列**：
     # 此前这里用一个进程级互斥锁把整个系统串行化，且 running 标志是在
     # 取锁之后才置位 —— N 个并发请求会全部看到"空闲"并全部返回"已启动"，
@@ -1150,15 +1186,6 @@ async def start_analysis(request: AnalyzeRequest):
                 code="conflict",
             ),
             "job_id": analysis_status.get("job_id", ""),
-        }
-
-    date_ok, date_msg, adjusted_date = validate_analysis_date(
-        request.company, request.date
-    )
-    if not date_ok:
-        return {
-            **error_payload(date_msg, code="bad_request"),
-            "suggested_date": adjusted_date,
         }
 
     # 启动前校验 API Key，避免把底层鉴权异常直接抛到前端
@@ -2367,9 +2394,19 @@ def _warn_if_unauthenticated(config: ApiConfig) -> None:
 
 @asynccontextmanager
 async def lifespan(application: FastAPI):
-    """应用生命周期：启动任务队列与定时任务调度器，退出时优雅停止。"""
+    """应用生命周期：启动任务队列，退出时优雅停止。
+
+    定时调度器**只在显式开启时才启动**。
+
+    WHY：此前无论 `SCHEDULE_ENABLED` 是否配置，WebUI 一启动就会拉起调度
+    线程；只要库里有到点的定时任务（或触发了补跑），用户"打开页面"就会
+    看到系统自己在分析某只股票。现在改为显式 opt-in：不配置
+    `SCHEDULE_ENABLED=1` 就完全不会启动调度，分析只能由用户手动触发。
+    """
     _warn_if_unauthenticated(load_config())
-    # 启动有界任务队列：分析任务不再直接起线程
+
+    # 启动有界任务队列：分析任务不再直接起线程。
+    # recover_pending=False —— 重启不自动执行历史排队任务。
     try:
         ensure_job_queue(
             worker_count=ANALYSIS_WORKERS,
@@ -2377,11 +2414,24 @@ async def lifespan(application: FastAPI):
         )
     except Exception:  # 队列启动失败不应阻断服务
         logger.warning("任务队列启动失败", exc_info=True)
-    start_scheduler()
+
+    scheduler_enabled = str(
+        os.getenv("SCHEDULE_ENABLED", "0")
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if scheduler_enabled:
+        start_scheduler()
+        logger.info("定时任务调度器已启动（SCHEDULE_ENABLED=1）")
+    else:
+        logger.info(
+            "未启用定时任务调度器（SCHEDULE_ENABLED 未设置）。"
+            "分析只能通过手动触发。"
+        )
+
     try:
         yield
     finally:
-        stop_scheduler()
+        if scheduler_enabled:
+            stop_scheduler()
         try:
             from tradingagents.services.job_queue import stop_job_queue
 

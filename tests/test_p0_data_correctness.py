@@ -293,13 +293,18 @@ class SyntheticPayloadTests(unittest.TestCase):
         """真实供应商返回合成载荷时必须显式报错（fail-closed）。"""
         original = interface.VENDOR_METHODS["get_indicators"]
         try:
+            # 降级链现在以 data_vendors 配置为白名单，因此这里显式把
+            # get_indicators 的供应商指向被测的 mock 实现。
             interface.VENDOR_METHODS["get_indicators"] = {
                 "yfinance": lambda *args, **kwargs: cache_provider.SyntheticPayload(
                     "Date,Close\n2024-01-02,10.5\n"
                 )
             }
             set_config({"allow_synthetic_data": False})
-            with self.assertRaises(interface.SyntheticDataRefusedError):
+            with (
+                patch.object(interface, "get_vendor", return_value="yfinance"),
+                self.assertRaises(interface.SyntheticDataRefusedError),
+            ):
                 interface.route_to_vendor(
                     "get_indicators", "600519", "rsi", "2024-01-01", 5
                 )
@@ -316,9 +321,10 @@ class SyntheticPayloadTests(unittest.TestCase):
                 "yfinance": lambda *args, **kwargs: payload
             }
             set_config({"allow_synthetic_data": False})
-            result = interface.route_to_vendor(
-                "get_indicators", "600519", "rsi", "2024-01-01", 5
-            )
+            with patch.object(interface, "get_vendor", return_value="yfinance"):
+                result = interface.route_to_vendor(
+                    "get_indicators", "600519", "rsi", "2024-01-01", 5
+                )
         finally:
             interface.VENDOR_METHODS["get_indicators"] = original
             set_config({"allow_synthetic_data": False})
