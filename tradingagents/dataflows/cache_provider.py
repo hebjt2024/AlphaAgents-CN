@@ -1,13 +1,64 @@
-"""
-内置缓存/模拟数据供应商
-当所有真实数据源都不可用时，提供模拟数据以确保流水线可以完整运行。
+"""离线演示数据生成器（仅供离线演示与测试，禁止用于真实决策）。
 
-数据来源：从 AkShare 或 yfinance 成功获取的真实数据快照。
-用于：网络不可用时的降级方案，以及功能验证。
+⚠️ 重要说明
+    本模块**不是缓存**，而是一个"离线演示 / 测试夹具（fixture）"生成器：
+    它用随机游走生成价格、用固定模板生成财报与新闻，全部是**伪造数据**。
+
+    历史上本模块被当作"缓存供应商"接入路由层，导致两个严重问题：
+      1. 名字具有误导性（"cache" 听起来像"真实缓存"），维护者容易误以为
+         返回的是真实历史数据；
+      2. 路由层只能靠字符串嗅探（查找 "(cached)" / "simulated data" 等子串）
+         来识别伪造数据，既会误杀真实数据，也会漏判真正的伪造数据。
+
+    现在：
+      - 所有对外函数都返回 SyntheticPayload（str 的子类，带显式标记），
+        上层用 isinstance 判断即可精确识别，不再依赖脆弱的字符串匹配；
+      - 本模块默认不会被路由层启用（需要显式设置 ALLOW_SYNTHETIC_DATA=1），
+        该开关的语义是"允许使用离线演示数据"，绝不代表数据可信。
+
+    允许用途：单元测试、离线演示、无网络环境下的流水线连通性验证。
+    禁止用途：任何会产生真实投资决策结论的场景。
 """
 
 import random
 from datetime import datetime
+
+# ============================================================================
+# 合成数据标记
+# ============================================================================
+# WHY：路由层需要可靠地识别"这段数据是伪造的"。
+# 早期实现靠字符串嗅探（"(cached)"、"simulated data for testing" 等），
+# 问题是：真实数据正文里也可能出现这些子串（例如新闻里提到 cached），
+# 从而被误判为伪造数据而丢弃。
+# 现在改用显式类型标记：SyntheticPayload 是 str 的子类，
+# 上层用 isinstance(result, SyntheticPayload) 精确判断。
+
+# 合成数据标记常量（供外部引用/日志使用）
+SYNTHETIC_MARKER = "SYNTHETIC"
+
+
+class SyntheticPayload(str):
+    """带有“合成数据”标记的字符串载荷。
+
+    继承 str 是为了保持向后兼容：所有调用方都把它当普通字符串使用
+    （startswith / split / 拼接等都不受影响），同时又能让上层通过
+    isinstance 检查精确识别“这是离线演示数据，不是真实数据”。
+
+    属性：
+        is_synthetic: 恒为 True，标识该载荷来自离线演示数据生成器。
+    """
+
+    is_synthetic = True
+
+    def __new__(cls, value: str = ""):
+        obj = super().__new__(cls, value)
+        return obj
+
+
+def _synthetic(text: str) -> SyntheticPayload:
+    """把生成的文本包装成带合成标记的载荷。"""
+    return SyntheticPayload(text if isinstance(text, str) else str(text))
+
 
 # ============================================================================
 # 简易股票代码标准化（不依赖外部模块，避免导入链问题）
@@ -202,7 +253,10 @@ def _generate_stock_data(symbol: str, start_date: str, end_date: str, base_price
 
         header = f"# Stock data for {code} from {start_date} to {end_date} (generated)\n"
         header += f"# Total records: {count}\n"
-        header += "# WARNING: This is simulated data for testing. Not for real trading decisions.\n\n"
+        header += (
+            "# WARNING: 离线演示数据（仅供离线演示与测试，禁止用于真实决策）"
+            "/ simulated data for testing\n\n"
+        )
         header += "Date,Open,High,Low,Close,Volume\n"
 
         return header + "\n".join(lines)
@@ -213,7 +267,7 @@ def _generate_stock_data(symbol: str, start_date: str, end_date: str, base_price
 
 def get_cached_stock_data(symbol: str, start_date: str, end_date: str) -> str:
     """
-    获取缓存或模拟的股票数据。
+    生成离线演示用的股票数据（**非真实行情**）。
 
     始终为请求的日期范围生成数据。对于已知的股票代码，
     使用预缓存数据中的最后一个价格作为生成数据的基础价格。
@@ -224,26 +278,26 @@ def get_cached_stock_data(symbol: str, start_date: str, end_date: str) -> str:
       end_date: 结束日期
 
     返回：
-      CSV 格式的 OHLCV 数据字符串
+      CSV 格式的 OHLCV 数据字符串（SyntheticPayload，带合成数据标记）
     """
     code = _normalize(symbol)
 
     # 始终为请求的日期范围生成数据
     # 预缓存数据仅用于提取基础价格，不直接返回
     if code.isdigit() and len(code) == 6:
-        return _generate_stock_data(code, start_date, end_date)
+        return _synthetic(_generate_stock_data(code, start_date, end_date))
 
     # 美股等，生成通用模拟数据
-    return _generate_stock_data(code, start_date, end_date) or ""
+    return _synthetic(_generate_stock_data(code, start_date, end_date) or "")
 
 
 def get_cached_fundamentals(ticker: str, curr_date: str = None) -> str:
-    """获取缓存的基本面数据"""
+    """生成离线演示用的基本面数据（**非真实财务数据**）。"""
     code = _normalize(ticker)
 
     # 预置海南橡胶的基本面数据
     if code == "601118":
-        return """# Company Fundamentals for 601118 (cached)
+        return _synthetic("""# Company Fundamentals for 601118 (cached)
 # Data retrieved from cache
 
 总市值: 18500000000
@@ -261,11 +315,11 @@ def get_cached_fundamentals(ticker: str, curr_date: str = None) -> str:
 净资产收益率: 6.4%
 资产负债率: 52.3%
 总股本: 4280000000
-流通股: 3200000000"""
+流通股: 3200000000""")
 
     # 通用基本面数据
-    return f"""# Company Fundamentals for {code} (generated)
-# WARNING: This is simulated data for testing
+    return _synthetic(f"""# Company Fundamentals for {code} (generated)
+# WARNING: 离线演示数据（仅供离线演示与测试，禁止用于真实决策）
 
 总市值: 50000000000
 流通市值: 35000000000
@@ -277,11 +331,11 @@ def get_cached_fundamentals(ticker: str, curr_date: str = None) -> str:
 营业收入: 25000000000
 净利润: 1500000000
 净资产收益率: 12.0
-资产负债率: 45.0"""
+资产负债率: 45.0""")
 
 
 def get_cached_indicators(symbol: str, indicator: str, curr_date: str, look_back_days: int) -> str:
-    """获取缓存的技术指标数据，基于实际股价生成合理模拟值"""
+    """生成离线演示用的技术指标数据（**非真实指标**），基于演示价格生成模拟值"""
     from datetime import datetime, timedelta
 
     code = _normalize(symbol)
@@ -326,12 +380,12 @@ def get_cached_indicators(symbol: str, indicator: str, curr_date: str, look_back
             val = base_price * (1 + noise)
             result += f"{date_str}: {val:.4f}\n"
 
-    result += "\n\nCached indicator data. For testing only."
-    return result
+    result += "\n\n离线演示指标数据，仅供测试使用（禁止用于真实决策）。"
+    return _synthetic(result)
 
 
 def get_cached_news(ticker: str, start_date: str, end_date: str) -> str:
-    """获取缓存的新闻数据（根据股票代码动态生成）"""
+    """生成离线演示用的新闻数据（**非真实新闻**）"""
     code = _normalize(ticker)
 
     # 针对不同股票类型生成不同的新闻模板
@@ -371,13 +425,13 @@ def get_cached_news(ticker: str, start_date: str, end_date: str) -> str:
     result = f"## {code} ({ticker}) News (cached), from {start_date} to {end_date}:\n\n"
     for title, body in selected:
         result += f"### {title}\n{body}\n\n"
-    result += "\n注：以上为缓存/模拟新闻数据，仅供参考。实际新闻请以官方渠道为准。"
+    result += "\n注：以上为离线演示新闻数据，仅供测试使用（禁止用于真实决策）。实际新闻请以官方渠道为准。"
 
-    return result
+    return _synthetic(result)
 
 
 def get_cached_global_news(curr_date: str, look_back_days: int = 7, limit: int = 10) -> str:
-    """获取缓存的全球新闻数据（动态生成更丰富的宏观新闻）"""
+    """生成离线演示用的全球宏观新闻（**非真实新闻**）"""
     global_news_items = [
         ("央行维持LPR利率不变，货币政策保持稳健 (source: 中国人民银行)",
          "最新一期贷款市场报价利率（LPR）维持不变，1年期LPR为3.1%，5年期以上LPR为3.6%。央行表示将继续实施稳健的货币政策，保持流动性合理充裕。"),
@@ -408,60 +462,60 @@ def get_cached_global_news(curr_date: str, look_back_days: int = 7, limit: int =
     result = f"## Global Market News (cached), last {look_back_days} days:\n\n"
     for title, body in selected:
         result += f"### {title}\n{body}\n\n"
-    result += "\n注：以上为缓存/模拟宏观新闻数据，仅供参考。"
+    result += "\n注：以上为离线演示宏观新闻数据，仅供测试使用（禁止用于真实决策）。"
 
-    return result
+    return _synthetic(result)
 
 
 def get_cached_balance_sheet(ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
-    """获取缓存的资产负债表"""
+    """生成离线演示用的资产负债表（**非真实财报**）"""
     code = _normalize(ticker)
 
-    return f"""# Balance Sheet data for {code} ({freq}) (cached)
-# WARNING: This is simulated data for testing
+    return _synthetic(f"""# Balance Sheet data for {code} ({freq}) (cached)
+# WARNING: 离线演示数据（仅供离线演示与测试，禁止用于真实决策）
 
 报告期,货币资金,应收账款,存货,固定资产,资产总计,短期借款,应付账款,负债合计,股东权益
 2024-03-31,5200000000,3800000000,2800000000,15000000000,35000000000,3000000000,2500000000,18000000000,17000000000
 2023-12-31,4800000000,3500000000,2600000000,14800000000,34000000000,2800000000,2400000000,17500000000,16500000000
 2023-09-30,4500000000,3200000000,2500000000,14500000000,33000000000,2500000000,2200000000,17000000000,16000000000
-"""
+""")
 
 
 def get_cached_cashflow(ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
-    """获取缓存的现金流量表"""
+    """生成离线演示用的现金流量表（**非真实财报**）"""
     code = _normalize(ticker)
 
-    return f"""# Cash Flow data for {code} ({freq}) (cached)
-# WARNING: This is simulated data for testing
+    return _synthetic(f"""# Cash Flow data for {code} ({freq}) (cached)
+# WARNING: 离线演示数据（仅供离线演示与测试，禁止用于真实决策）
 
 报告期,经营活动现金流,投资活动现金流,筹资活动现金流,现金净增加额
 2024-03-31,850000000,-500000000,-200000000,150000000
 2023-12-31,3200000000,-1800000000,-800000000,600000000
 2023-09-30,2400000000,-1200000000,-500000000,700000000
-"""
+""")
 
 
 def get_cached_income_statement(ticker: str, freq: str = "quarterly", curr_date: str = None) -> str:
-    """获取缓存的利润表"""
+    """生成离线演示用的利润表（**非真实财报**）"""
     code = _normalize(ticker)
 
-    return f"""# Income Statement data for {code} ({freq}) (cached)
-# WARNING: This is simulated data for testing
+    return _synthetic(f"""# Income Statement data for {code} ({freq}) (cached)
+# WARNING: 离线演示数据（仅供离线演示与测试，禁止用于真实决策）
 
 报告期,营业收入,营业成本,销售费用,管理费用,研发费用,营业利润,利润总额,净利润
 2024-03-31,4520000000,3800000000,180000000,120000000,80000000,580000000,560000000,520000000
 2023-12-31,17850000000,15200000000,700000000,480000000,320000000,2200000000,2150000000,1980000000
 2023-09-30,13200000000,11200000000,520000000,360000000,240000000,1650000000,1600000000,1480000000
-"""
+""")
 
 
 def get_cached_insider_transactions(ticker: str) -> str:
-    """获取缓存的股东持股变动数据"""
+    """生成离线演示用的股东持股变动数据（**非真实数据**）"""
     code = _normalize(ticker)
 
-    return f"""# Shareholder Holding Changes for {code} (cached)
-# WARNING: This is simulated data for testing
+    return _synthetic(f"""# Shareholder Holding Changes for {code} (cached)
+# WARNING: 离线演示数据（仅供离线演示与测试，禁止用于真实决策）
 
 股东名称,变动方向,变动数量,变动比例,变动日期
 张三,增持,500000,0.012%,2024-05-10
-李四,减持,200000,0.005%,2024-04-15"""
+李四,减持,200000,0.005%,2024-04-15""")

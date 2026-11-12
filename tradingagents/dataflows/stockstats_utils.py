@@ -718,6 +718,14 @@ class StockstatsUtils:
             # 运行时示例：matching_rows["rsi"].values → array([55.23])
             #             [0] → 55.23
             indicator_value = matching_rows[indicator].values[0]
+            # WHY（FIX 2）：这里必须显式检查 NaN。
+            # 批量路径（y_finance._get_stock_stats_bulk）已经把 NaN 转成 "N/A"，
+            # 但单日路径历史上直接把原始值返回，NaN 会被 Python 格式化成
+            # 字面量字符串 "nan" 出现在给 LLM 的结果里 —— LLM 会把
+            # "nan" 当成一个真实的指标数值（例如价格）来解读。
+            # 这里与批量路径保持一致，返回明确的缺失标记。
+            if pd.isna(indicator_value):
+                return "N/A: 指标值缺失（数据不足或该日无有效行情）"
             return indicator_value
         else:
             # 目标日期不是交易日（周末或节假日，股市不开盘就没有数据）

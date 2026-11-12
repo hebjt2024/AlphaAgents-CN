@@ -9,7 +9,12 @@ from pydantic import ValidationError
 
 from tradingagents.agents.utils.fundamental_data_tools import get_fundamentals
 from tradingagents.agents.utils.news_data_tools import get_news
-from tradingagents.dataflows import akshare_adapter, baostock_adapter, interface
+from tradingagents.dataflows import (
+    akshare_adapter,
+    baostock_adapter,
+    cache_provider,
+    interface,
+)
 from tradingagents.dataflows.akshare_adapter import get_akshare_news
 from tradingagents.dataflows.config import set_config
 
@@ -203,10 +208,18 @@ class SyntheticDataGuardTests(unittest.TestCase):
         }
         set_config({"allow_synthetic_data": False})
 
-        with self.assertRaises(RuntimeError):
-            interface.route_to_vendor(
-                "get_indicators", "600519", "rsi", "2024-01-01", 5
-            )
+        # NOTE：旧实现在这里抛 RuntimeError("No available vendor for ...")。
+        # 该行为本身就是 FIX 5 要修的 bug（丢失了可执行的原始原因，
+        # 让上层把"取不到数据"当成基础设施故障），因此改为断言
+        # "返回一条明确的失败消息，且绝不把离线演示数据当作真实数据返回"。
+        result = interface.route_to_vendor(
+            "get_indicators", "600519", "rsi", "2024-01-01", 5
+        )
+
+        self.assertNotIn("1,2,3", result)
+        failed, reason = interface.is_error_result(result)
+        self.assertTrue(failed)
+        self.assertIn("离线演示数据", result)
 
     def test_synthetic_data_is_marked_when_enabled(self):
         interface.VENDOR_METHODS["get_indicators"] = {
@@ -218,6 +231,37 @@ class SyntheticDataGuardTests(unittest.TestCase):
             "get_indicators", "600519", "rsi", "2024-01-01", 5
         )
         self.assertTrue(result.startswith("[SIMULATED DATA]"))
+
+    def test_legitimate_payload_with_cached_marker_is_accepted(self):
+        """真实数据里出现 "(cached)" 子串时不应被误判为伪造数据。
+
+        WHY：旧实现靠字符串嗅探识别伪造数据，真实数据正文里只要出现
+        "(cached)" 就会被丢弃。这里验证新实现不会再误伤。
+        """
+        payload = (
+            "# Stock data for 600519 from 2024-01-01 to 2024-01-05\n"
+            "Date,Open,High,Low,Close,Volume\n"
+            "2024-01-02,1.0,1.1,0.9,1.05,100 (cached)\n"
+        )
+        interface.VENDOR_METHODS["get_indicators"] = {
+            "yfinance": lambda *args, **kwargs: payload
+        }
+        set_config({"allow_synthetic_data": False})
+
+        result = interface.route_to_vendor(
+            "get_indicators", "600519", "rsi", "2024-01-01", 5
+        )
+        self.assertEqual(result, payload)
+        self.assertFalse(interface.is_error_result(result)[0])
+
+    def test_synthetic_payload_type_is_detected(self):
+        """cache_provider 的返回值必须带显式的合成数据标记。"""
+        payload = cache_provider.get_cached_stock_data(
+            "600519", "2024-01-01", "2024-01-05"
+        )
+        self.assertIsInstance(payload, cache_provider.SyntheticPayload)
+        self.assertTrue(payload.is_synthetic)
+        self.assertTrue(interface._is_synthetic_payload(payload))
 
 
 if __name__ == "__main__":

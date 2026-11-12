@@ -87,12 +87,95 @@
 # ---------------------------------------------------------------------------
 # 导入依赖
 # ---------------------------------------------------------------------------
+from __future__ import annotations
+
+import logging
+import re
+
 from langchain_openai import ChatOpenAI  # OpenAI 兼容的聊天模型接口
 
                         # ChatOpenAI 是 LangChain 提供的 LLM 封装类
                         # 可以调用 LLM 的 API 来生成文本回复
                         # .invoke(messages) 发送消息列表并获取 LLM 回复
                         # .content 属性获取回复的文本内容
+
+logger = logging.getLogger(__name__)
+
+#: 系统允许的决策枚举（顺序即匹配优先级，长词优先）。
+ALLOWED_DECISIONS: tuple[str, ...] = (
+    "OVERWEIGHT",
+    "UNDERWEIGHT",
+    "BUY",
+    "SELL",
+    "HOLD",
+)
+
+#: 常见中文/英文变体 → 标准枚举。
+DECISION_ALIASES: dict[str, str] = {
+    "买入": "BUY",
+    "增持": "BUY",
+    "建仓": "BUY",
+    "强烈买入": "BUY",
+    "超配": "OVERWEIGHT",
+    "超配买入": "OVERWEIGHT",
+    "高配": "OVERWEIGHT",
+    "持有": "HOLD",
+    "维持": "HOLD",
+    "观望": "HOLD",
+    "中性": "HOLD",
+    "低配": "UNDERWEIGHT",
+    "减配": "UNDERWEIGHT",
+    "减持": "UNDERWEIGHT",
+    "卖出": "SELL",
+    "清仓": "SELL",
+    "强烈卖出": "SELL",
+    "sell": "SELL",
+    "buy": "BUY",
+    "hold": "HOLD",
+    "neutral": "HOLD",
+}
+
+#: 归一化时需要剥离的 Markdown / 标点包装。
+_DECISION_NOISE = re.compile(r"[\s*_`~\"'“”‘’.,;:!?、，。；：！？\[\]【】()（）]+")
+
+
+def normalize_decision(raw: object) -> tuple[str, bool]:
+    """把模型输出归一化到 5 档决策枚举。
+
+    返回 ``(决策, 是否成功归一化)``。无法识别时返回 ``("HOLD", False)``，
+    由调用方决定如何提示。
+
+    为什么必须归一化：此前实现直接返回 ``result.strip()``，于是
+    ``"BUY."``、``"**BUY**"``、``"买入"`` 都会原样透传。下游决策卡按
+    精确匹配解析，这类字符串会被静默降级为"持有"且建议仓位归零，
+    而界面仍显示模型原始字符串 —— 结论与呈现不一致。
+    """
+    if raw is None:
+        return "HOLD", False
+    text = str(raw).strip()
+    if not text:
+        return "HOLD", False
+
+    # 1) 去掉 Markdown 与标点包装后精确匹配
+    cleaned = _DECISION_NOISE.sub("", text).upper()
+    if cleaned in ALLOWED_DECISIONS:
+        return cleaned, True
+
+    # 2) 别名表（含中文）
+    alias = DECISION_ALIASES.get(cleaned) or DECISION_ALIASES.get(text)
+    if alias:
+        return alias, True
+
+    # 3) 全文扫描：模型可能返回一整段话
+    upper_text = text.upper()
+    for word in ALLOWED_DECISIONS:
+        if word in upper_text:
+            return word, True
+    for zh_word, decision in DECISION_ALIASES.items():
+        if zh_word in text:
+            return decision, True
+
+    return "HOLD", False
 
 
 # =============================================================================
@@ -305,11 +388,20 @@ class SignalProcessor:
         #   .invoke(messages) 发送消息列表给 LLM，返回一个 AIMessage 对象
         #   .content 访问 AIMessage 的 content 属性，获取回复的文本内容
         # 这是方法链式调用：先调用 invoke，再访问返回值的 content 属性
-        result = self.llm.invoke(messages).content
+        try:
+            result = self.llm.invoke(messages).content
+        except Exception as exc:  # 提取失败不应让整轮分析崩掉
+            logger.warning("决策信号提取失败，回退为 HOLD：%s", exc)
+            return "HOLD"
 
-        # 清理结果并返回
+        # 清理结果并归一化到枚举
         # Python 语法说明：.strip()
         #   去除字符串开头和结尾的空白字符（空格、换行符、制表符等）
         #   LLM 的回复可能包含多余的空白字符，需要清理
         #   例如："  BUY  \n".strip() → "BUY"
-        return result.strip()
+        decision, ok = normalize_decision(result)
+        if not ok:
+            logger.warning(
+                "决策信号无法归一化（原始输出：%r），已回退为 HOLD", result
+            )
+        return decision

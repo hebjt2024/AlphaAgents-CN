@@ -52,6 +52,13 @@ except ImportError:  # pragma: no cover - 依赖缺失时的降级路径
     ak = None
 
 
+# “不适用”结果标记（FIX 6）
+# WHY：像"该标的不支持这类数据"这种提示，既不是有效数据，也不是数据源故障。
+# 如果不显式标记，上层路由层会把它当成"成功取到数据"原样交给 LLM，
+# 让 LLM 把一句提示语当成行情/资金流数据来解读。
+NOT_APPLICABLE_MARKER = "[不适用]"
+
+
 # ============================================================================
 # AkShare 自定义异常类
 # ============================================================================
@@ -112,6 +119,80 @@ AKSHARE_REQUEST_INTERVAL = float(os.getenv("AKSHARE_REQUEST_INTERVAL", "0.5"))
 # 上次请求时间戳（模块级，用于请求间隔控制）
 _last_request_time = 0.0
 
+# 节流锁：多个分析智能体会并行调用 AkShare。
+# WHY：原先 _throttle_request 对 _last_request_time 做"读-改-写"且没有加锁，
+# 4 个并行线程可能同时通过检查、同时发起请求，反而更容易触发东方财富限流。
+# 用一把锁把"检查间隔 + 等待 + 更新时间戳"变成临界区，保证全局最小请求间隔。
+_throttle_lock = threading.Lock()
+
+# 限流特征串：用于识别"请求过于频繁"类错误
+# WHY：AkShareRateLimitError 定义了却从未被抛出，路由层无法区分"限流"与
+# "硬错误"。这里集中定义判定依据，重试全部失败时据此抛出限流异常。
+_RATE_LIMIT_PATTERNS = (
+    "429",
+    "too many requests",
+    "rate limit",
+    "ratelimit",
+    "限流",
+    "频率限制",
+    "请求过于频繁",
+    "访问过于频繁",
+    "频繁访问",
+    "请求太频繁",
+)
+
+# ---------------------------------------------------------------------------
+# 数据源口径提示（FIX 1）
+# ---------------------------------------------------------------------------
+# WHY：主数据源（东方财富）返回的是前复权行情，而腾讯备用源接口只接受
+# adjust=""（不复权）。降级发生时如果不做标记，调用方/LLM 会把两套不同
+# 基准的价格当成同一序列使用（例如把不复权价与前复权价做涨跌幅比较），
+# 从而得出完全错误的结论。因此必须在输出里显式声明口径差异。
+
+# DataFrame 上挂载数据源提示的键名（使用 pandas 的 df.attrs 携带元数据）
+_HIST_NOTES_ATTR = "akshare_source_notes"
+
+# 腾讯备用源（不复权）提示
+_UNADJUSTED_SOURCE_NOTE = (
+    "# 注意: 本数据来自腾讯财经备用源，为未复权（不复权）原始价格，"
+    "与主数据源的前复权基准不一致，切勿与前复权序列混用或直接比较；"
+    "成交额（金额）已单列在“成交额”列，未写入成交量列。\n"
+)
+
+# 腾讯备用源缺少成交量时的提示
+_VOLUME_MISSING_SOURCE_NOTE = (
+    "# 注意: 腾讯备用源未返回成交量字段，本次数据不含成交量，"
+    "成交量类指标（VWMA、MFI 等）不可用。\n"
+)
+
+
+def _attach_source_notes(df: "pd.DataFrame", *notes: str) -> "pd.DataFrame":
+    """把数据源口径提示挂到 DataFrame 上，供上层写入输出头部。
+
+    WHY：降级到备用源时，返回结果本身无法表达"这是不复权数据"，
+    只能靠显式携带的提示。挂在 DataFrame.attrs 上可以在整条
+    "取数 → 清洗 → 生成文本"链路中不丢失。
+    """
+    if df is None or df.empty:
+        return df
+    existing = list(df.attrs.get(_HIST_NOTES_ATTR, []))
+    for note in notes:
+        if note and note not in existing:
+            existing.append(note)
+    df.attrs[_HIST_NOTES_ATTR] = existing
+    return df
+
+
+def _get_source_notes(df: "pd.DataFrame") -> str:
+    """读取 DataFrame 上挂载的数据源口径提示（拼接后的文本）。"""
+    if df is None:
+        return ""
+    try:
+        notes = df.attrs.get(_HIST_NOTES_ATTR, [])
+    except Exception:
+        return ""
+    return "".join(notes)
+
 
 def _require_akshare():
     """确保 AkShare 可用，否则抛出明确错误。
@@ -134,16 +215,23 @@ def _throttle_request():
     请求节流控制，避免快速连续请求触发东方财富 API 限流。
 
     根据 AKSHARE_REQUEST_INTERVAL 配置，在连续请求之间添加最小间隔。
+
+    WHY 加锁：系统有 4 个分析智能体会并行调用本模块。
+    原实现对模块级 _last_request_time 做"读-改-写"却没有锁，
+    并行线程会同时通过间隔检查、同时发出请求，等于没有节流，
+    反而更容易被东方财富限流。这里把"检查 → 等待 → 更新时间戳"
+    放进同一临界区，保证全局最小请求间隔。
     """
     global _last_request_time
-    current_time = time.time()
-    elapsed = current_time - _last_request_time
+    with _throttle_lock:
+        current_time = time.time()
+        elapsed = current_time - _last_request_time
 
-    if elapsed < AKSHARE_REQUEST_INTERVAL:
-        sleep_time = AKSHARE_REQUEST_INTERVAL - elapsed
-        time.sleep(sleep_time)
+        if elapsed < AKSHARE_REQUEST_INTERVAL:
+            sleep_time = AKSHARE_REQUEST_INTERVAL - elapsed
+            time.sleep(sleep_time)
 
-    _last_request_time = time.time()
+        _last_request_time = time.time()
 
 
 def _run_with_timeout(func, timeout: int = None):
@@ -196,6 +284,19 @@ def _run_with_timeout(func, timeout: int = None):
 # 通用重试工具
 # ============================================================================
 
+def _is_rate_limit_error(exc: BaseException) -> bool:
+    """判断异常是否属于"请求过于频繁"类错误（限流 / 429）。
+
+    WHY：AkShareRateLimitError 之前定义了却从未被抛出，
+    路由层无法区分"被限流（换个数据源/稍后重试可能成功）"与
+    "硬错误（换数据源也解决不了）"。这里集中封装判定依据。
+    """
+    if isinstance(exc, AkShareRateLimitError):
+        return True
+    text = str(exc).lower()
+    return any(pattern.lower() in text for pattern in _RATE_LIMIT_PATTERNS)
+
+
 def retry_with_backoff(
     func,
     max_retries: int = None,
@@ -218,7 +319,13 @@ def retry_with_backoff(
       use_timeout: 是否启用超时机制（默认 False）
 
     返回：
-      函数的返回值，或最后一次异常
+      函数的返回值
+
+    异常：
+      AkShareRateLimitError: 全部重试都失败，且失败原因是限流（429 类错误）。
+        抛出该异常而不是原始异常，是为了让上层路由层能够识别"这是限流，
+        应该切换数据源或稍后重试"，而不是当成不可恢复的硬错误。
+      Exception: 其他情况下抛出最后一次异常。
 
     退避策略：
       第1次重试: 等待 base_delay + 随机抖动
@@ -241,9 +348,10 @@ def retry_with_backoff(
             return func()
 
     last_exception = None
+    rate_limited = False
     for attempt in range(max_retries + 1):
         try:
-            # 在每次请求前进行节流控制
+            # 在每次请求前进行节流控制（内部已加锁，多线程安全）
             _throttle_request()
             return execute_with_timeout()
         except AkShareTimeoutError:
@@ -259,11 +367,22 @@ def retry_with_backoff(
                 time.sleep(delay)
         except Exception as e:
             last_exception = e
+            # 记录是否命中"限流"特征，供全部重试失败后决定抛哪种异常
+            if _is_rate_limit_error(e):
+                rate_limited = True
             if attempt < max_retries:
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 # 添加随机抖动，避免多个请求同时重试
                 delay += random.uniform(0, 1.0)
                 time.sleep(delay)
+
+    # 所有重试都失败：如果是限流导致，抛出专用的限流异常，
+    # 让路由层可以区分"数据源限流"与"数据源故障"。
+    if rate_limited:
+        raise AkShareRateLimitError(
+            f"AkShare API 连续 {max_retries + 1} 次触发限流：{last_exception}"
+        ) from last_exception
+
     raise last_exception
 
 
@@ -430,6 +549,54 @@ _CHINESE_NAME_MAP = {
 # AkShare 实时查询缓存（模块级，避免重复调用）
 _name_cache: dict = {}
 _name_cache_loaded = False
+
+
+def resolve_name_by_code(symbol: str) -> str:
+    """按 6 位代码返回标的的**真实名称**（找不到返回空字符串）。
+
+    为什么需要：ST / *ST 标记只存在于名称里，``price_limit_pct`` 与
+    ``risk_warnings`` 都依赖名称判断风险警示股。此前这些函数只拿到代码，
+    因此 ST 标的会被当作普通主板股告知 10% 涨跌幅。
+
+    解析顺序：
+      1. 名称表反查（``stock_info_a_code_name``，轻量且已缓存）
+      2. 实时快照兜底（``stock_zh_a_spot_em``，带短时缓存）
+    任何异常都会被吞掉并返回空字符串 —— 名称只是锦上添花，不能让
+    提示词构建失败。
+    """
+    code = normalize_code(symbol)
+    if not code:
+        return ""
+
+    try:
+        names = _load_akshare_names()
+    except Exception:
+        names = {}
+    for name, mapped in names.items():
+        if mapped == code:
+            return name
+
+    try:
+        snapshot = _get_spot_snapshot()
+    except Exception:
+        return ""
+    if snapshot is None or getattr(snapshot, "empty", True):
+        return ""
+    code_col = _find_code_column(snapshot)
+    name_col = None
+    for col in ("名称", "name"):
+        if col in snapshot.columns:
+            name_col = col
+            break
+    if not code_col or not name_col:
+        return ""
+    try:
+        row = snapshot[snapshot[code_col].astype(str).str.zfill(6) == code]
+        if not row.empty:
+            return str(row[name_col].iloc[0]).strip()
+    except Exception:
+        return ""
+    return ""
 
 
 def _load_akshare_names() -> dict:
@@ -650,6 +817,9 @@ def _normalize_columns(df: "pd.DataFrame", column_map: dict) -> "pd.DataFrame":
 
 _HIST_PRICE_COLUMNS = ("开盘", "最高", "最低", "收盘", "成交量")
 
+# 附加数值列（腾讯备用源提供）：成交额单位为元，换手率单位为 %
+_HIST_EXTRA_NUMERIC_COLUMNS = ("成交额", "换手率")
+
 
 def _finalize_hist(df: "pd.DataFrame") -> "pd.DataFrame":
     """统一历史行情：日期解析、数值化、升序、去重、丢弃无效行。
@@ -665,7 +835,7 @@ def _finalize_hist(df: "pd.DataFrame") -> "pd.DataFrame":
 
     out = df.copy()
     out["日期"] = pd.to_datetime(out["日期"], errors="coerce")
-    for column in _HIST_PRICE_COLUMNS:
+    for column in _HIST_PRICE_COLUMNS + _HIST_EXTRA_NUMERIC_COLUMNS:
         if column in out.columns:
             out[column] = pd.to_numeric(out[column], errors="coerce")
 
@@ -700,8 +870,11 @@ def get_stock_hist_with_fallback(
     注意：
       - 腾讯接口要求 adjust 传空字符串 ''（传 'qfq' 会解析报错），
         因此调用腾讯源时强制忽略传入的 adjust 参数。
-      - 腾讯源返回的是 amount（成交额）而非 volume（成交量），
-        统一映射到"成交量"列（兜底数据，仅供连续性展示）。
+        这意味着腾讯源返回的是**不复权**数据，与主源（前复权）基准不同，
+        框架会通过 df.attrs 上的口径提示标记出来，由调用方写进输出头部。
+      - 腾讯源返回 volume（成交量）与 amount（成交额，单位：元）两个字段，
+        两者单位完全不同：volume 映射到"成交量"列，amount 映射到"成交额"列，
+        绝不能互相覆盖（否则成交量类指标会差两个数量级）。
       - 新浪 / 腾讯接口代码需带交易所前缀（sh/sz + 6 位）。
 
     参数：
@@ -803,19 +976,33 @@ def get_stock_hist_with_fallback(
         df_tx = None
 
     if df_tx is not None and not df_tx.empty:
-        # 腾讯返回列：date/open/close/high/low/amount
-        # amount 为成交额，映射到"成交量"列以保证下游字段完整
+        # 腾讯返回列：date/open/close/high/low/volume/turnover/amount
+        #
+        # WHY 修正列映射（FIX 1b）：
+        #   历史实现把 amount（成交额，单位：元）直接写进"成交量"列，
+        #   这是约两个数量级的单位错误，会直接污染 VWMA/MFI 等成交量指标，
+        #   也会让 LLM 对"成交量"做出完全错误的陈述。
+        #   现在：真实成交量（volume）映射到"成交量"，
+        #        成交额（amount）单独映射到"成交额"列，互不覆盖。
+        #   若当前 AkShare 版本的腾讯接口没有 volume 字段，
+        #        则宁可让"成交量"缺失，也绝不用成交额冒充成交量。
         tx_map = {
             "date": "日期",
             "open": "开盘",
             "high": "最高",
             "low": "最低",
             "close": "收盘",
-            "amount": "成交量",
+            "volume": "成交量",
+            "turnover": "换手率",
+            "amount": "成交额",
         }
         normalized = _finalize_hist(_normalize_columns(df_tx, tx_map))
         if not normalized.empty:
-            return normalized
+            notes = [_UNADJUSTED_SOURCE_NOTE]
+            if "成交量" not in normalized.columns:
+                notes.append(_VOLUME_MISSING_SOURCE_NOTE)
+            # 标记数据口径：腾讯源为不复权，且成交额/成交量分列
+            return _attach_source_notes(normalized, *notes)
 
     # 三个数据源全部失败，返回空 DataFrame，由调用方处理
     return pd.DataFrame()
@@ -904,6 +1091,9 @@ def get_akshare_stock(
         if df.empty:
             return f"No data found for symbol '{symbol}' between {start_date} and {end_date}"
 
+        # 数据源口径提示（如"来自腾讯备用源、未复权"），必须在输出里如实告知
+        source_notes = _get_source_notes(df)
+
         # 重命名列以匹配 yfinance 的 OHLCV 格式
         column_map = {
             "日期": "Date",
@@ -912,8 +1102,25 @@ def get_akshare_stock(
             "最低": "Low",
             "收盘": "Close",
             "成交量": "Volume",
+            "成交额": "成交额",
         }
-        df_out = df[list(column_map.keys())].rename(columns=column_map).copy()
+        # WHY 只取实际存在的列：腾讯备用源可能没有成交量字段，
+        # 直接按固定列表取列会抛 KeyError，导致整条链路失败。
+        present_map = {
+            src: dst for src, dst in column_map.items() if src in df.columns
+        }
+        df_out = df[list(present_map.keys())].rename(columns=present_map).copy()
+        if "Volume" not in df_out.columns:
+            # 保持输出表头结构稳定（缺数据就是空值，绝不用成交额冒充成交量）
+            df_out["Volume"] = pd.NA
+        # 固定列顺序，保证不同数据源产出的 CSV 表头一致
+        df_out = df_out.reindex(
+            columns=[
+                col
+                for col in ("Date", "Open", "High", "Low", "Close", "Volume", "成交额")
+                if col in df_out.columns
+            ]
+        )
 
         # 数值列四舍五入
         for col in ["Open", "High", "Low", "Close"]:
@@ -924,6 +1131,8 @@ def get_akshare_stock(
         header = f"# Stock data for {code} from {start_date} to {end_date}\n"
         header += f"# Total records: {len(df_out)}\n"
         header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+        # 数据源口径提示放在最前面，确保 LLM 一定能看到
+        header += source_notes
         header += _missing_trading_days_note(
             start_date, end_date, df_out["Date"].tolist()
         )
@@ -1013,6 +1222,10 @@ def get_akshare_indicators(
         if df.empty:
             return f"No data found for indicator calculation of {symbol}"
 
+        # 数据源口径提示（如"来自腾讯备用源、未复权"）：
+        # 指标是基于行情算出来的，口径不一致时必须让 LLM 知道
+        source_notes = _get_source_notes(df)
+
         # 重命名列以匹配 stockstats 的要求
         df = df.rename(columns={
             "日期": "Date",
@@ -1022,6 +1235,12 @@ def get_akshare_indicators(
             "收盘": "Close",
             "成交量": "Volume",
         })
+
+        # WHY：stockstats 的成交量类指标（vwma/mfi）直接访问 Volume 列，
+        # 列缺失会抛 KeyError。这里补一个全 NaN 的 Volume 列，
+        # 让这类指标返回 N/A（缺失）而不是让整个指标计算崩溃。
+        if "Volume" not in df.columns:
+            df["Volume"] = pd.NA
 
         # stockstats 在 wrap 时按日期排序会更稳定，这里保留 datetime 类型，
         # 与 yfinance 链路（stockstats_utils._clean_dataframe）保持一致。
@@ -1060,6 +1279,10 @@ def get_akshare_indicators(
             + "\n\n"
             + best_ind_params.get(indicator, "No description available.")
         )
+
+        # 数据源口径提示放在最前面，避免 LLM 把不复权数据当成前复权数据使用
+        if source_notes:
+            result_str = source_notes + "\n" + result_str
 
         return result_str
 
@@ -1666,7 +1889,8 @@ def get_akshare_capital_flow(
 
     code = normalize_symbol(ticker)
     if not is_a_share_code(code):
-        return f"'{ticker}' 不是 A 股标的，无资金流向数据"
+        # 带 [不适用] 标记，让上层路由层能识别这是"不适用"而不是真实数据
+        return f"{NOT_APPLICABLE_MARKER} '{ticker}' 不是 A 股标的，无资金流向数据"
 
     exchange = exchange_of(code)
     df = None
@@ -1679,6 +1903,11 @@ def get_akshare_capital_flow(
                 max_retries=2,
                 base_delay=AKSHARE_BASE_DELAY,
             )
+        except AkShareRateLimitError:
+            # WHY 单独处理限流：限流不是"没有数据"，而是"数据源暂时不可用"。
+            # 继续向上抛出，路由层才能如实告诉调用方"是被限流了，稍后重试"，
+            # 而不是误报成"该标的无资金流数据"。
+            raise
         except Exception:
             df = None
 
@@ -1698,6 +1927,8 @@ def get_akshare_capital_flow(
                     ]
                     if not matched.empty:
                         df = matched
+        except AkShareRateLimitError:
+            raise
         except Exception:
             df = None
 
@@ -1937,7 +2168,8 @@ def get_akshare_dragon_tiger(
 
     code = normalize_symbol(ticker)
     if not is_a_share_code(code):
-        return f"'{ticker}' 不是 A 股标的，无龙虎榜数据"
+        # 带 [不适用] 标记，让上层路由层能识别这是"不适用"而不是真实数据
+        return f"{NOT_APPLICABLE_MARKER} '{ticker}' 不是 A 股标的，无龙虎榜数据"
 
     fetch = getattr(ak, "stock_lhb_detail_em", None)
     if fetch is None:

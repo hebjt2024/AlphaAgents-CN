@@ -10,15 +10,24 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from tradingagents.strategies.base import MIN_TRIGGERED_FOR_POSITION
+
 
 def _preliminary_decision(summary: dict[str, Any]) -> str:
+    """由策略汇总推导规则初判。
+
+    BUY / SELL 要求至少 ``MIN_TRIGGERED_FOR_POSITION`` 个触发信号：
+    15 个策略中多数互为子集，单条规则不足以支撑方向性结论。
+    """
     net = float(summary.get("net_score") or 0)
     strength = float(summary.get("strength") or 0)
-    if net >= 20 and strength >= 25:
+    triggered = int(summary.get("triggered") or 0)
+    enough = triggered >= MIN_TRIGGERED_FOR_POSITION
+    if net >= 20 and strength >= 25 and enough:
         return "BUY"
     if net >= 12:
         return "OVERWEIGHT"
-    if net <= -20 and strength >= 25:
+    if net <= -20 and strength >= 25 and enough:
         return "SELL"
     if net <= -12:
         return "UNDERWEIGHT"

@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from .base import StrategySignal, atr, clamp, last, ma, rsi, volume_ratio
+from .base import (
+    CONSENSUS_NET_THRESHOLD,
+    MIN_SIGNALS_FOR_FULL_STRENGTH,
+    StrategySignal,
+    atr,
+    clamp,
+    last,
+    ma,
+    rsi,
+    volume_ratio,
+)
 from .classic import ALL_STRATEGIES, DEFAULT_STRATEGY_KEYS
 
 
@@ -18,6 +28,22 @@ def _select_strategies(strategy_keys: list[str] | None) -> tuple[list, list[str]
     if not selected:
         selected = list(func_map.keys())
     return [func_map[key] for key in selected], selected
+
+
+def _strength_from_scores(bull_score: float, bear_score: float, triggered: int) -> int:
+    """计算共识强度。
+
+    强度 = 方向一致度 × 样本充分度。
+
+    旧实现只用 ``|net| / total``，当只有单边触发时该值恒等于 100%，
+    使得"1 条弱规则"与"3 条强规则"得到同样的强度，置信度失去区分度。
+    这里额外按触发数量做样本充分度折减。
+    """
+    net = bull_score - bear_score
+    total = max(1, bull_score + bear_score)
+    agreement = abs(net) / total
+    sample_factor = min(1.0, max(0, triggered) / MIN_SIGNALS_FOR_FULL_STRENGTH)
+    return clamp(agreement * sample_factor * 100)
 
 
 def scan_all_strategies(
@@ -72,10 +98,15 @@ def scan_all_strategies(
     bear_score = sum(s.score for s in bearish)
     net = bull_score - bear_score
     total = max(1, bull_score + bear_score)
-    strength = clamp(abs(net) / total * 100)
-    if net >= 12:
+    triggered_count = len(bullish) + len(bearish)
+
+    strength = _strength_from_scores(bull_score, bear_score, triggered_count)
+    agreement = abs(net) / total
+    sample_factor = min(1.0, triggered_count / MIN_SIGNALS_FOR_FULL_STRENGTH)
+
+    if net >= CONSENSUS_NET_THRESHOLD:
         consensus = "偏多"
-    elif net <= -12:
+    elif net <= -CONSENSUS_NET_THRESHOLD:
         consensus = "偏空"
     else:
         consensus = "中性"
@@ -109,9 +140,11 @@ def scan_all_strategies(
             "consensus": consensus,
             "net_score": round(net, 1),
             "strength": strength,
+            "agreement": round(agreement, 3),
+            "sample_factor": round(sample_factor, 3),
             "bullish": len(bullish),
             "bearish": len(bearish),
-            "triggered": len(bullish) + len(bearish),
+            "triggered": triggered_count,
             "total": len(signals),
         },
         "selected_strategies": selected_keys,

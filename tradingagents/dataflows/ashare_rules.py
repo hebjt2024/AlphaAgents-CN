@@ -25,6 +25,8 @@ _SHENZHEN_PREFIXES = ("000", "001", "002", "003", "300", "301")
 _BEIJING_PREFIXES = ("43", "83", "87", "88", "92")
 # 沪市 B 股（900xxx）与深市 B 股（200xxx）不属于 A 股
 _B_SHARE_PREFIXES = ("200", "900")
+# A 股风险警示股名称前缀：ST / *ST / SST / S*ST
+_ST_PREFIXES = ("*ST", "SST", "S*ST", "ST")
 
 _CJK_RE = re.compile(r"[\u4e00-\u9fff]")
 
@@ -108,28 +110,37 @@ def is_beijing(code: str) -> bool:
 
 
 def is_st(name: str) -> bool:
-    """判断股票名称是否包含 ST / *ST 标记。"""
+    """判断股票名称是否为 ST / *ST 标的。
+
+    A 股 ST 标记固定出现在名称**前缀**（``ST`` / ``*ST`` / ``SST`` /
+    ``S*ST``），因此按前缀匹配，避免把名称中间的偶发 "ST" 误判为风险警示股。
+    """
     if not name:
         return False
-    return "ST" in str(name).upper()
+    text = str(name).strip().upper().replace(" ", "")
+    return text.startswith(_ST_PREFIXES)
 
 
 def price_limit_pct(code: str, name: str = "") -> float:
     """返回该股票的涨跌幅限制（小数，如 0.10 表示 10%）。
 
     规则：
-      - ST / *ST：5%
-      - 科创板（688/689）、创业板（300/301）：20%
-      - 北交所（4/8 开头）：30%
+      - 科创板（688/689）、创业板（300/301）：20%（**含 ST 标的**）
+      - 北交所（4/8 开头）：30%（含 ST 标的）
+      - 主板 ST / *ST：5%
       - 主板：10%
+
+    注意：2020 年注册制改革后，创业板/科创板的 ST 标的涨跌幅限制仍为
+    20%，不再跟随主板降为 5%。此前实现对所有 ST 标的统一返回 5%，
+    会让 LLM 对创业板 ST 股给出错误的涨跌停预期。
     """
     c = normalize_code(code)
-    if is_st(name):
-        return 0.05
     if c.startswith(("688", "689", "300", "301")):
         return 0.20
     if c and c.startswith(_BEIJING_PREFIXES):
         return 0.30
+    if is_st(name):
+        return 0.05
     return 0.10
 
 
@@ -140,8 +151,9 @@ def risk_warnings(code: str, name: str = "") -> list[str]:
     label = str(name or "")
 
     if is_st(label):
+        limit = int(round(price_limit_pct(c, label) * 100))
         warnings.append(
-            "ST/*ST 标的：涨跌幅限制为 5%，存在退市风险，仓位与止损需更保守。"
+            f"ST/*ST 标的：涨跌幅限制为 {limit}%，存在退市风险，仓位与止损需更保守。"
         )
     if "退" in label:
         warnings.append("该标的可能处于退市整理期，流动性风险极高。")
@@ -202,21 +214,27 @@ def report_available_date(period) -> str:
     return available.isoformat()
 
 
-def build_ashare_context(ticker: str) -> str:
-    """生成注入给 LLM 的 A 股交易规则说明；非 A 股返回空字符串。"""
+def build_ashare_context(ticker: str, name: str = "") -> str:
+    """生成注入给 LLM 的 A 股交易规则说明；非 A 股返回空字符串。
+
+    ``name`` 为标的真实名称（如 ``*ST某某``）。此前该参数缺失，导致
+    ``price_limit_pct`` / ``risk_warnings`` 永远拿不到名称 —— ST 标的
+    会被当成普通主板股告知 10% 涨跌幅，且不会收到任何风险提示。
+    """
     if not is_a_share_code(ticker):
         return ""
 
     code = normalize_code(ticker)
-    limit = int(round(price_limit_pct(code) * 100))
+    display = str(name or "").strip()
+    limit = int(round(price_limit_pct(code, display) * 100))
     lines = [
         "A股交易规则（务必在给出买卖方案时遵守）：",
         "- T+1 交易：当日买入的股票需到下一交易日才能卖出，不要假设当日可平仓。",
-        f"- 涨跌幅限制：{limit}%（ST/*ST 为 5%，科创板/创业板为 20%，北交所为 30%）。",
+        f"- 涨跌幅限制：{limit}%（主板 ST/*ST 为 5%，科创板/创业板为 20%，北交所为 30%）。",
         "- 交易单位：买入数量须为 100 股（1 手）的整数倍。",
         "- 若标的停牌或触及涨跌停，相关价位可能无法成交，方案需给出替代处理。",
     ]
-    warnings = risk_warnings(code)
+    warnings = risk_warnings(code, display)
     if warnings:
         lines.append("风险提示：" + "；".join(warnings))
     return "\n".join(lines)

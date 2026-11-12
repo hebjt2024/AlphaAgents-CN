@@ -140,7 +140,10 @@
 #       → 返回结果！流程结束。
 #
 #   第 5 步（异常路径）：所有供应商都失败
-#     → 抛出 RuntimeError("No available vendor for 'get_stock_data'")
+#     → 返回保留原始原因的消息，例如
+#       "未获取到 get_stock_data 数据：No data found for symbol '600519' between ..."
+#       （这样上层/Agent 能区分"这个标的就是没有数据"和"数据源故障"，
+#        而不是只看到一个笼统的 "No available vendor"）
 #
 # ============================================================================
 # 支持的供应商
@@ -165,6 +168,15 @@
 # 【什么是类型注解？】Python 是动态类型语言，变量不需要声明类型。
 # 但为了代码可读性和 IDE 提示，可以加上类型注解：name: str = "Tom"
 # Annotated 在类型的基础上额外附加说明文字，方便人和工具理解。
+#
+# dataclasses.dataclass: 用于定义带字段的数据类（这里用于 VendorResult 结果信封）。
+# 【什么是数据类？】它帮你自动生成 __init__ / __repr__ / __eq__ 等方法，
+# 适合表达"一组有名字的字段"，比到处传元组可读得多。
+#
+# logging 模块：Python 标准的日志记录库（不使用 print，避免污染标准输出）
+
+import logging
+from dataclasses import dataclass
 
 # 从 y_finance 模块导入 Yahoo Finance 供应商的具体实现函数。
 # 【什么是 `from ... import ...`？】
@@ -178,6 +190,7 @@
 #   例如：get_fundamentals 被重命名为 get_yfinance_fundamentals。
 # 从 akshare_adapter 模块导入 AkShare 供应商的具体实现函数和异常类
 from .akshare_adapter import (
+    NOT_APPLICABLE_MARKER,
     AkShareRateLimitError,
     AkShareTimeoutError,
     get_akshare_balance_sheet,
@@ -241,7 +254,10 @@ from .baostock_adapter import (
 )
 
 # 从 cache_provider 模块导入缓存数据供应商（网络不可用时的降级方案）
+# SyntheticPayload 是离线演示数据的显式标记类型（str 子类），
+# 路由层用它精确判断"这段数据是伪造的"，不再依赖脆弱的字符串嗅探。
 from .cache_provider import (
+    SyntheticPayload,
     get_cached_balance_sheet,
     get_cached_cashflow,
     get_cached_fundamentals,
@@ -280,6 +296,9 @@ from .y_finance import (
 # 【什么是 `.` 相对导入？】from .xxx 中的一个点表示"当前包目录下"。
 # 即从与 interface.py 同目录的 yfinance_news.py 文件中导入。
 from .yfinance_news import get_global_news_yfinance, get_news_yfinance
+
+# 模块级日志记录器（放在全部 import 之后，避免打断 import 块）
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # 工具分类定义
@@ -541,22 +560,226 @@ def get_vendor(category: str, method: str = None) -> str:
 
 
 # ---------------------------------------------------------------------------
+# 路由结果模型与失败语义（FIX 5）
+# ---------------------------------------------------------------------------
+# WHY 需要这套结构：
+#   过去路由层判断"供应商是否失败"靠嗅探结果字符串是否以 "Error"/"No " 开头，
+#   并且在所有供应商耗尽时统一抛出 RuntimeError("No available vendor for ...")。
+#   这会丢掉数据源给出的可执行信息（例如
+#   "No data found for symbol '600519' between ..."），
+#   让上层/Agent 只看到一个像"系统故障"的错误，无法区分
+#   “这个标的就是没有数据”和“数据源挂了”这两种完全不同的情况。
+#   现在：
+#     - 用 VendorResult 统一表达一次供应商调用的结果与原因码；
+#     - 用 is_error_result() 把结果字符串解析成 (是否失败, 原因码)；
+#     - route_to_vendor 失败时返回保留原始原因的消息，原因码供上层区分。
+
+# 失败原因码（机器可读）
+REASON_NO_DATA = "no_data"                # 数据确实不存在（该标的/该区间没有行情）
+REASON_VENDOR_ERROR = "vendor_error"      # 数据源故障（网络、接口异常等）
+REASON_UNAVAILABLE = "unavailable"        # 数据源/接口本身不可用
+REASON_NOT_APPLICABLE = "not_applicable"  # 该标的不适用这类数据（非 A 股等）
+REASON_RATE_LIMITED = "rate_limited"      # 被数据源限流（429 类错误）
+REASON_TIMEOUT = "timeout"                # 请求超时
+
+# 统一失败出口的消息前缀（便于上层稳定识别"这是一次取数失败"）
+FAILURE_MESSAGE_PREFIX = "未获取到 "
+
+# 明确没有备选数据源的数据项（FIX 6）
+# WHY：这三个资金流向接口只有 AkShare 一个数据源，既没有 baostock / yfinance
+# 备选，也没有本地缓存。以前它们失败时会抛出
+# RuntimeError("No available vendor for ...")，看起来像"数据源链路被耗尽"，
+# 实际上只是"这个数据项根本没有第二个数据源"。
+# 与其伪装成供应商链耗尽，不如如实说明：
+#   该数据项当前没有可用数据源（AkShare 接口不可用）
+# 注意：这里只描述事实，绝不伪造数据。
+NO_FALLBACK_METHODS = {
+    "get_capital_flow": "该数据项当前没有可用数据源（AkShare 接口不可用）",
+    "get_northbound_flow": "该数据项当前没有可用数据源（AkShare 接口不可用）",
+    "get_dragon_tiger": "该数据项当前没有可用数据源（AkShare 接口不可用）",
+}
+
+
+@dataclass
+class VendorResult:
+    """一次供应商调用的结果信封。
+
+    字段：
+      ok: 是否成功取到可用数据
+      data: 供应商返回的原始文本（失败时通常是可执行的错误说明）
+      vendor: 供应商名称（如 "akshare"）
+      reason: 机器可读的原因码（成功时为空字符串）
+    """
+
+    ok: bool
+    data: str
+    vendor: str
+    reason: str = ""
+
+
+class SyntheticDataRefusedError(RuntimeError):
+    """拒绝使用离线演示（合成）数据的异常。
+
+    WHY 单独定义：这是 fail-closed 的安全闸门 —— 与"取数失败"不同，
+    它必须显式向上抛出，不能被降级链里的通用 except 吞掉。
+    """
+
+
+def is_error_result(result) -> tuple[bool, str]:
+    """判断供应商返回的结果是否代表失败，并给出机器可读的原因码。
+
+    参数：
+      result: 供应商返回值（一般是字符串）。
+
+    返回：
+      (is_error, reason)
+        - is_error=True 时 reason 为原因码，取值见上面的 REASON_* 常量；
+        - is_error=False 时 reason 为空字符串。
+
+    WHY 需要显式的原因码：
+      "数据不存在"（no_data）与"数据源故障"（vendor_error / unavailable）
+      对上层是完全不同的处理方式：前者应当如实告诉用户"这个标的这段时间
+      没有数据"，后者才需要提示重试或换源。过去两者都被压成一句
+      "No available vendor"，Agent 只能当成系统故障处理。
+    """
+    if result is None:
+        return True, REASON_VENDOR_ERROR
+    if not isinstance(result, str):
+        return False, ""
+
+    text = result.strip()
+    if not text:
+        return True, REASON_VENDOR_ERROR
+
+    # 路由层统一失败出口产生的消息：解析出原始原因码
+    if text.startswith(FAILURE_MESSAGE_PREFIX):
+        return True, _reason_from_failure_message(text)
+
+    # 数据源明确表示"该标的不适用这类数据"（例如非 A 股标的的资金流向）
+    if text.startswith(NOT_APPLICABLE_MARKER):
+        return True, REASON_NOT_APPLICABLE
+
+    lowered = text.lower()
+    if lowered.startswith("no ") or lowered.startswith("no\t"):
+        return True, REASON_NO_DATA
+    if lowered.startswith("error") or lowered.startswith("[error"):
+        return True, REASON_VENDOR_ERROR
+    if lowered.startswith("news api temporarily unavailable"):
+        return True, REASON_VENDOR_ERROR
+    if "接口不可用" in text:
+        return True, REASON_UNAVAILABLE
+    if "限流" in text or "请求过于频繁" in text:
+        return True, REASON_RATE_LIMITED
+    return False, ""
+
+
+def _reason_from_failure_message(text: str) -> str:
+    """从统一失败消息中还原原因码。"""
+    tail = text[len(FAILURE_MESSAGE_PREFIX):]
+    if tail.startswith(NOT_APPLICABLE_MARKER):
+        return REASON_NOT_APPLICABLE
+    # 限流 / 超时优先于"没有可用数据源"：前者才是真正的根因
+    if "限流" in tail or "429" in tail:
+        return REASON_RATE_LIMITED
+    if "超时" in tail:
+        return REASON_TIMEOUT
+    if "没有可用数据源" in tail:
+        return REASON_UNAVAILABLE
+    lowered = tail.lower()
+    if "no data" in lowered or "not a trading day" in lowered:
+        return REASON_NO_DATA
+    if "数据源故障" in tail:
+        return REASON_VENDOR_ERROR
+    return REASON_VENDOR_ERROR
+
+
+def _build_failure_message(
+    method: str,
+    failure: "VendorResult | None",
+    synthetic_blocked: bool = False,
+) -> str:
+    """构造保留原始原因的统一失败消息。
+
+    WHY 保留原始原因：上游 Agent 需要知道到底是"这个标的这段时间没有数据"
+    还是"数据源挂了"，才能给出正确的下一步（换标的 / 重试 / 等待）。
+
+    synthetic_blocked：表示"离线演示数据兜底因为默认关闭而被跳过"，
+    这时必须如实说明，否则调用方会以为所有数据源都被尝试过了。
+    """
+    detail = (failure.data or "").strip() if failure is not None else ""
+    # WHY 压成单行：下游有调用方会把这段文本当 CSV 解析（回测服务），
+    # 多行文本会被解析成多行脏数据。统一压成一行更安全。
+    detail = " ".join(detail.split())
+    reason = failure.reason if failure is not None else REASON_VENDOR_ERROR
+
+    # 没有任何供应商返回过结果（例如唯一的数据源就是被禁用的离线演示数据）
+    if failure is None:
+        message = f"{FAILURE_MESSAGE_PREFIX}{method} 数据：没有可用的数据源"
+        if synthetic_blocked:
+            message += "；离线演示数据兜底已禁用（ALLOW_SYNTHETIC_DATA=0）"
+        return message
+
+    # 数据源给出的明确结论（没有数据 / 不适用）原样保留，最有信息量
+    if reason in (REASON_NO_DATA, REASON_NOT_APPLICABLE) and detail:
+        return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：{detail}"
+
+    # 明确没有备选数据源的数据项：如实说明"没有可用数据源"
+    if method in NO_FALLBACK_METHODS:
+        base = NO_FALLBACK_METHODS[method]
+        if reason == REASON_UNAVAILABLE:
+            return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：{base}"
+        if detail:
+            return (
+                f"{FAILURE_MESSAGE_PREFIX}{method} 数据：{base}；最后错误：{detail}"
+            )
+        return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：{base}"
+
+    if reason == REASON_UNAVAILABLE:
+        if detail:
+            return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源不可用（{detail}）"
+        return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源不可用"
+
+    # 限流 / 超时：与"硬故障"区分开，便于上层提示"稍后重试"
+    if reason == REASON_RATE_LIMITED:
+        if detail:
+            return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源限流（{detail}）"
+        return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源限流"
+
+    if reason == REASON_TIMEOUT:
+        if detail:
+            return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源超时（{detail}）"
+        return f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源超时"
+
+    if detail:
+        message = f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源故障（{detail}）"
+    else:
+        message = f"{FAILURE_MESSAGE_PREFIX}{method} 数据：数据源故障"
+
+    if synthetic_blocked:
+        # 如实说明：离线演示数据兜底因为默认关闭而没有被使用
+        message += "；离线演示数据兜底已禁用（ALLOW_SYNTHETIC_DATA=0）"
+    return message
+
+
+# ---------------------------------------------------------------------------
 # 函数：route_to_vendor（核心路由函数）
 # ---------------------------------------------------------------------------
-# 模拟/缓存数据的识别标记。
-# cache_provider 生成的数据会带有这些标记；一旦检测到，默认拒绝作为真实数据返回。
-_SYNTHETIC_MARKERS = (
-    "WARNING: This is simulated data",
-    "simulated data for testing",
-    "Cached indicator data",
-    "(generated)",
-    "(cached)",
-)
-
-
-def _looks_synthetic(text: str) -> bool:
-    """判断字符串是否来自 cache_provider 的模拟/缓存数据。"""
-    return any(marker in text for marker in _SYNTHETIC_MARKERS)
+# 合成（离线演示）数据的识别。
+#
+# WHY 不再用字符串嗅探（FIX 4）：
+#   旧实现靠查找 "(cached)" / "simulated data" 等子串来判断数据是否伪造，
+#   问题有两点：
+#     1. 误伤：真实数据正文里完全可能出现这些子串（例如新闻里提到 cached），
+#        于是真实数据被当成伪造数据丢弃；
+#     2. 漏判：伪造数据只要换个措辞就识别不出来。
+#   现在改用显式标记：cache_provider 返回 SyntheticPayload（str 子类），
+#   上层用 isinstance 精确判断；另外 "cache" 供应商按定义就是离线演示数据源，
+#   直接按供应商名兜底判定，杜绝伪造数据被当成真实数据返回。
+def _is_synthetic_payload(result) -> bool:
+    """判断结果是否来自离线演示（合成）数据生成器。"""
+    if isinstance(result, SyntheticPayload):
+        return True
+    return bool(getattr(result, "is_synthetic", False))
 
 
 def route_to_vendor(method: str, *args, **kwargs):
@@ -576,17 +799,22 @@ def route_to_vendor(method: str, *args, **kwargs):
 
     返回值：
       供应商实现函数的返回值（类型取决于具体的方法）。
+      所有供应商都失败时，返回一条**保留原始原因**的失败消息
+      （形如 "未获取到 get_stock_data 数据：No data found for symbol ..."），
+      而不是笼统的 "No available vendor"。
+      上层可用 is_error_result(result) 判断是否失败及其原因码。
 
     异常：
       ValueError: 当方法名不在 VENDOR_METHODS 中时抛出。
-      RuntimeError: 当所有供应商都不可用时抛出。
+      RuntimeError: 当所有真实数据源都失败、且拒绝使用离线演示数据时抛出
+        （仅在显式开启 ALLOW_SYNTHETIC_DATA 时才会发生）。
 
     工作流程：
       1. 根据方法名查找所属分类。
       2. 根据分类（和方法名）获取配置的供应商列表。
       3. 构建降级链：主供应商 -> 备选供应商。
       4. 按降级链依次尝试，成功则返回，失败则继续尝试下一个。
-      5. 所有供应商都失败时抛出异常。
+      5. 所有供应商都失败时返回保留原始原因的失败消息。
 
     关键概念：
       - 拆包运算符 * 和 **：
@@ -596,8 +824,8 @@ def route_to_vendor(method: str, *args, **kwargs):
 
       - 降级链（Fallback Chain）：
         主供应商失败时自动切换到备选供应商的机制，提高了系统的可用性。
-        只有 AlphaVantageRateLimitError（频率限制）会触发降级，
-        其他异常（如网络错误）会直接向上传播。
+        频率限制、超时等异常同样会触发降级；
+        只有在所有供应商都失败时才统一给出失败结论。
     """
     # ---------------------------------------------------------------------------
     # 以下是可视化的流程图：降级链的构建与尝试过程
@@ -632,7 +860,7 @@ def route_to_vendor(method: str, *args, **kwargs):
     #     J --> K{"降级链是否还有供应商？"}
     #
     #     K -->|"是"| E
-    #     K -->|"否，全部失败"| L["抛出 RuntimeError<br/>No available vendor ❌"]
+    #     K -->|"否，全部失败"| L["返回保留原始原因的失败消息 ❌<br/>未获取到 {method} 数据：..."]
     #
     #     style G fill:#27AE60,color:#fff
     #     style L fill:#C0392B,color:#fff
@@ -694,14 +922,20 @@ def route_to_vendor(method: str, *args, **kwargs):
 
     # 步骤5：按降级链依次尝试
     # 遍历降级链中的每一个供应商
+    # last_failure 记录最后一次失败的原因与原始说明，
+    # 用于在所有供应商都失败时生成"保留原始原因"的失败消息（FIX 5）
+    last_failure: VendorResult | None = None
+    # 记录"离线演示数据兜底因默认关闭而被跳过"，用于如实说明失败原因
+    synthetic_blocked = False
     for vendor in fallback_vendors:
         # 跳过映射表中不存在的供应商（防御性编程）
         # 防御性编程：即使配置写错了供应商名，也不会崩溃
         if vendor not in VENDOR_METHODS[method]:
             continue  # 跳过这个供应商，尝试下一个
 
-        # 默认禁止使用 cache 模拟数据
+        # 默认禁止使用 cache 离线演示数据
         if vendor == "cache" and not allow_synthetic:
+            synthetic_blocked = True
             continue
 
         # 获取供应商的实现函数
@@ -724,55 +958,88 @@ def route_to_vendor(method: str, *args, **kwargs):
             # 某些供应商实现会将错误以字符串形式返回
             # 这些情况下需要触发降级，而不是将其当作正常结果
             if isinstance(result, str):
-                # 默认拒绝模拟/缓存数据，除非用户显式开启 ALLOW_SYNTHETIC_DATA
-                if _looks_synthetic(result) and not allow_synthetic:
+                # 合成（离线演示）数据判定：
+                #   1) payload 自带 SyntheticPayload 标记；
+                #   2) 来自 "cache" 供应商 —— 按定义就是离线演示数据源。
+                # WHY 不再用字符串嗅探：真实数据正文可能包含 "(cached)" 等
+                # 子串，会被误判为伪造数据而丢弃。
+                is_synthetic = vendor == "cache" or _is_synthetic_payload(result)
+
+                # 默认拒绝离线演示数据，除非用户显式开启 ALLOW_SYNTHETIC_DATA
+                if is_synthetic and not allow_synthetic:
                     if vendor != fallback_vendors[-1]:
                         continue
-                    raise RuntimeError(
+                    raise SyntheticDataRefusedError(
                         f"All real data vendors failed for '{method}'. "
                         "Refusing to use simulated data (set ALLOW_SYNTHETIC_DATA=1 "
                         "to allow it for development)."
                     )
 
-                is_error = (
-                    result.startswith("Error") or
-                    result.startswith("No ") or
-                    result.startswith("News API temporarily unavailable") or
-                    len(result.strip()) == 0
-                )
-                if is_error:
+                # 统一失败判定：既能识别"没有数据"，也能识别"数据源故障"
+                failed, reason = is_error_result(result)
+                if failed:
+                    last_failure = VendorResult(
+                        ok=False, data=result, vendor=vendor, reason=reason
+                    )
                     # 若当前供应商不是降级链中的最后一个，则降级到下一个供应商
                     if vendor != fallback_vendors[-1]:
                         continue
-                    # 若是最后一个兜底供应商（cache），则不再抛错崩溃，
-                    # 直接返回其结果（可能是模拟/缓存数据），确保流水线可运行
-                    return result
+                    # 最后一个供应商也失败 → 走统一失败出口（保留原始原因）
+                    break
 
-                # 用户显式允许模拟数据时，加上醒目前缀，便于前端/日志识别
-                if _looks_synthetic(result) and not result.lstrip().startswith("[SIMULATED"):
-                    result = "[SIMULATED DATA] " + result
+                # 用户显式允许离线演示数据时，加上醒目前缀，便于前端/日志识别
+                if is_synthetic and not result.lstrip().startswith("[SIMULATED"):
+                    result = SyntheticPayload("[SIMULATED DATA] " + result)
 
             return result
-        except AlphaVantageRateLimitError:
+        except SyntheticDataRefusedError:
+            # 拒绝使用离线演示数据是显式的安全闸门，必须向上抛出，
+            # 不能被下面的通用 except 吞掉（否则会悄悄降级成"取数失败"）
+            raise
+        except AlphaVantageRateLimitError as exc:
             # Alpha Vantage 频率限制，继续尝试下一个供应商
+            last_failure = VendorResult(
+                ok=False, data=str(exc), vendor=vendor, reason=REASON_RATE_LIMITED
+            )
             continue
-        except AkShareRateLimitError:
+        except AkShareRateLimitError as exc:
             # AkShare 频率限制（东方财富 API 限流），继续尝试下一个供应商
             # 东方财富 API 限流时，等待一段时间后重试可能有效，
             # 但为了快速响应，这里选择直接降级到下一个供应商
+            last_failure = VendorResult(
+                ok=False, data=str(exc), vendor=vendor, reason=REASON_RATE_LIMITED
+            )
             continue
-        except AkShareTimeoutError:
+        except AkShareTimeoutError as exc:
             # AkShare 请求超时，继续尝试下一个供应商
             # 超时可能是网络问题或东方财富服务器响应缓慢
+            last_failure = VendorResult(
+                ok=False, data=str(exc), vendor=vendor, reason=REASON_TIMEOUT
+            )
             continue
-        except Exception:
+        except Exception as exc:
             # 其他异常（网络错误、数据不可用等）也尝试降级
             # 多供应商设计就是为了容错——一个供应商挂了，自动切换下一个
-            # 只有当这是最后一个供应商时才抛出异常
+            last_failure = VendorResult(
+                ok=False, data=str(exc), vendor=vendor, reason=REASON_VENDOR_ERROR
+            )
             if vendor == fallback_vendors[-1]:
-                raise
+                # 最后一个供应商仍然失败：不再抛出笼统的 RuntimeError，
+                # 而是生成保留原始原因的消息（数据不存在 ≠ 数据源故障）
+                logger.warning(
+                    "route_to_vendor(%s) 所有数据源均失败：%s", method, exc
+                )
+                break
             continue
 
     # 步骤6：所有供应商都失败
-    # 如果循环走完了都没有 return（所有供应商都失败），抛出异常
-    raise RuntimeError(f"No available vendor for '{method}'")
+    # 统一失败出口：返回保留原始原因的消息，并带上机器可读的原因语义
+    message = _build_failure_message(method, last_failure, synthetic_blocked)
+    logger.warning(
+        "route_to_vendor(%s) 取数失败（vendor=%s, reason=%s）：%s",
+        method,
+        last_failure.vendor if last_failure else "-",
+        last_failure.reason if last_failure else "-",
+        message,
+    )
+    return message

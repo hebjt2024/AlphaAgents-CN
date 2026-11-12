@@ -341,6 +341,7 @@ def build_instrument_context(ticker: str, horizon: str = "medium") -> str:
     # A 股交易规则（T+1、涨跌停、交易单位、ST 风险等）。
     # 用户可能直接输入中文名，这里优先用内置名称表做零网络解析。
     ticker_code = normalize_code(ticker)
+    stock_name = ""
     if not ticker_code and contains_cjk(ticker):
         try:
             from tradingagents.dataflows.akshare_adapter import _CHINESE_NAME_MAP
@@ -348,7 +349,20 @@ def build_instrument_context(ticker: str, horizon: str = "medium") -> str:
             ticker_code = _CHINESE_NAME_MAP.get(str(ticker).strip(), "")
         except Exception:
             ticker_code = ""
-    ashare_text = build_ashare_context(ticker_code) if ticker_code else ""
+        # 用户直接输入了中文名 —— 它本身就是名称（可能是 *ST 某某）
+        stock_name = str(ticker).strip()
+    elif ticker_code:
+        # 只有代码时解析真实名称：ST 标记只存在于名称里，
+        # 拿不到名称就无法判断涨跌幅限制与退市风险。
+        try:
+            from tradingagents.dataflows.akshare_adapter import resolve_name_by_code
+
+            stock_name = resolve_name_by_code(ticker_code)
+        except Exception:
+            stock_name = ""
+    ashare_text = (
+        build_ashare_context(ticker_code, stock_name) if ticker_code else ""
+    )
 
     context = (
         f"The instrument to analyze is `{ticker}`. "  # 指定要分析的股票代码
