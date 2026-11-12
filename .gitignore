@@ -218,6 +218,12 @@ __marimo__/
 # Cache
 **/data_cache/
 
+# Local database / runtime data
+data/*.db
+data/*.db-wal
+data/*.db-shm
+logs/
+
 # Trae IDE
 .trae-html-share-packages/
 

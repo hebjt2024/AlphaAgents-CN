@@ -22,6 +22,9 @@ classifiers = [
 dependencies = [
     "akshare>=1.18.0",
     "baostock>=0.8.8",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.0",
+    "python-dotenv>=1.0.0",
     "langchain-core>=0.3.81",
     "backtrader>=1.9.78.123",
     "langchain-anthropic>=0.3.15",
@@ -30,7 +33,6 @@ dependencies = [
     "langchain-openai>=0.3.23",
     "langgraph>=0.4.8",
     "pandas>=2.3.0",
-    "parsel>=1.10.0",
     "pytz>=2025.2",
     "questionary>=2.1.0",
     "rank-bm25>=0.2.2",
@@ -43,6 +45,13 @@ dependencies = [
     "tqdm>=4.67.1",
     "typing-extensions>=4.14.0",
     "yfinance>=0.2.63",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.6.0",
 ]
 
 [project.scripts]
@@ -58,6 +67,7 @@ include = ["tradingagents*", "cli*", "webui*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
+webui = ["frontend/*", "frontend/vendor/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -72,4 +82,14 @@ exclude = [".venv", "webui/frontend"]
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
 ignore = ["E501", "B008"]
+
+[tool.ruff.lint.per-file-ignores]
+# 根目录 test.py 是手动调试脚本，保留全部导入便于按需取消注释
+"test.py" = ["F401"]
+# 这些文件使用有意的星号导入（facade / 代理注册表）或先 load_dotenv 再导入
+"cli/main.py" = ["E402", "F403", "F405"]
+"tradingagents/agents/utils/agent_states.py" = ["F403"]
+"tradingagents/dataflows/alpha_vantage.py" = ["F403", "F405"]
+"tradingagents/graph/setup.py" = ["F403", "F405"]
+"tradingagents/graph/trading_graph.py" = ["F403", "F405"]
 

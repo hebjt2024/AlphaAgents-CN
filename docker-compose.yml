@@ -1,0 +1,38 @@
+name: alphaagents-cn
+
+services:
+  alphaagents:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: alphaagents-cn:latest
+    container_name: alphaagents-cn
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
+    environment:
+      - TZ=Asia/Shanghai
+      - TA_DB_PATH=/app/data/tradingagents.db
+    volumes:
+      - ./data:/app/data
+      - ./eval_results:/app/eval_results
+      - ./logs:/app/logs
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
