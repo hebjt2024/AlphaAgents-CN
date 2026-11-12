@@ -22,7 +22,9 @@ def _preliminary_decision(summary: dict[str, Any]) -> str:
     net = float(summary.get("net_score") or 0)
     strength = float(summary.get("strength") or 0)
     triggered = int(summary.get("triggered") or 0)
-    enough = triggered >= MIN_TRIGGERED_FOR_POSITION
+    # 按**独立信号族**计数：同族的多个策略不是多个独立假设
+    family_count = int(summary.get("family_count") or 0) or triggered
+    enough = family_count >= MIN_TRIGGERED_FOR_POSITION
     if net >= 20 and strength >= 25 and enough:
         return "BUY"
     if net >= 12:
@@ -32,6 +34,11 @@ def _preliminary_decision(summary: dict[str, Any]) -> str:
     if net <= -12:
         return "UNDERWEIGHT"
     return "HOLD"
+
+
+def preliminary_decision(summary: dict[str, Any]) -> str:
+    """公开入口：规则初判（供与 LLM 最终决策做对比）。"""
+    return _preliminary_decision(summary)
 
 
 def build_fast_preview(
@@ -69,7 +76,8 @@ def build_fast_preview(
         f"- 策略共识：{summary.get('consensus', '中性')}"
         f"（净分 {summary.get('net_score', 0)}，强度 {summary.get('strength', 0)}%）",
         f"- 参考价：{price.get('close', '-')}（{price.get('change_pct', 0)}%）",
-        f"- 触发信号：{summary.get('triggered', 0)} 个",
+        f"- 触发信号：{summary.get('triggered', 0)} 个"
+        f"（独立信号族 {summary.get('family_count', 0)} 个）",
     ]
     if top_signals:
         lines.append(

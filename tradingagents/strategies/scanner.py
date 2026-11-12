@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 
 from .base import (
     CONSENSUS_NET_THRESHOLD,
+    LIVE_SCAN_WINDOW_DAYS,
     MIN_SIGNALS_FOR_FULL_STRENGTH,
     StrategySignal,
     atr,
@@ -16,6 +17,7 @@ from .base import (
     volume_ratio,
 )
 from .classic import ALL_STRATEGIES, DEFAULT_STRATEGY_KEYS
+from .families import aggregate_by_family, family_label, family_of
 
 
 def _select_strategies(strategy_keys: list[str] | None) -> tuple[list, list[str]]:
@@ -60,7 +62,7 @@ def scan_all_strategies(
             end = datetime.strptime(str(end_date)[:10], "%Y-%m-%d")
         except ValueError:
             pass
-    start = end - timedelta(days=500)
+    start = end - timedelta(days=LIVE_SCAN_WINDOW_DAYS)
     frame = _load_prices(
         ticker, start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d")
     )
@@ -94,15 +96,20 @@ def scan_all_strategies(
     bearish = [
         s for s in signals if s.triggered and s.direction == "bearish"
     ]
-    bull_score = sum(s.score for s in bullish)
-    bear_score = sum(s.score for s in bearish)
-    net = bull_score - bear_score
-    total = max(1, bull_score + bear_score)
     triggered_count = len(bullish) + len(bearish)
 
-    strength = _strength_from_scores(bull_score, bear_score, triggered_count)
+    # 族内去重：15 个策略并非 15 个独立假设，直接求和会把同一个假设
+    # 数多遍。这里按策略族聚合（族内取最高分），再在族间求和。
+    aggregate = aggregate_by_family(signals)
+    bull_score = aggregate["bull_score"]
+    bear_score = aggregate["bear_score"]
+    net = aggregate["net_score"]
+    total = max(1, bull_score + bear_score)
+    family_count = aggregate["family_count"]
+
+    strength = _strength_from_scores(bull_score, bear_score, family_count)
     agreement = abs(net) / total
-    sample_factor = min(1.0, triggered_count / MIN_SIGNALS_FOR_FULL_STRENGTH)
+    sample_factor = min(1.0, family_count / MIN_SIGNALS_FOR_FULL_STRENGTH)
 
     if net >= CONSENSUS_NET_THRESHOLD:
         consensus = "偏多"
@@ -138,6 +145,7 @@ def scan_all_strategies(
         "price": price,
         "summary": {
             "consensus": consensus,
+            # net_score 已是**族内去重**后的净分（一个族最多算一票）
             "net_score": round(net, 1),
             "strength": strength,
             "agreement": round(agreement, 3),
@@ -145,10 +153,18 @@ def scan_all_strategies(
             "bullish": len(bullish),
             "bearish": len(bearish),
             "triggered": triggered_count,
+            # 独立信号族数量 —— 这才是真正的"假设数量"
+            "family_count": family_count,
+            "families": aggregate["families"],
+            "raw_net_score": aggregate["raw_net_score"],
             "total": len(signals),
         },
         "selected_strategies": selected_keys,
-        "signals": [s.to_dict() for s in signals],
+        "signals": [
+            {**signal.to_dict(), "family": family_of(signal.key),
+             "family_label": family_label(family_of(signal.key))}
+            for signal in signals
+        ],
     }
 
 
@@ -164,6 +180,8 @@ def format_strategy_report(result: dict) -> str:
         f"- 共识：**{summary.get('consensus', '中性')}**（强度 {summary.get('strength', 0)}%）",
         f"- 触发信号：{summary.get('triggered', 0)} 个"
         f"（多 {summary.get('bullish', 0)} / 空 {summary.get('bearish', 0)}）",
+        f"- 独立信号族：{summary.get('family_count', 0)} 个"
+        f"（族内去重后净分 {summary.get('net_score', 0)}，原始求和 {summary.get('raw_net_score', 0)}）",
         f"- 参考价：{price.get('close', '-')}（{price.get('change_pct', 0)}%）"
         f" · MA5 {price.get('ma5', '-')} / MA10 {price.get('ma10', '-')} / MA20 {price.get('ma20', '-')}"
         f" · RSI {price.get('rsi', '-')} · 量比 {price.get('volume_ratio', '-')}",
@@ -221,6 +239,7 @@ def scan_watchlist(
                     "consensus": summary["consensus"],
                     "strength": summary["strength"],
                     "triggered": summary["triggered"],
+                    "family_count": summary.get("family_count", 0),
                     "bullish": summary["bullish"],
                     "bearish": summary["bearish"],
                     "top": [s["name"] for s in triggered_signals][:3],
@@ -228,6 +247,8 @@ def scan_watchlist(
                         {
                             "key": s.get("key"),
                             "name": s.get("name"),
+                            "family": s.get("family"),
+                            "family_label": s.get("family_label"),
                             "direction": s.get("direction"),
                             "score": s.get("score"),
                             "summary": s.get("summary"),

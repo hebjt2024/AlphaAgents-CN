@@ -21,6 +21,11 @@ MIN_TRIGGERED_FOR_POSITION = 2
 #: 净分超过该阈值即视为策略共识成立（与"偏多/偏空"判定一致）。
 CONSENSUS_NET_THRESHOLD = 12
 
+#: 实盘扫描与回测必须使用**同一个**行情窗口，
+#: 否则"被验证的对象"与"被部署的对象"不是同一个策略。
+#: tradingagents/services/backtest_engine.py 也引用此常量。
+LIVE_SCAN_WINDOW_DAYS = 500
+
 
 @dataclass
 class StrategySignal:

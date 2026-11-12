@@ -87,6 +87,9 @@ def build_decision_plan(
     net_score = float(summary.get("net_score") or 0)
     strength = float(summary.get("strength") or 0)
     triggered = int(summary.get("triggered") or 0)
+    # 独立信号族数量：同族的多个策略（例如均线金叉与 MACD 金叉）并不是
+    # 多个独立假设，仓位门槛与置信度必须按族计数。
+    family_count = int(summary.get("family_count") or 0) or triggered
     consensus = summary.get("consensus") or "中性"
 
     decision = (decision or "HOLD").upper()
@@ -110,13 +113,13 @@ def build_decision_plan(
     )
     score = _clamp(score)
 
-    # 置信度：共识强度、触发数量、决策方向
+    # 置信度：共识强度、独立信号族数量、决策方向
     confidence = _clamp(
-        strength * 0.6 + min(30, triggered * 6) + (10 if bias else 0)
+        strength * 0.6 + min(30, family_count * 6) + (10 if bias else 0)
     )
     if conflict:
         # 冲突时置信度不因方向而提升
-        confidence = _clamp(strength * 0.6 + min(30, triggered * 6))
+        confidence = _clamp(strength * 0.6 + min(30, family_count * 6))
 
     stop_loss = take_profit = 0.0
     risk_reward = 0.0
@@ -154,9 +157,9 @@ def build_decision_plan(
     if bias < 0:
         position_blocked = "A 股不支持做空，卖出/低配对应减仓或清仓，仓位按 0 处理"
     elif bias != 0 and risk_pct > 0:
-        if triggered < min_triggered:
+        if family_count < min_triggered:
             position_blocked = (
-                f"触发信号仅 {triggered} 个，低于仓位门槛 {min_triggered} 个"
+                f"独立信号族仅 {family_count} 个，低于仓位门槛 {min_triggered} 个"
             )
         elif conflict:
             position_blocked = "规则共识与最终决策方向冲突"
@@ -170,7 +173,7 @@ def build_decision_plan(
 
     reasons = [
         f"策略共识：{consensus}（净分 {net_score}，强度 {strength}%）",
-        f"触发策略：{triggered} 个",
+        f"触发策略：{triggered} 个（去重后独立信号族 {family_count} 个）",
     ]
     if conflict:
         reasons.append(
@@ -206,8 +209,81 @@ def build_decision_plan(
         "position_pct": position_pct,
         "risk_pct": round(risk_pct, 4),
         "triggered": triggered,
+        "family_count": family_count,
         "reasons": reasons,
         "disclaimer": "规则化估算，仅供参考，不构成投资建议。",
+    }
+
+
+def compare_decisions(
+    preliminary: str,
+    final: str,
+    preliminary_plan: dict | None = None,
+    final_plan: dict | None = None,
+) -> dict:
+    """对比规则初判与最终决策，标出两者的分歧。
+
+    规则初判（策略扫描）与组合经理的 LLM 结论是两个独立来源。此前系统
+    只展示最终结论，用户看到"规则说偏多、结论说卖出"时无从察觉 ——
+    这类分歧恰恰是最值得关注的信号。
+
+    返回
+    ----
+    dict，包含 ``has_diff`` / ``decision_changed`` / ``changed_fields`` /
+    ``score_delta`` / ``confidence_delta`` / ``position_delta`` /
+    ``direction_changed`` / ``note``。
+    """
+    preliminary = (preliminary or "HOLD").upper()
+    final = (final or "HOLD").upper()
+
+    changed_fields: list[str] = []
+    score_delta = 0.0
+    confidence_delta = 0.0
+    position_delta = 0.0
+    direction_changed = False
+
+    if preliminary_plan and final_plan:
+        for field in ("score", "confidence", "position_pct", "risk_reward"):
+            before = float(preliminary_plan.get(field) or 0)
+            after = float(final_plan.get(field) or 0)
+            if abs(after - before) > 1e-9:
+                changed_fields.append(field)
+        score_delta = float(final_plan.get("score") or 0) - float(
+            preliminary_plan.get("score") or 0
+        )
+        confidence_delta = float(final_plan.get("confidence") or 0) - float(
+            preliminary_plan.get("confidence") or 0
+        )
+        position_delta = float(final_plan.get("position_pct") or 0) - float(
+            preliminary_plan.get("position_pct") or 0
+        )
+        direction_changed = preliminary_plan.get("direction") != final_plan.get(
+            "direction"
+        )
+
+    decision_changed = preliminary != final
+    has_diff = decision_changed or bool(changed_fields) or direction_changed
+
+    note = ""
+    if decision_changed:
+        note = (
+            f"规则初判为 {preliminary}，最终决策为 {final}，两者方向不一致，"
+            "请重点核对分歧原因。"
+        )
+    elif has_diff:
+        note = "规则初判与最终决策方向一致，但评分/仓位等参数存在差异。"
+
+    return {
+        "has_diff": has_diff,
+        "decision_changed": decision_changed,
+        "direction_changed": direction_changed,
+        "preliminary_decision": preliminary,
+        "final_decision": final,
+        "changed_fields": changed_fields,
+        "score_delta": round(score_delta, 2),
+        "confidence_delta": round(confidence_delta, 2),
+        "position_delta": round(position_delta, 4),
+        "note": note,
     }
 
 

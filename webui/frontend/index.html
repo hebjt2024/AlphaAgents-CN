@@ -2940,7 +2940,9 @@ async function loadStrategyBacktest() {
   $('strategyBacktestSummary').innerHTML = '<span class="muted">回测中…（按当前选择的策略）</span>';
   $('strategyBacktestTable').innerHTML = '';
   try {
-    const params = new URLSearchParams({ ticker, days: '250' });
+    // 不传 days —— 服务端会使用与实盘扫描一致的 500 自然日窗口。
+    // 此前写死 250 根 bar，会把样本外有效样本量压到门槛以下。
+    const params = new URLSearchParams({ ticker });
     const end = $('date').value;
     if (end) params.set('end_date', end);
     const keys = selectedStrategies();

@@ -18,6 +18,7 @@ import os
 import threading
 import traceback
 from datetime import datetime
+from typing import Literal
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -200,13 +201,13 @@ class BacktestRequest(BaseModel):
     ticker: str
     start_date: str
     end_date: str
-    strategy: str = "ma_cross"
+    strategy: Literal["ma_cross", "buy_hold"] = "ma_cross"
     fast: int = 5
     slow: int = 20
     initial_cash: float = 100000.0
     commission_rate: float = 0.0003
     stamp_duty_rate: float = 0.0005
-    slippage_rate: float = 0.0
+    slippage_rate: float = 0.001
 
 
 class StrategyAlertNotifyRequest(BaseModel):
@@ -748,11 +749,21 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
 
         from tradingagents.services.decision_plan import (
             build_decision_plan,
+            compare_decisions,
             format_decision_plan,
         )
+        from tradingagents.services.fast_preview import preliminary_decision
 
-        decision_plan = build_decision_plan(
-            final_state.get("strategy_result"), decision
+        strategy_result = final_state.get("strategy_result")
+        decision_plan = build_decision_plan(strategy_result, decision)
+
+        # 规则初判与 LLM 最终决策的差异（两者来源独立，分歧值得显式呈现）
+        preliminary = preliminary_decision(
+            (strategy_result or {}).get("summary") or {}
+        )
+        preliminary_plan = build_decision_plan(strategy_result, preliminary)
+        decision_diff = compare_decisions(
+            preliminary, decision, preliminary_plan, decision_plan
         )
 
         # 完整 reports 字段：保持与 AgentState 字段名一致，前端按 key 渲染对应卡片
@@ -788,6 +799,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
                         "pipeline": pipeline_cfg,
                         "strategies": strategy_keys,
                         "decision_plan": decision_plan,
+                        "decision_diff": decision_diff,
                     },
                 )
             except Exception as exc:
@@ -807,6 +819,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             "pipeline": pipeline_cfg,
             "strategies": strategy_keys,
             "decision_plan": decision_plan,
+            "decision_diff": decision_diff,
             "cancelled": cancelled,
         }
         try:
@@ -1058,6 +1071,16 @@ async def api_parse_intent(request: IntentRequest):
     return {"success": True, "intent": parse_intent(request.query)}
 
 
+def _resolve_stock_name(ticker: str) -> str:
+    """解析 A 股标的真实名称（用于 ST 涨跌停判定），失败返回空串。"""
+    try:
+        from tradingagents.dataflows.akshare_adapter import resolve_name_by_code
+
+        return resolve_name_by_code(ticker)
+    except Exception:
+        return ""
+
+
 @app.post("/api/backtest")
 async def api_backtest(request: BacktestRequest):
     try:
@@ -1073,6 +1096,8 @@ async def api_backtest(request: BacktestRequest):
             commission_rate=request.commission_rate,
             stamp_duty_rate=request.stamp_duty_rate,
             slippage_rate=request.slippage_rate,
+            # 名称决定 ST/*ST 的 5% 涨跌停，不传会让 ST 股按主板 10% 计算
+            stock_name=_resolve_stock_name(request.ticker),
         )
         return {"success": True, "result": result}
     except Exception as exc:
@@ -1214,9 +1239,14 @@ async def api_strategy_backtest(
     ticker: str,
     end_date: str | None = None,
     strategies: str | None = None,
-    days: int = 250,
+    days: int | None = None,
 ):
-    """对选中的策略做信号有效性回测。"""
+    """对选中的策略做信号有效性回测。
+
+    ``days`` 缺省为 None —— 服务端会使用与实盘扫描完全一致的 500 个
+    自然日窗口。此前默认 250 根 bar，会把样本外有效样本量压到门槛
+    以下，导致所有策略都被判为"样本不足"。
+    """
     try:
         from tradingagents.services.strategy_backtest import (
             run_strategy_backtest,

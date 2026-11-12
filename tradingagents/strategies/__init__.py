@@ -6,6 +6,13 @@
 
 from .base import StrategySignal
 from .classic import DEFAULT_STRATEGY_KEYS, STRATEGY_META
+from .families import (
+    FAMILY_LABELS,
+    STRATEGY_FAMILIES,
+    aggregate_by_family,
+    family_label,
+    family_of,
+)
 from .scanner import format_strategy_report, scan_all_strategies, scan_watchlist
 
 __all__ = [
@@ -15,4 +22,9 @@ __all__ = [
     "format_strategy_report",
     "STRATEGY_META",
     "DEFAULT_STRATEGY_KEYS",
+    "STRATEGY_FAMILIES",
+    "FAMILY_LABELS",
+    "aggregate_by_family",
+    "family_of",
+    "family_label",
 ]

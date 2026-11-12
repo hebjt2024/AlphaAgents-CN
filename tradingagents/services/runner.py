@@ -30,11 +30,19 @@ def run_analysis(
 
     from tradingagents.services.decision_plan import (
         build_decision_plan,
+        compare_decisions,
         format_decision_plan,
     )
+    from tradingagents.services.fast_preview import preliminary_decision
 
-    decision_plan = build_decision_plan(
-        final_state.get("strategy_result"), decision
+    strategy_result = final_state.get("strategy_result")
+    decision_plan = build_decision_plan(strategy_result, decision)
+
+    # 规则初判与 LLM 最终决策的差异（两者是独立来源，分歧值得显式呈现）
+    preliminary = preliminary_decision((strategy_result or {}).get("summary") or {})
+    preliminary_plan = build_decision_plan(strategy_result, preliminary)
+    decision_diff = compare_decisions(
+        preliminary, decision, preliminary_plan, decision_plan
     )
 
     reports = {
@@ -62,6 +70,7 @@ def run_analysis(
             "quick_think_llm": cfg.get("quick_think_llm"),
             "horizon": horizon,
             "decision_plan": decision_plan,
+            "decision_diff": decision_diff,
         },
     )
 
@@ -83,6 +92,7 @@ def run_analysis(
         "trade_date": trade_date,
         "decision": decision,
         "decision_plan": decision_plan,
+        "decision_diff": decision_diff,
         "final_state": final_state,
         "notification": notify_result,
     }

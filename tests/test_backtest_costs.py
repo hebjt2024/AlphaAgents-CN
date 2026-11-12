@@ -1,5 +1,6 @@
 """回测 A 股交易成本与数据清洗回归测试。"""
 
+import inspect
 import unittest
 from datetime import date, timedelta
 from unittest.mock import patch
@@ -41,10 +42,21 @@ class BacktestCostTests(unittest.TestCase):
             )
 
         self.assertLess(costly["total_return"], clean["total_return"])
-        self.assertAlmostEqual(
-            costly["gross_return"], clean["total_return"], places=4
-        )
+        # 变更说明：旧断言是 ``gross_return == clean.total_return``，隐含
+        # "费率置 0 == 零成本"。但 A 股单笔最低佣金 5 元与滑点都不是费率，
+        # 无法通过费率参数关闭；现在 ``gross_return`` 是**零成本重算**的
+        # 毛收益，必然严格高于净收益。
+        self.assertGreater(costly["gross_return"], costly["total_return"])
         self.assertGreater(costly["cost_rate"], 0)
+        self.assertGreater(costly["total_cost"], 0)
+
+    def test_default_slippage_is_not_zero(self):
+        """滑点默认必须非零：此前默认 0，等于假设委托都能按理想价成交。"""
+        signature = inspect.signature(backtest_module.run_backtest)
+        self.assertGreater(signature.parameters["slippage_rate"].default, 0.0)
+        self.assertEqual(
+            signature.parameters["min_commission"].default, 5.0
+        )
 
 
 class BacktestDataCleaningTests(unittest.TestCase):
@@ -59,6 +71,41 @@ class BacktestDataCleaningTests(unittest.TestCase):
                 "600519", "2025-01-01", "2025-04-30"
             )
         self.assertEqual(result["bars"], 30)
+
+
+class BacktestValidationTests(unittest.TestCase):
+    def test_unknown_strategy_raises_value_error(self):
+        """未知策略必须显式报错，不能静默回退成 ma_cross。"""
+        csv_text = _csv_prices(30)
+        with patch.object(
+            backtest_module, "route_to_vendor", return_value=csv_text
+        ):
+            with self.assertRaises(ValueError) as ctx:
+                backtest_module.run_backtest(
+                    "600519", "2025-01-01", "2025-04-30", strategy="unknown_strategy"
+                )
+        self.assertIn("unknown_strategy", str(ctx.exception))
+
+    def test_trade_count_is_much_smaller_than_bars(self):
+        """事件驱动撮合：交易笔数应当远少于 bar 数（旧实现是仓位翻转计数）。"""
+        csv_text = _csv_prices()
+        with patch.object(
+            backtest_module, "route_to_vendor", return_value=csv_text
+        ):
+            result = backtest_module.run_backtest("600519", "2025-01-01", "2025-04-30")
+        self.assertLess(result["trade_count"], result["bars"])
+        self.assertGreater(result["trade_count"], 0)
+        self.assertEqual(len(result["equity_curve"]), result["bars"])
+
+    def test_benchmark_is_reported(self):
+        csv_text = _csv_prices()
+        with patch.object(
+            backtest_module, "route_to_vendor", return_value=csv_text
+        ):
+            result = backtest_module.run_backtest("600519", "2025-01-01", "2025-04-30")
+        self.assertIn("benchmark", result)
+        self.assertIn("total_return", result["benchmark"])
+        self.assertIn("benchmark_return", result)
 
 
 if __name__ == "__main__":
