@@ -359,24 +359,42 @@ def advise_position(
 
     target_weight = 0.0
     target_note = ""
-    if conflict:
+    bearish = decision in ("SELL", "UNDERWEIGHT")
+    #: 是否"维持现有仓位"。维持时应直接把目标设为当前持仓，
+    #: 不能再走"按权重折算整手"的计算 —— 否则零股持仓会被算成减仓。
+    maintain = False
+
+    if bearish:
+        # 明确的看空决策：A 股不能做空，对持仓者即为减仓/清仓。
+        # 即使同时存在"规则与决策冲突"，也尊重显式看空结论。
         target_weight = 0.0
         target_note = (
-            "决策卡检测到规则共识与最终决策方向冲突，目标仓位按 0 处理"
-            "（对已持仓者为减仓/清仓）"
+            f"决策为 {decision}，A 股不支持做空，目标仓位按 0 处理（减仓/清仓）"
         )
-    elif requested <= 0:
-        target_weight = 0.0
-        if decision in ("SELL", "UNDERWEIGHT"):
+    elif conflict:
+        # 规则看多/看空 与 决策方向矛盾时，正确姿态是"不动"，而不是清仓。
+        # 此前把冲突当成 target=0，会让持有者收到"卖出全部"这种过强指令。
+        if current_qty > 0:
+            target_weight = current_weight
+            maintain = True
             target_note = (
-                f"决策为 {decision}，A 股不支持做空，目标仓位按 0 处理"
-                "（减仓/清仓）"
+                "规则共识与最终决策方向冲突，暂不调整持仓"
+                "（由止损位接管风险，请重点复核分歧原因）"
             )
         else:
+            target_weight = 0.0
+            target_note = "规则共识与最终决策方向冲突，暂不建仓"
+    elif requested <= 0:
+        if current_qty > 0:
+            # 门槛未过（信号不足/风险预算不足）语义是"不新增"，不是"清仓"。
+            target_weight = current_weight
+            maintain = True
             target_note = (
-                "决策卡未给出目标仓位（持有/门槛未过/风险预算不足），"
-                "对已持仓者按减仓处理"
+                "决策未给出新增仓位（触发门槛未过），维持现有仓位不变"
             )
+        else:
+            target_weight = 0.0
+            target_note = "决策未给出目标仓位（持有/门槛未过），暂不建仓"
     elif current_qty <= 0:
         target_weight = adjusted_add
         if target_weight <= 0:
@@ -410,7 +428,11 @@ def advise_position(
     if latest_price <= 0 and current is not None:
         latest_price = _number(_field(current, "avg_cost"))
 
-    if target_weight > 0 and equity > 0 and latest_price > 0:
+    if maintain:
+        # 维持：目标股数直接等于当前股数，避免零股持仓被"整手折算"成减仓。
+        target_qty = current_qty
+        target_weight = current_weight
+    elif target_weight > 0 and equity > 0 and latest_price > 0:
         raw_shares = equity * target_weight / latest_price
         target_qty = math.floor(raw_shares / lot + 1e-9) * lot
         if target_qty <= 0:
@@ -578,3 +600,107 @@ def advise_position(
         "reasons": reasons,
         "disclaimer": "规则化估算，仅供参考，不构成投资建议。",
     }
+
+
+# ============================================================================
+# 分析后置：把持仓建议接进多智能体分析流程
+# ============================================================================
+#
+# WHY 需要这一层：
+# 深度分析产出的是"买不买、买多少"，而真正持仓的人最关心的是"卖不卖"。
+# 若账户里已经持有该标的，分析结束后应自动给出持有建议（加/减/清仓与
+# 具体股数），否则用户还得再手动点一次快捷工具 —— 实际上很少有人会点。
+
+#: 默认账户名（与 storage/portfolio_store 保持一致）。
+DEFAULT_ACCOUNT = "默认账户"
+
+
+def advice_for_analysis(
+    ticker: str,
+    plan: dict | None,
+    account: str | None = None,
+) -> dict | None:
+    """分析结束后调用：仅当账户持有该标的时返回建议，否则返回 ``None``。
+
+    返回结构::
+
+        {"has_position": True, "advice": {...}, "markdown": "..."}
+
+    没有持仓时返回 ``None``（而不是一个空建议），调用方可以简单用
+    ``if advice:`` 决定是否把"持仓建议"附到报告末尾。
+    """
+    try:
+        from tradingagents.services.portfolio import load_positions
+
+        positions = load_positions(account or DEFAULT_ACCOUNT)
+    except Exception:
+        return None
+
+    target = _normalized(ticker)
+    current = next(
+        (
+            item
+            for item in positions
+            if _same_ticker(_field(item, "ticker"), target)
+        ),
+        None,
+    )
+    if current is None:
+        return None
+
+    advice = advise_position(
+        ticker, plan, account or DEFAULT_ACCOUNT, position=current
+    )
+    if not advice.get("success"):
+        return None
+    return {
+        "has_position": True,
+        "advice": advice,
+        "markdown": format_position_advice(advice),
+    }
+
+
+def format_position_advice(advice: dict) -> str:
+    """把持仓建议渲染成 Markdown，附在分析报告末尾。"""
+    if not advice or not advice.get("success"):
+        return ""
+
+    action = advice.get("action", "持有")
+    delta = float(advice.get("delta_qty") or 0)
+    if delta > 0:
+        delta_text = f"买入 {delta:.0f} 股"
+    elif delta < 0:
+        delta_text = f"卖出 {abs(delta):.0f} 股"
+    else:
+        delta_text = "维持不变"
+
+    lines = [
+        "### 持仓建议",
+        "",
+        f"- **动作**：{action}（{delta_text}）",
+        f"- **当前持仓**：{float(advice.get('current_qty') or 0):.0f} 股，"
+        f"占组合 {float(advice.get('current_weight') or 0) * 100:.1f}%",
+        f"- **目标仓位**：{float(advice.get('target_qty') or 0):.0f} 股，"
+        f"占组合 {float(advice.get('target_weight') or 0) * 100:.1f}%",
+        f"- **浮动盈亏**：{float(advice.get('unrealised_pnl') or 0):,.0f} 元"
+        f"（{float(advice.get('unrealised_pnl_pct') or 0) * 100:.2f}%）",
+        f"- **止损 / 目标**：{advice.get('stop_loss')} / {advice.get('take_profit')}",
+    ]
+
+    alerts = advice.get("alerts") or []
+    if alerts:
+        lines.append("")
+        lines.append("**提醒**：")
+        for alert in alerts:
+            lines.append(f"- [{alert.get('level')}] {alert.get('message')}")
+
+    reasons = advice.get("reasons") or []
+    if reasons:
+        lines.append("")
+        lines.append("**依据**：")
+        for reason in reasons[:6]:
+            lines.append(f"- {reason}")
+
+    lines.append("")
+    lines.append(f"> {advice.get('disclaimer', '规则化估算，仅供参考。')}")
+    return "\n".join(lines)

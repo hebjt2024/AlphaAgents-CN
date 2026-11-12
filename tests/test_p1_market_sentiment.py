@@ -201,6 +201,52 @@ class SnapshotServiceTests(unittest.TestCase):
         self.assertFalse(result["saved"])
         self.assertIsNone(get_sentiment_snapshot("2026-11-13"))
 
+    def test_small_sample_is_flagged_unreliable(self):
+        """样本不足时必须显式标注判定不可靠。
+
+        WHY：3 天数据算出的 0% 分位会被读成"历史冰点"，但实际只是
+        这三天的极小值。不标注就会误导重仓决策。
+        """
+        for offset in range(3):
+            save_sentiment_snapshot(
+                f"2026-11-{10 + offset:02d}",
+                {
+                    "breadth": {
+                        "up_count": 1000 + offset * 100,
+                        "down_count": 3500 - offset * 100,
+                        "limit_up": 20,
+                        "limit_down": 10,
+                    }
+                },
+            )
+
+        history = get_sentiment_history(days=60)
+        self.assertFalse(history["reliable"])
+        self.assertFalse(history["level_reliable"])
+        self.assertEqual(history["min_samples"], 20)
+        self.assertIn("样本不足", history["summary"])
+        self.assertIn("不可靠", history["summary"])
+        self.assertFalse(history["stats"]["reliable"])
+
+    def test_enough_samples_is_marked_reliable(self):
+        for offset in range(20):
+            save_sentiment_snapshot(
+                f"2026-10-{offset + 1:02d}",
+                {
+                    "breadth": {
+                        "up_count": 1500 + (offset % 5) * 200,
+                        "down_count": 3000 - (offset % 5) * 200,
+                        "limit_up": 30,
+                        "limit_down": 8,
+                    }
+                },
+            )
+
+        history = get_sentiment_history(days=60)
+        self.assertTrue(history["reliable"])
+        self.assertTrue(history["level_reliable"])
+        self.assertNotIn("样本不足", history["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

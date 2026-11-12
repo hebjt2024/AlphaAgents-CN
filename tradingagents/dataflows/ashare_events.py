@@ -55,6 +55,14 @@ _VALUATION_TTL = 3600.0
 _MARKET_CACHE = {}
 _MARKET_TTL = 1800.0
 
+#: 按**报告期**返回全市场数据的接口（业绩预告/快报、分红送配）使用更长的 TTL。
+#:
+#: WHY：这类数据的更新粒度是"报告期"，同一报告期的内容在一天内基本不变，
+#: 而一次查询要扇出 6 个报告期 × 2 个接口 = 最多 12 次全市场请求。
+#: 若沿用 30 分钟的 TTL，几乎每次分析都要重新拉一遍，明显拖慢分析。
+#: 6 小时是在"避免反复请求"与"预告季及时看到新公告"之间的折中。
+_PERIOD_MARKET_TTL = 21600.0
+
 _SNAPSHOT_CACHE = {}
 _SNAPSHOT_TTL = 3600.0
 
@@ -529,15 +537,18 @@ def get_valuation_percentile(ticker, curr_date=None, years=5) -> dict:
 # 2. 业绩预告 / 业绩快报
 # ============================================================================
 
-def _fetch_market_frame(name, func, **kwargs):
-    """按 (接口名, 参数) 缓存全市场表，避免同一分析重复拉取。
+def _fetch_market_frame(name, func, ttl=_MARKET_TTL, **kwargs):
+    """按（接口名, 参数）缓存全市场数据；同一参数不重复拉取。
 
     WHY：``stock_yjyg_em`` / ``stock_yjkb_em`` / ``stock_fhps_em`` 等接口
-    一次返回全市场数千行，按报告期调用；不缓存的话“事件日历”会反复
-    请求同一张表，既慢又容易触发限流。
+    一次返回全市场几千行，按报告期调用。业务层通常要连续查询多个报告期，
+    若不做缓存会对同一张表反复请求，既慢又容易触发限流。
+
+    ``ttl`` 不参与缓存键：同一个 (name, kwargs) 的缓存条目由调用方决定
+    保留多久，报告期类数据传 ``_PERIOD_MARKET_TTL``。
     """
     key = (name, tuple(sorted(kwargs.items())))
-    cached = _cache_get(_MARKET_CACHE, key, _MARKET_TTL)
+    cached = _cache_get(_MARKET_CACHE, key, ttl)
     if cached is not _MISS:
         return cached
 
@@ -680,7 +691,9 @@ def get_earnings_forecast(ticker, curr_date=None) -> dict:
             attempts += 1
             try:
                 func = getattr(ak, func_name)
-                df = _fetch_market_frame(table_name, func, date=period_ak)
+                df = _fetch_market_frame(
+                    table_name, func, ttl=_PERIOD_MARKET_TTL, date=period_ak
+                )
             except Exception as exc:
                 failed += 1
                 warnings.append(
@@ -1188,7 +1201,9 @@ def get_lockup_expiry(ticker, months=6, today=None) -> dict:
 def _fetch_fhps_frame(period_ak):
     """拉取某个报告期的全市场分红送转表（带缓存）。"""
     func = ak.stock_fhps_em
-    return _fetch_market_frame("fhps", func, date=period_ak)
+    return _fetch_market_frame(
+        "fhps", func, ttl=_PERIOD_MARKET_TTL, date=period_ak
+    )
 
 
 def get_dividend_schedule(ticker, days=90, today=None) -> dict:

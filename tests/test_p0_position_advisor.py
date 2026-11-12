@@ -144,7 +144,11 @@ class PositionActionTests(unittest.TestCase):
         self.assertGreaterEqual(result["current_qty"], 0)
         self.assertEqual(result["action"], "清仓")
 
-    def test_blocked_position_pct_targets_zero(self):
+    def test_blocked_position_pct_maintains_existing_position(self):
+        """决策未给出仓位（门槛未过）时，语义是"不新增"，不是"清仓"。
+
+        此前会被当成目标 0 → 清仓，对已持仓者是非常过强的错误指令。
+        """
         result = advise_position(
             "600519",
             _plan(position_pct=0.0),
@@ -152,11 +156,26 @@ class PositionActionTests(unittest.TestCase):
             equity=100000,
             cash=50000,
         )
+        self.assertAlmostEqual(result["target_weight"], result["current_weight"])
+        self.assertEqual(result["target_qty"], result["current_qty"])
+        self.assertEqual(result["action"], "持有")
+        self.assertEqual(result["delta_qty"], 0)
+        self.assertIn("维持", "".join(result["reasons"]))
+
+    def test_blocked_position_pct_without_position_stays_flat(self):
+        result = advise_position(
+            "600519",
+            _plan(position_pct=0.0),
+            position=_position(quantity=0, avg_cost=0.0, last_price=100.0),
+            equity=100000,
+            cash=100000,
+        )
         self.assertEqual(result["target_weight"], 0)
         self.assertEqual(result["target_qty"], 0)
-        self.assertEqual(result["action"], "清仓")
+        self.assertEqual(result["action"], "观望")
 
-    def test_conflict_targets_zero_and_explains(self):
+    def test_conflict_maintains_existing_position(self):
+        """规则与决策方向冲突时，正确姿态是"不动"，而不是清仓。"""
         result = advise_position(
             "600519",
             _plan(conflict=True),
@@ -164,10 +183,36 @@ class PositionActionTests(unittest.TestCase):
             equity=100000,
             cash=50000,
         )
-        self.assertEqual(result["target_weight"], 0)
-        self.assertEqual(result["target_qty"], 0)
+        self.assertAlmostEqual(result["target_weight"], result["current_weight"])
+        self.assertEqual(result["target_qty"], result["current_qty"])
+        self.assertEqual(result["action"], "持有")
+        self.assertEqual(result["delta_qty"], 0)
         text = "".join(result["reasons"])
         self.assertIn("冲突", text)
+        self.assertIn("暂不调整", text)
+
+    def test_conflict_without_position_stays_flat(self):
+        result = advise_position(
+            "600519",
+            _plan(conflict=True),
+            position=_position(quantity=0, avg_cost=0.0, last_price=100.0),
+            equity=100000,
+            cash=100000,
+        )
+        self.assertEqual(result["target_weight"], 0)
+        self.assertEqual(result["action"], "观望")
+
+    def test_bearish_decision_overrides_conflict_and_liquidates(self):
+        """看空决策优先：即使存在冲突，也按减仓/清仓处理。"""
+        result = advise_position(
+            "600519",
+            _plan(decision="SELL", conflict=True),
+            position=_position(quantity=300, avg_cost=90.0, last_price=100.0),
+            equity=100000,
+            cash=50000,
+        )
+        self.assertEqual(result["target_weight"], 0)
+        self.assertEqual(result["action"], "清仓")
 
     def test_returned_keys(self):
         result = advise_position(

@@ -24,6 +24,14 @@ from .market_review import build_market_review
 #: 少于该样本数时，分位与趋势的统计意义有限。
 MIN_SAMPLES = 10
 
+#: 给出"可靠"判定的最小样本量。
+#:
+#: WHY 单独设一个更高的门槛：``MIN_SAMPLES`` 只是"能算出数来"的下限，
+#: 用 3~12 天数据算分位数，会被近期一两天的极端值完全支配，得出的
+#: "冰点/高潮"结论几乎必然误导。只有样本足够覆盖一段完整情绪周期
+#: （约一个月交易日）时，分位数才有参考意义。
+RELIABLE_SAMPLES = 20
+
 #: 趋势判定阈值（上涨占比的 5 日均值差）。
 TREND_THRESHOLD = 0.01
 
@@ -209,18 +217,27 @@ def get_sentiment_history(days: int = 60) -> dict[str, Any]:
     )
 
     warnings: list[str] = []
-    if len(series) < MIN_SAMPLES:
+    reliable = len(series) >= RELIABLE_SAMPLES
+    if not reliable:
         warnings.append(
-            f"情绪历史样本不足（{len(series)} 天），趋势判断仅供参考"
+            f"情绪历史样本不足（{len(series)} 天，未达到 {RELIABLE_SAMPLES} 天的"
+            "可靠门槛）；分位与\"冰点/高潮\"判定仅供参考，请勿据此重仓决策。"
         )
+
+    if not reliable:
+        # 明确标注判定不可靠，避免把"3 天样本的 0% 分位"读成"历史冰点"
+        summary = f"⚠ 样本不足（{len(series)}/{RELIABLE_SAMPLES} 天），以下判定不可靠：{summary}"
 
     return {
         "success": True,
         "days": days,
         "series": series,
-        "stats": stats,
+        "stats": {**stats, "reliable": reliable, "required_samples": RELIABLE_SAMPLES},
         "trend": trend,
         "level": level,
+        "level_reliable": reliable,
+        "reliable": reliable,
+        "min_samples": RELIABLE_SAMPLES,
         "summary": summary,
         "warnings": warnings,
     }

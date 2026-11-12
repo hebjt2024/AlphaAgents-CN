@@ -2086,6 +2086,8 @@ function clearLogs() {
 
 /* ================= 结果 ================= */
 const REPORT_TITLES = {
+  // 放在最前：对已经持仓的人来说，"我手里这只怎么办" 比技术面分析更重要
+  position_advice: '💼 持仓建议',
   market_report: '📈 市场分析报告',
   strategy_report: '🧩 策略信号报告',
   news_report: '📰 新闻分析报告',
@@ -2881,12 +2883,16 @@ async function loadSentimentHistory() {
 function renderSentimentHistory(data) {
   const stats = data.stats || {};
   const latest = stats.latest || {};
+  const reliable = data.reliable !== false && data.level_reliable !== false;
+  const levelText = reliable
+    ? (data.level || '--')
+    : `${data.level || '--'}（样本不足）`;
   $('sentimentStats').innerHTML = `
-    <span>状态 <b>${escapeHtml(data.level || '--')}</b></span>
+    <span>状态 <b class="${reliable ? '' : 'warn'}">${escapeHtml(levelText)}</b></span>
     <span>趋势 <b>${escapeHtml(data.trend || '--')}</b></span>
     <span>上涨占比 <b>${(Number(latest.up_ratio || 0) * 100).toFixed(1)}%</b></span>
     <span>涨停 <b class="up">${latest.limit_up || 0}</b> / 跌停 <b class="down">${latest.limit_down || 0}</b></span>
-    <span>样本 <b>${stats.samples || 0}</b> 天</span>
+    <span>样本 <b>${stats.samples || 0}</b> / ${data.min_samples || 20} 天</span>
     <span>分位 <b>${stats.percentile === undefined ? '--' : Number(stats.percentile).toFixed(1)}%</b></span>`;
   const series = data.series || [];
   if (typeof echarts !== 'undefined' && series.length) {

@@ -45,6 +45,13 @@ def run_analysis(
         preliminary, decision, preliminary_plan, decision_plan
     )
 
+    # 持仓建议：只有当账户里确实持有该标的时才生成。
+    # WHY：分析回答的是"买不买"，持仓者关心的是"卖不卖"。把这一步接进
+    # 主流程，用户就不必再手动去快捷工具里点一次（实际上很少有人会点）。
+    from tradingagents.services.position_advisor import advice_for_analysis
+
+    position_advice = advice_for_analysis(ticker, decision_plan)
+
     reports = {
         "market_report": final_state.get("market_report", ""),
         "strategy_report": final_state.get("strategy_report", ""),
@@ -56,6 +63,8 @@ def run_analysis(
         "final_trade_decision": final_state.get("final_trade_decision", ""),
         "decision_plan": format_decision_plan(decision_plan),
     }
+    if position_advice:
+        reports["position_advice"] = position_advice["markdown"]
 
     report_id = save_report(
         ticker=ticker,
@@ -71,6 +80,7 @@ def run_analysis(
             "horizon": horizon,
             "decision_plan": decision_plan,
             "decision_diff": decision_diff,
+            "position_advice": position_advice,
         },
     )
 
@@ -93,6 +103,7 @@ def run_analysis(
         "decision": decision,
         "decision_plan": decision_plan,
         "decision_diff": decision_diff,
+        "position_advice": position_advice,
         "final_state": final_state,
         "notification": notify_result,
     }

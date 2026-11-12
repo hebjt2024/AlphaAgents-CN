@@ -1015,6 +1015,18 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
         except Exception as exc:
             portfolio_evaluation = {"error": str(exc)}
 
+        # 持仓建议：仅当账户持有该标的时生成（分析回答"买不买"，
+        # 持仓者真正关心的是"卖不卖"）。
+        position_advice = None
+        try:
+            from tradingagents.services.position_advisor import (
+                advice_for_analysis,
+            )
+
+            position_advice = advice_for_analysis(request.company, decision_plan)
+        except Exception:
+            logger.debug("持仓建议生成失败", exc_info=True)
+
         # 完整 reports 字段：保持与 AgentState 字段名一致，前端按 key 渲染对应卡片
         # 注意：investment_plan 是研究经理的推荐，trader_investment_plan 是交易员的执行方案
         reports = {
@@ -1028,6 +1040,8 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             "final_trade_decision": final_state.get("final_trade_decision", ""),
             "decision_plan": format_decision_plan(decision_plan),
         }
+        if position_advice:
+            reports["position_advice"] = position_advice["markdown"]
 
         report_id = None
         if not analysis_cancel_event.is_set():
@@ -1050,6 +1064,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
                         "decision_plan": decision_plan,
                         "decision_diff": decision_diff,
                         "portfolio_evaluation": portfolio_evaluation,
+                        "position_advice": position_advice,
                     },
                 )
             except Exception as exc:
@@ -1071,6 +1086,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             "decision_plan": decision_plan,
             "decision_diff": decision_diff,
             "portfolio_evaluation": portfolio_evaluation,
+            "position_advice": position_advice,
             "cancelled": cancelled,
         }
         try:
