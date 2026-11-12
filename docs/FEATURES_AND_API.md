@@ -577,6 +577,17 @@ tradingagents <command>
 | `watch add <ticker>` | 添加自选股 | `alphaagents watch add 600519 --name 贵州茅台` |
 | `watch list` | 查看自选股 | `alphaagents watch list` |
 | `watch remove <ticker>` | 删除自选股 | `alphaagents watch remove 600519` |
+| `jobs list` | 查看分析任务记录 | `alphaagents jobs list -n 20` |
+| `jobs clean` | 清理终态任务记录 | `alphaagents jobs clean --dry-run` |
+| `jobs purge` | 按条件清理任务记录 | `alphaagents jobs purge --before 2026-11-01` |
+
+任务记录清理的安全约定：
+
+- 默认只删除**终态**任务（`completed` / `failed` / `cancelled`），
+  不会误删 `queued` / `running`；
+- `--dry-run` 只预览命中数量与状态/来源分布，不删除；
+- 支持 `--before YYYY-MM-DD`、`--company <代码>`、`--status a,b` 过滤；
+- `--yes` 跳过确认（便于脚本化）。
 
 回测参数：
 

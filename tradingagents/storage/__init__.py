@@ -7,6 +7,7 @@ from .briefing_store import (
     save_briefing,
 )
 from .job_store import (
+    TERMINAL_JOB_STATUSES,
     create_job,
     delete_job,
     fail_job,
@@ -14,6 +15,9 @@ from .job_store import (
     get_job,
     list_jobs,
     mark_job_running,
+    purge_all_job_records,
+    purge_jobs,
+    summarize_jobs,
 )
 from .memory_store import (
     clear_memories,
@@ -79,6 +83,10 @@ __all__ = [
     "get_job",
     "list_jobs",
     "delete_job",
+    "TERMINAL_JOB_STATUSES",
+    "summarize_jobs",
+    "purge_jobs",
+    "purge_all_job_records",
     "save_memory",
     "list_memories",
     "count_memories",

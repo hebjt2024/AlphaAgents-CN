@@ -345,6 +345,137 @@ def delete_job(job_id: str) -> bool:
         return cursor.rowcount > 0
 
 
+#: 任务"已结束"的状态集合。批量清理默认只动这些状态，
+#: 绝不会误删还在排队或正在运行的任务。
+TERMINAL_JOB_STATUSES = ("completed", "failed", "cancelled")
+
+
+def _build_purge_filter(
+    statuses: list[str] | None,
+    before_date: str | None,
+    company: str | None,
+) -> tuple[str, list[Any]]:
+    """构造批量删除/统计用的 WHERE 子句。"""
+    clauses: list[str] = []
+    params: list[Any] = []
+
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        clauses.append(f"status IN ({placeholders})")
+        params.extend(statuses)
+    if before_date:
+        # created_at 是 ISO 字符串（YYYY-MM-DDTHH:MM:SS），
+        # 与 "YYYY-MM-DD" 做字典序比较即等价于按日期比较。
+        clauses.append("created_at < ?")
+        params.append(str(before_date))
+    if company:
+        clauses.append("company = ?")
+        params.append(str(company))
+
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    return where, params
+
+
+def summarize_jobs(
+    statuses: list[str] | None = None,
+    before_date: str | None = None,
+    company: str | None = None,
+) -> dict[str, Any]:
+    """统计符合条件的历史任务（不删除），用于清理前预览。"""
+    _init_jobs()
+    where, params = _build_purge_filter(statuses, before_date, company)
+    with _connect() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) AS n FROM jobs{where}", params
+        ).fetchone()["n"]
+        by_status = {
+            row["status"]: row["n"]
+            for row in conn.execute(
+                f"SELECT status, COUNT(*) AS n FROM jobs{where} GROUP BY status",
+                params,
+            )
+        }
+        # 按来源（meta.payload.source）拆分，便于判断哪些是定时任务遗留
+        by_source: dict[str, int] = {}
+        for row in conn.execute(
+            f"""
+            SELECT COALESCE(json_extract(meta_json, '$.payload.source'),
+                            json_extract(meta_json, '$.kind'),
+                            'unknown') AS source,
+                   COUNT(*) AS n
+            FROM jobs{where}
+            GROUP BY source
+            """,
+            params,
+        ):
+            by_source[row["source"]] = row["n"]
+    return {
+        "total": int(total),
+        "by_status": by_status,
+        "by_source": by_source,
+        "filter": {
+            "statuses": statuses,
+            "before_date": before_date,
+            "company": company,
+        },
+    }
+
+
+def purge_jobs(
+    statuses: list[str] | None = None,
+    before_date: str | None = None,
+    company: str | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """批量删除历史任务记录。
+
+    安全约束：
+
+    - ``statuses`` 为 ``None`` 时只删除**终态**任务
+      （``completed`` / ``failed`` / ``cancelled``），
+      绝不会动 ``queued`` / ``running``；
+    - ``dry_run=True`` 只统计不删除；
+    - 同时清理 ``run_logs`` 中对应 run 的记录？——不。运行指标是独立的
+      可观测性数据，保留用于统计成本，因此这里只删任务行。
+
+    返回删除（或将要删除）的数量与明细。
+    """
+    _init_jobs()
+
+    if statuses is None:
+        statuses = list(TERMINAL_JOB_STATUSES)
+    statuses = [str(item).strip() for item in statuses if str(item).strip()]
+
+    # 显式请求删除 queued/running 时也要提醒：那会丢失待执行/进行中的任务
+    summary = summarize_jobs(statuses, before_date, company)
+    if dry_run:
+        return {"deleted": 0, "dry_run": True, **summary}
+
+    where, params = _build_purge_filter(statuses, before_date, company)
+    with _connect() as conn:
+        cursor = conn.execute(f"DELETE FROM jobs{where}", params)
+        deleted = cursor.rowcount
+    return {"deleted": int(deleted), "dry_run": False, **summary}
+
+
+def purge_all_job_records(include_active: bool = False) -> dict[str, Any]:
+    """清空任务表（用于彻底重来）。
+
+    ``include_active=False`` 时保留 ``queued`` / ``running`` 任务。
+    """
+    if include_active:
+        statuses = [
+            "completed",
+            "failed",
+            "cancelled",
+            "queued",
+            "running",
+        ]
+    else:
+        statuses = list(TERMINAL_JOB_STATUSES)
+    return purge_jobs(statuses=statuses)
+
+
 # ---------------------------------------------------------------- 队列接口
 
 

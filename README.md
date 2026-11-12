@@ -168,6 +168,12 @@ alphaagents strategies 600519 --all
 # 自选股管理
 alphaagents watch add 600519 --name 贵州茅台
 alphaagents watch list
+
+# 任务记录管理（查看 / 清理历史任务）
+alphaagents jobs list
+alphaagents jobs clean --dry-run
+alphaagents jobs clean
+alphaagents jobs purge --before 2026-11-01
 ```
 
 ### 依赖冲突排查（jmespath / 阿里云 SDK）

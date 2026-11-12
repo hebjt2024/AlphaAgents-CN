@@ -2828,6 +2828,149 @@ def watch_remove(ticker: str = typer.Argument(..., help="股票代码")):
         console.print(f"[yellow]未找到:[/yellow] {ticker}")
 
 
+jobs_app = typer.Typer(help="分析任务记录管理（查看 / 清理历史任务）")
+app.add_typer(jobs_app, name="jobs")
+
+
+@jobs_app.command("list")
+def jobs_list(
+    limit: int = typer.Option(20, "--limit", "-n", help="显示条数"),
+    status: str = typer.Option("", "--status", help="只看某个状态"),
+):
+    """查看最近的分析任务记录。
+
+    历史遗留的定时任务也能在这里看到 —— 例如 `source=scheduled_job`。
+    """
+    from tradingagents.storage import list_jobs
+
+    items = list_jobs(limit=limit)
+    if status:
+        items = [item for item in items if item.get("status") == status]
+    if not items:
+        console.print("[yellow]暂无任务记录[/yellow]")
+        return
+
+    table = Table(title="分析任务记录", box=box.ROUNDED)
+    table.add_column("任务 ID", style="dim", width=10)
+    table.add_column("代码", style="cyan")
+    table.add_column("交易日")
+    table.add_column("状态")
+    table.add_column("来源")
+    table.add_column("创建时间", style="dim")
+    for item in items:
+        payload = (item.get("meta") or {}).get("payload") or {}
+        source = payload.get("source") or (item.get("meta") or {}).get("kind") or "-"
+        table.add_row(
+            str(item.get("job_id", ""))[:8],
+            str(item.get("company", "")),
+            str(item.get("trade_date", "")),
+            str(item.get("status", "")),
+            str(source),
+            str(item.get("created_at", "")),
+        )
+    console.print(table)
+
+
+def _print_purge_summary(summary: dict) -> None:
+    total = summary.get("total", 0)
+    console.print(f"  命中记录: [bold]{total}[/bold]")
+    by_status = summary.get("by_status") or {}
+    if by_status:
+        console.print(
+            "  按状态: "
+            + "、".join(f"{k}={v}" for k, v in sorted(by_status.items()))
+        )
+    by_source = summary.get("by_source") or {}
+    if by_source:
+        console.print(
+            "  按来源: "
+            + "、".join(f"{k}={v}" for k, v in sorted(by_source.items()))
+        )
+
+
+@jobs_app.command("purge")
+def jobs_purge(
+    status: str = typer.Option(
+        "",
+        "--status",
+        help="要删除的状态，逗号分隔；留空=只删已完成/失败/已取消",
+    ),
+    before: str = typer.Option(
+        "", "--before", help="只删除该日期之前创建的任务（YYYY-MM-DD）"
+    ),
+    company: str = typer.Option("", "--company", help="只删除某个标的的任务"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只预览，不删除"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认"),
+):
+    """清理历史任务记录。
+
+    默认只删除**已结束**的任务（completed / failed / cancelled），
+    不会误删排队中或正在运行的任务。
+
+    例：
+
+        alphaagents jobs purge --before 2026-11-01
+        alphaagents jobs purge --status completed,cancelled
+        alphaagents jobs purge --before 2026-11-01 --dry-run
+    """
+    from tradingagents.storage import purge_jobs, summarize_jobs
+
+    statuses = (
+        [item.strip() for item in status.split(",") if item.strip()]
+        if status
+        else None
+    )
+    before_date = before.strip() or None
+    company_filter = company.strip() or None
+
+    summary = summarize_jobs(statuses, before_date, company_filter)
+    if summary.get("total", 0) == 0:
+        console.print("[yellow]没有符合条件的任务记录[/yellow]")
+        return
+
+    console.print("[bold]将要清理:[/bold]")
+    _print_purge_summary(summary)
+
+    if dry_run:
+        console.print("[dim]--dry-run：未删除任何记录[/dim]")
+        return
+
+    if not yes:
+        confirmed = typer.confirm(f"确认删除这 {summary['total']} 条任务记录？")
+        if not confirmed:
+            console.print("[yellow]已取消[/yellow]")
+            return
+
+    result = purge_jobs(statuses, before_date, company_filter, dry_run=False)
+    console.print(f"[green]已删除 {result.get('deleted', 0)} 条任务记录[/green]")
+
+
+@jobs_app.command("clean")
+def jobs_clean(
+    before: str = typer.Option(
+        "", "--before", help="只清理该日期之前的记录（YYYY-MM-DD）"
+    ),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只预览，不删除"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="跳过确认"),
+):
+    """一键清理终态任务记录（completed / failed / cancelled）。
+
+    保留排队中与正在运行的任务，是最常用的清理方式。
+
+    例：
+
+        alphaagents jobs clean --dry-run
+        alphaagents jobs clean
+    """
+    jobs_purge(
+        status="",
+        before=before,
+        company="",
+        dry_run=dry_run,
+        yes=yes,
+    )
+
+
 @app.command()
 def analyze():
     """
