@@ -19,6 +19,12 @@ from .job_store import (
     purge_jobs,
     summarize_jobs,
 )
+from .market_sentiment_store import (
+    delete_sentiment_snapshot,
+    get_sentiment_snapshot,
+    list_sentiment_snapshots,
+    save_sentiment_snapshot,
+)
 from .memory_store import (
     clear_memories,
     count_memories,
@@ -87,6 +93,10 @@ __all__ = [
     "summarize_jobs",
     "purge_jobs",
     "purge_all_job_records",
+    "delete_sentiment_snapshot",
+    "get_sentiment_snapshot",
+    "list_sentiment_snapshots",
+    "save_sentiment_snapshot",
     "save_memory",
     "list_memories",
     "count_memories",

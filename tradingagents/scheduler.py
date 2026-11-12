@@ -105,6 +105,15 @@ def _enabled(name: str) -> bool:
     return os.getenv(name, "0").lower() in ("1", "true", "yes", "on")
 
 
+def _enabled_by_default(name: str) -> bool:
+    """默认开启的开关：只有显式设为 0/false 才关闭。
+
+    用于"只要调度器在跑就应该做"的事情，例如每日情绪快照 ——
+    关掉它只会让历史序列断档，几乎没有人会想这么做。
+    """
+    return os.getenv(name, "1").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(float(os.getenv(name, "").strip() or default))
@@ -368,9 +377,44 @@ def _record_batch_result(today: str, errors: list[str]) -> None:
     _save_batch_state(state)
 
 
+def _run_sentiment_snapshot_once() -> None:
+    """每日记录一次市场情绪快照。
+
+    WHY：``market_review`` 的数据源是**实时快照**，接口不支持回溯历史。
+    如果不在每个交易日主动写一条记录，系统就永远无法回答
+    "现在的情绪处于冰点还是高潮"——而这恰恰是 A 股最重要的择时依据。
+
+    该步骤与是否推送复盘解耦：即使 `SCHEDULE_REVIEW=0`（不推送），
+    只要当日批次跑过，也会积累一条情绪记录。
+    """
+    if not _enabled_by_default("SCHEDULE_SENTIMENT"):
+        return
+    today = cn_today_str()
+    if not is_cn_trading_day(today):
+        logger.info("非交易日，跳过情绪快照")
+        return
+    try:
+        from tradingagents.services.market_sentiment import (
+            snapshot_market_sentiment,
+        )
+
+        result = snapshot_market_sentiment()
+        if result.get("saved"):
+            logger.info("情绪快照已记录: %s", result.get("trade_date"))
+        else:
+            logger.warning(
+                "情绪快照未记录: %s", result.get("message") or "未知原因"
+            )
+    except Exception:
+        logger.exception("情绪快照记录失败")
+
+
 def _run_once() -> None:
-    """执行一次每日批量任务（简报/预警/复盘 + 定时分析）。"""
+    """执行一次每日批量任务（简报/预警/复盘 + 情绪快照 + 定时分析）。"""
     errors: list[str] = []
+
+    # 情绪快照优先：它不依赖推送渠道，纯粹是本地历史积累
+    _run_sentiment_snapshot_once()
 
     if _enabled("SCHEDULE_BRIEFING"):
         _run_briefing_once()

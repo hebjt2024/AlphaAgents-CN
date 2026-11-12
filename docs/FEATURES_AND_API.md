@@ -814,11 +814,39 @@ http://127.0.0.1:8000
 |---|---|---|
 | GET | `/api/portfolio` | 账户持仓、组合权重与风险体检 |
 | POST | `/api/portfolio/evaluate` | 把决策卡放到组合语境下重新评估 |
+| GET | `/api/portfolio/alerts` | 持仓止损 / 止盈 / 深亏 / 未设止损提醒 |
+| GET | `/api/position/advice` | 结合持仓给出加仓 / 减仓 / 清仓股数 |
 | GET | `/api/runs` | 最近运行的 token / 成本 / 耗时指标 |
 | GET | `/api/runs/aggregate` | 运行指标聚合（按模型与来源拆分） |
 | GET | `/healthz` | 存活探针 |
 | GET | `/readyz` | 就绪探针（检查数据库与调度器） |
 | GET | `/metrics` | Prometheus 文本格式指标 |
+
+### 10.6b A 股研判：估值 / 事件 / 排雷 / 情绪
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/valuation/percentile` | PE-TTM / PB 当前值在近 N 年的历史分位 |
+| GET | `/api/earnings/forecast` | 业绩预告与业绩快报 |
+| GET | `/api/fundamentals/red-flags` | 商誉 / 股权质押 / 应收账款 / 经营现金流四项排雷 |
+| GET | `/api/events/calendar` | 解禁 / 财报披露 / 除权除息 / 业绩预告窗口 |
+| GET | `/api/market/sentiment/history` | 市场情绪历史序列与冰点/高潮判定 |
+| POST | `/api/market/sentiment/snapshot` | 立即记录一次情绪快照 |
+
+对应的 LLM 工具（供分析师调用）：
+
+| 工具 | 用途 |
+|---|---|
+| `get_valuation_percentile` | 判断当前估值处于历史什么分位（贵不贵） |
+| `get_earnings_forecast` | 查看业绩预告/快报（是否超预期） |
+| `get_financial_red_flags` | 商誉/质押/应收/现金流四项排雷 |
+| `get_lockup_expiry` | 限售解禁安排与临近程度 |
+| `get_event_calendar` | 未来 N 天的事件日历 |
+
+> 情绪历史依赖**每日落库**：`market_review` 的数据源是实时快照，不支持回溯，
+> 因此历史序列从首次记录开始累积。调度器在 `SCHEDULE_ENABLED=1` 时每个交易日
+> 自动写入一条（`SCHEDULE_SENTIMENT=0` 可关闭）；也可以在页面上点
+> 「记录今日快照」手动补。
 
 ### 10.7 鉴权与限流
 

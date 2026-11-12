@@ -246,8 +246,11 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_capital_flow,
     get_dragon_tiger,
+    get_event_calendar,
     get_indicators,
+    get_lockup_expiry,
     get_stock_data,
+    get_valuation_percentile,
 )
 
 # 【get_config】
@@ -392,6 +395,12 @@ def create_market_analyst(llm):
             # 无数据提示，由 LLM 自行忽略，不影响原有分析流程。
             get_capital_flow,
             get_dragon_tiger,
+            # A 股择时辅助：
+            #   - 估值历史分位：技术形态之外，判断当前价位的安全边际
+            #   - 限售解禁 / 事件日历：识别未来可能带来抛压的时间窗口
+            get_valuation_percentile,
+            get_lockup_expiry,
+            get_event_calendar,
         ]
 
         # ====================================================================
@@ -553,6 +562,7 @@ MACD 相关：
 
 - 请选择能提供多样化且互补信息的指标，避免冗余（例如不要同时选择 rsi 和 stochrsi）。同时简要说明它们为何适合当前的市场环境。调用工具时，请使用上面提供的指标确切名称，因为它们是已定义的参数，否则调用会失败。请务必先调用 get_stock_data 获取生成指标所需的 CSV 数据，然后使用 get_indicators 并传入具体的指标名称。撰写一份极为详尽、细致的趋势观察报告，提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"""
             + """ 对于 A 股标的，如需要判断资金面强弱，请调用 get_capital_flow 获取主力资金流向；若个股近期出现异动，可调用 get_dragon_tiger 查看龙虎榜资金博弈。本次策略扫描结果已随上下文提供，请结合其中的策略信号（多头趋势、均线金叉、放量突破、缩量回踩、箱体、缠论/波浪等）作为技术面证据。
+另请结合以下 A 股择时工具：`get_valuation_percentile` 判断当前价位在历史估值中的分位（技术形态再好看，估值处于 90% 分位也要提示回归风险）；`get_lockup_expiry` 与 `get_event_calendar` 查看未来 30 天是否存在解禁、财报披露、除权除息等可能引发波动的事件。若临近大规模解禁，必须在报告中提示抛压风险。
 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""
         )
         # [英文备份] system_message (en):

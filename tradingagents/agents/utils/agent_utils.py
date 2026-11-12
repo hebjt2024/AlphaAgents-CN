@@ -190,6 +190,25 @@ from tradingagents.agents.utils.capital_flow_tools import (
     get_northbound_flow as get_northbound_flow,
 )
 from tradingagents.agents.utils.core_stock_tools import get_stock_data as get_stock_data
+
+# A 股估值 / 事件 / 财务排雷工具：
+#   估值历史分位、业绩预告、财务排雷、限售解禁、事件日历。
+# 分析师由此统一入口取用，避免各自 import 造成依赖漂移。
+from tradingagents.agents.utils.event_tools import (
+    get_earnings_forecast as get_earnings_forecast,
+)
+from tradingagents.agents.utils.event_tools import (
+    get_event_calendar as get_event_calendar,
+)
+from tradingagents.agents.utils.event_tools import (
+    get_financial_red_flags as get_financial_red_flags,
+)
+from tradingagents.agents.utils.event_tools import (
+    get_lockup_expiry as get_lockup_expiry,
+)
+from tradingagents.agents.utils.event_tools import (
+    get_valuation_percentile as get_valuation_percentile,
+)
 from tradingagents.agents.utils.fundamental_data_tools import (
     get_balance_sheet as get_balance_sheet,
 )

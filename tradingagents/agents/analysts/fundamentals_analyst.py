@@ -87,8 +87,12 @@ from tradingagents.agents.utils.agent_utils import (
     build_instrument_context,
     get_balance_sheet,
     get_cashflow,
+    get_earnings_forecast,
+    get_event_calendar,
+    get_financial_red_flags,
     get_fundamentals,
     get_income_statement,
+    get_valuation_percentile,
 )
 
 # get_config：获取全局配置（如 API 密钥、模型参数等）
@@ -189,6 +193,15 @@ def create_fundamentals_analyst(llm):
             get_balance_sheet,      # 获取资产负债表
             get_cashflow,           # 获取现金流量表
             get_income_statement,   # 获取利润表
+            # A 股特有的"把数字变成判断"的工具：
+            #   - 估值历史分位：答"贵不贵"
+            #   - 业绩预告/快报：答"业绩有没有超预期"
+            #   - 财务排雷：答"会不会爆雷"
+            #   - 事件日历：答"接下来有什么大事"
+            get_valuation_percentile,
+            get_earnings_forecast,
+            get_financial_red_flags,
+            get_event_calendar,
         ]
 
         # ====================================================================
@@ -239,7 +252,16 @@ def create_fundamentals_analyst(llm):
             "请确保包含尽可能多的细节，提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"
             + " 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"
             + " 请使用以下可用工具：使用 `get_fundamentals` 获取公司综合分析，"
-            "使用 `get_balance_sheet`、`get_cashflow`、`get_income_statement` 获取具体的财务报表。",
+            "使用 `get_balance_sheet`、`get_cashflow`、`get_income_statement` 获取具体的财务报表。"
+            # A 股专用工具引导：这几项能把"报表数字"变成"投资判断"，
+            # 且都是 A 股特有的强信息，必须显式点名，否则模型容易只用报表原文。
+            + " 另外请务必使用以下 A 股专用工具："
+            "`get_valuation_percentile` 判断当前估值处于历史什么分位（贵不贵），"
+            "`get_earnings_forecast` 查看业绩预告/快报（是否超预期），"
+            "`get_financial_red_flags` 做商誉/质押/应收账款/现金流四项排雷，"
+            "`get_event_calendar` 查看未来 30 天的解禁、财报披露、除权除息等事件。"
+            "如果估值分位处于极端区间、排雷出现 danger、或近期有大规模解禁，"
+            "必须在报告中明确提示风险。",
         )
         # [英文备份] system_message (en):
         # system_message = (

@@ -2151,6 +2151,171 @@ async def api_portfolio_evaluate(request: PortfolioEvaluateRequest):
         return error_payload(str(exc))
 
 
+# ============================================================================
+# A 股估值 / 事件 / 财务排雷 / 持仓建议 / 情绪历史 API
+#
+# 这些是"把数据变成判断"的接口：
+#   - 估值分位回答"贵不贵"
+#   - 业绩预告回答"有没有超预期"
+#   - 财务排雷回答"会不会爆雷"
+#   - 事件日历回答"接下来有什么大事"
+#   - 持仓建议回答"我手里这只现在该怎么办"
+# ============================================================================
+
+
+@api_router.get("/valuation/percentile", tags=["估值"], summary="查询估值历史分位")
+async def api_valuation_percentile(
+    ticker: str, years: int = 5, curr_date: str | None = None
+):
+    """返回 PE-TTM / PB 当前值在近 N 年历史中的分位。"""
+    try:
+        from tradingagents.dataflows.ashare_events import (
+            get_valuation_percentile,
+        )
+
+        result = await run_in_threadpool(
+            get_valuation_percentile, ticker, curr_date, int(years)
+        )
+        return {"success": bool(result.get("success")), "valuation": result}
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.get("/earnings/forecast", tags=["估值"], summary="查询业绩预告与快报")
+async def api_earnings_forecast(ticker: str, curr_date: str | None = None):
+    try:
+        from tradingagents.dataflows.ashare_events import get_earnings_forecast
+
+        result = await run_in_threadpool(
+            get_earnings_forecast, ticker, curr_date
+        )
+        return {"success": bool(result.get("success")), "forecast": result}
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.get(
+    "/fundamentals/red-flags", tags=["估值"], summary="财务排雷四项检查"
+)
+async def api_financial_red_flags(ticker: str, curr_date: str | None = None):
+    """商誉 / 股权质押 / 应收账款 / 经营现金流 风险排查。"""
+    try:
+        from tradingagents.dataflows.ashare_events import (
+            get_financial_red_flags,
+        )
+
+        result = await run_in_threadpool(
+            get_financial_red_flags, ticker, curr_date
+        )
+        return {"success": bool(result.get("success")), "red_flags": result}
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.get("/events/calendar", tags=["估值"], summary="未来事件日历")
+async def api_event_calendar(ticker: str, days: int = 30):
+    """解禁 / 财报披露 / 除权除息 / 业绩预告窗口合并日历。"""
+    try:
+        from tradingagents.dataflows.ashare_events import build_event_calendar
+
+        result = await run_in_threadpool(
+            build_event_calendar, ticker, int(days)
+        )
+        return {"success": bool(result.get("success")), "calendar": result}
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.get("/position/advice", tags=["组合"], summary="按当前持仓给出操作建议")
+async def api_position_advice(
+    ticker: str, account: str | None = None, decision: str | None = None
+):
+    """结合持仓与最新决策卡，给出加仓/减仓/清仓/持有建议。
+
+    ``decision`` 可选（BUY / OVERWEIGHT / HOLD / UNDERWEIGHT / SELL）。
+    不传时使用策略扫描得到的规则初判，作为没有 LLM 结论时的兜底。
+    """
+    try:
+        from tradingagents.services.decision_plan import build_decision_plan
+        from tradingagents.services.position_advisor import advise_position
+        from tradingagents.strategies.scanner import scan_all_strategies
+
+        strategy_result = await run_in_threadpool(scan_all_strategies, ticker)
+        summary = (strategy_result or {}).get("summary") or {}
+
+        if decision:
+            chosen = str(decision).upper()
+        else:
+            from tradingagents.services.fast_preview import (
+                preliminary_decision,
+            )
+
+            chosen = preliminary_decision(summary)
+
+        plan = build_decision_plan(strategy_result, chosen)
+        advice = await run_in_threadpool(
+            advise_position, ticker, plan, account
+        )
+        return {
+            "success": bool(advice.get("success")),
+            "advice": advice,
+            "decision_source": "manual" if decision else "rule_preview",
+        }
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.get("/portfolio/alerts", tags=["组合"], summary="持仓止损止盈提醒")
+async def api_portfolio_alerts(account: str | None = None):
+    """对当前持仓做止损/止盈/深亏/未设止损检查。"""
+    try:
+        from tradingagents.services.portfolio import load_positions
+        from tradingagents.services.position_advisor import (
+            check_position_alerts,
+            summarize_alerts,
+        )
+
+        positions = await run_in_threadpool(load_positions, account)
+        alerts = await run_in_threadpool(check_position_alerts, positions)
+        return {
+            "success": True,
+            "alerts": alerts,
+            "summary": summarize_alerts(alerts),
+        }
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.get(
+    "/market/sentiment/history", tags=["市场"], summary="市场情绪历史趋势"
+)
+async def api_sentiment_history(days: int = 60):
+    """返回每日市场情绪序列、当前所处状态（冰点/高潮）与趋势。"""
+    try:
+        from tradingagents.services.market_sentiment import (
+            get_sentiment_history,
+        )
+
+        return await run_in_threadpool(get_sentiment_history, int(days))
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.post(
+    "/market/sentiment/snapshot", tags=["市场"], summary="立即记录一次情绪快照"
+)
+async def api_sentiment_snapshot(date: str | None = None):
+    """把当前市场复盘数据落库为一条情绪快照（用于积累历史序列）。"""
+    try:
+        from tradingagents.services.market_sentiment import (
+            snapshot_market_sentiment,
+        )
+
+        return await run_in_threadpool(snapshot_market_sentiment, date)
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
 @api_router.get("/runs", tags=["任务"], summary="查询最近运行指标")
 async def api_list_runs(ticker: str | None = None, limit: int = 50, offset: int = 0):
     """返回最近的运行指标（token / 成本 / 耗时）。"""
@@ -2447,7 +2612,8 @@ OPENAPI_TAGS = [
     {"name": "策略", "description": "经典策略扫描、回测与预警推送。"},
     {"name": "市场", "description": "行情、K 线、资金流与市场复盘。"},
     {"name": "报告", "description": "分析报告、盘后简报与交易日历。"},
-    {"name": "组合", "description": "组合持仓与组合级风控评估。"},
+    {"name": "组合", "description": "组合持仓、组合级风控评估与持仓操作建议。"},
+    {"name": "估值", "description": "估值历史分位、业绩预告、财务排雷与事件日历。"},
     {"name": "系统", "description": "健康探针、就绪探针与指标导出。"},
 ]
 
