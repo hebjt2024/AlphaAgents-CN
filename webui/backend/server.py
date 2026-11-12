@@ -2124,6 +2124,118 @@ async def api_portfolio(account: str | None = None):
         return error_payload(str(exc))
 
 
+class PositionUpsertRequest(BaseModel):
+    ticker: str = Field(..., min_length=1)
+    quantity: float = Field(..., ge=0)
+    avg_cost: float = Field(..., ge=0)
+    name: str = ""
+    sector: str = ""
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    account: str | None = None
+    #: 可选：同时设置账户现金余额。
+    #: 手工录入真实持仓时，现金不会自动扣减，若不设置会导致组合权益虚高
+    #: （权益 = 现金 + 持仓市值）。首次建账时把真实可用资金填进来即可。
+    cash: float | None = Field(default=None, ge=0)
+
+
+@api_router.post(
+    "/portfolio/position", tags=["组合"], summary="录入或更新一条持仓"
+)
+async def api_upsert_position(request: PositionUpsertRequest):
+    """手工录入 / 修正持仓。
+
+    WHY：持仓建议与止损止盈提醒都依赖真实持仓数据。此前只有只读接口，
+    用户没有便捷入口录入持仓，导致这两项功能实际上用不起来。
+
+    ``last_price`` 与成本价一致（首次录入），后续可通过成交接口或行情刷新。
+    """
+    try:
+        from tradingagents.services.portfolio import ensure_account
+        from tradingagents.storage import upsert_position
+
+        account = request.account or "默认账户"
+        # 账户按需创建：用户第一次录入持仓时不应该先手动"开户"
+        await run_in_threadpool(ensure_account, account)
+        row = await run_in_threadpool(
+            upsert_position,
+            account,
+            request.ticker,
+            quantity=request.quantity,
+            avg_cost=request.avg_cost,
+            last_price=request.avg_cost,
+            name=request.name,
+            stop_loss=request.stop_loss,
+            take_profit=request.take_profit,
+        )
+        if request.cash is not None:
+            from tradingagents.storage import update_account_cash
+
+            await run_in_threadpool(
+                update_account_cash, account, float(request.cash)
+            )
+        return {"success": True, "position": row}
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+@api_router.delete(
+    "/portfolio/position/{ticker}", tags=["组合"], summary="删除一条持仓"
+)
+async def api_delete_position(ticker: str, account: str | None = None):
+    try:
+        from tradingagents.storage import delete_position
+
+        deleted = await run_in_threadpool(
+            delete_position, account or "默认账户", ticker
+        )
+        return {
+            "success": bool(deleted),
+            "message": "已删除" if deleted else "未找到该持仓",
+        }
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
+class FillRequest(BaseModel):
+    ticker: str = Field(..., min_length=1)
+    side: Literal["BUY", "SELL"]
+    quantity: float = Field(..., gt=0)
+    price: float = Field(..., gt=0)
+    fee: float = 0.0
+    note: str = ""
+    trade_date: str = ""
+    sector: str = ""
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    account: str | None = None
+
+
+@api_router.post("/portfolio/fill", tags=["组合"], summary="记录一笔买卖成交")
+async def api_record_fill(request: FillRequest):
+    """记录成交并自动更新持仓与现金（移动加权平均成本）。"""
+    try:
+        from tradingagents.services.portfolio import record_fill
+
+        result = await run_in_threadpool(
+            record_fill,
+            request.account,
+            request.ticker,
+            request.side,
+            request.quantity,
+            request.price,
+            request.fee,
+            request.note,
+            request.trade_date,
+            request.sector,
+            request.stop_loss,
+            request.take_profit,
+        )
+        return {"success": True, **result}
+    except Exception as exc:
+        return error_payload(str(exc))
+
+
 class PortfolioEvaluateRequest(BaseModel):
     plan: dict = Field(default_factory=dict)
     summary: dict = Field(default_factory=dict)

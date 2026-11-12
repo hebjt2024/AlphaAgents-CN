@@ -959,6 +959,22 @@
                 </div>
               </div>
               <div class="tool-stats" id="positionAdviceStats"></div>
+              <div style="padding:0 16px 10px;">
+                <div class="hint" style="margin-bottom:6px;">录入 / 更新持仓（用于本页建议与提醒）</div>
+                <div class="row" style="flex-wrap:wrap;gap:8px;">
+                  <input class="input" id="posTicker" placeholder="代码" style="max-width:110px;">
+                  <input class="input" id="posQty" type="number" placeholder="股数" style="max-width:100px;">
+                  <input class="input" id="posCost" type="number" step="0.01" placeholder="成本价" style="max-width:100px;">
+                  <input class="input" id="posStop" type="number" step="0.01" placeholder="止损(可选)" style="max-width:110px;">
+                  <input class="input" id="posTarget" type="number" step="0.01" placeholder="目标(可选)" style="max-width:110px;">
+                  <input class="input" id="posCash" type="number" step="0.01" placeholder="可用现金(可选)" style="max-width:130px;">
+                </div>
+                <div class="row" style="margin-top:8px;">
+                  <button class="btn btn-ghost btn-sm" onclick="savePosition()">保存持仓</button>
+                  <button class="btn btn-ghost btn-sm" onclick="removePosition()">删除持仓</button>
+                  <button class="btn btn-ghost btn-sm" onclick="fillFromCompany()">用当前标的填入</button>
+                </div>
+              </div>
               <div id="positionAdviceBody" style="padding:0 16px 16px;"></div>
             </div>
             <div class="card tool-card" id="sentimentCard" style="grid-column: 1 / -1;">
@@ -2721,6 +2737,62 @@ function renderEventCalendar(c) {
       <tbody>${rows || '<tr><td colspan="4" class="muted">未来 30 天没有已知事件</td></tr>'}</tbody>
     </table></div>
     <div class="hint">${escapeHtml(c.summary || '')}</div>`;
+}
+
+function fillFromCompany() {
+  const ticker = currentTicker();
+  if (!ticker) { showToast('请先填写股票代码', 'err'); return; }
+  $('posTicker').value = ticker;
+}
+
+async function savePosition() {
+  const ticker = ($('posTicker').value || '').trim();
+  const quantity = Number($('posQty').value);
+  const avgCost = Number($('posCost').value);
+  if (!ticker) { showToast('请填写代码', 'err'); return; }
+  if (!(quantity > 0)) { showToast('股数需大于 0', 'err'); return; }
+  if (!(avgCost > 0)) { showToast('成本价需大于 0', 'err'); return; }
+
+  const payload = {
+    ticker,
+    quantity,
+    avg_cost: avgCost,
+  };
+  const stop = Number($('posStop').value);
+  const target = Number($('posTarget').value);
+  const cash = $('posCash').value;
+  if (stop > 0) payload.stop_loss = stop;
+  if (target > 0) payload.take_profit = target;
+  if (cash !== '' && Number(cash) >= 0) payload.cash = Number(cash);
+
+  try {
+    const data = await apiFetch('/api/portfolio/position', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!data.success) throw new Error(data.message || '保存失败');
+    showToast('持仓已保存', 'ok');
+    loadPositionAdvice();
+  } catch (e) {
+    showToast('保存失败: ' + String(e), 'err');
+  }
+}
+
+async function removePosition() {
+  const ticker = ($('posTicker').value || '').trim() || currentTicker();
+  if (!ticker) { showToast('请填写代码', 'err'); return; }
+  try {
+    const data = await apiFetch(
+      '/api/portfolio/position/' + encodeURIComponent(ticker),
+      { method: 'DELETE' }
+    );
+    showToast(data.success ? '持仓已删除' : (data.message || '未找到该持仓'),
+      data.success ? 'ok' : 'err');
+    loadPositionAdvice();
+  } catch (e) {
+    showToast('删除失败: ' + String(e), 'err');
+  }
 }
 
 async function loadPositionAdvice() {
