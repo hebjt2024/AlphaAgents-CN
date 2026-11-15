@@ -17,6 +17,7 @@ def run_analysis(
     source: str = "scheduler",
     notify: bool = True,
     horizon: str = "medium",
+    owner: str = "",
 ) -> dict[str, Any]:
     """执行一次完整分析并持久化、可选推送通知。"""
     from tradingagents.default_config import DEFAULT_CONFIG
@@ -33,7 +34,17 @@ def run_analysis(
         compare_decisions,
         format_decision_plan,
     )
+    from tradingagents.services.decision_schema import (
+        format_structured_decision,
+        parse_structured_decision,
+    )
     from tradingagents.services.fast_preview import preliminary_decision
+
+    structured_decision = final_state.get("decision_structured") or (
+        parse_structured_decision(
+            final_state.get("final_trade_decision", ""), decision
+        )
+    )
 
     strategy_result = final_state.get("strategy_result")
     decision_plan = build_decision_plan(strategy_result, decision)
@@ -50,7 +61,10 @@ def run_analysis(
     # 主流程，用户就不必再手动去快捷工具里点一次（实际上很少有人会点）。
     from tradingagents.services.position_advisor import advice_for_analysis
 
-    position_advice = advice_for_analysis(ticker, decision_plan)
+    account = f"默认账户@{owner}" if owner else "默认账户"
+    position_advice = advice_for_analysis(
+        ticker, decision_plan, account=account, owner=owner
+    )
 
     reports = {
         "market_report": final_state.get("market_report", ""),
@@ -62,6 +76,7 @@ def run_analysis(
         "trader_investment_plan": final_state.get("trader_investment_plan", ""),
         "final_trade_decision": final_state.get("final_trade_decision", ""),
         "decision_plan": format_decision_plan(decision_plan),
+        "decision_structured": format_structured_decision(structured_decision),
     }
     if position_advice:
         reports["position_advice"] = position_advice["markdown"]
@@ -73,6 +88,7 @@ def run_analysis(
         decision_text=final_state.get("final_trade_decision", ""),
         reports=reports,
         source=source,
+        owner=owner,
         meta={
             "llm_provider": cfg.get("llm_provider"),
             "deep_think_llm": cfg.get("deep_think_llm"),
@@ -80,6 +96,7 @@ def run_analysis(
             "horizon": horizon,
             "decision_plan": decision_plan,
             "decision_diff": decision_diff,
+            "decision_structured": structured_decision,
             "position_advice": position_advice,
         },
     )
@@ -103,6 +120,7 @@ def run_analysis(
         "decision": decision,
         "decision_plan": decision_plan,
         "decision_diff": decision_diff,
+        "decision_structured": structured_decision,
         "position_advice": position_advice,
         "final_state": final_state,
         "notification": notify_result,

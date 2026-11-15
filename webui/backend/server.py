@@ -35,15 +35,15 @@ import threading
 import time
 import traceback
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Literal
 
 from dotenv import load_dotenv
-from fastapi import APIRouter, Depends, FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from starlette.concurrency import run_in_threadpool
 
 # 先加载 .env，再导入读取环境变量的 default_config
@@ -68,40 +68,56 @@ from tradingagents.storage import (
     add_watch,
     delete_briefing,
     delete_job,
+    delete_paper_state,
     delete_report,
     delete_scheduled_job,
     fail_job,
     finish_job,
+    get_account,
     get_briefing,
     get_job,
     get_report,
+    list_accounts,
     list_briefings,
     list_jobs,
+    list_paper_accounts,
     list_reports,
     list_scheduled_jobs,
     list_watchlist,
+    load_paper_state,
     mark_job_running,
     remove_watch,
+    save_paper_state,
     save_report,
     update_scheduled_job,
 )
 from tradingagents.strategies import DEFAULT_STRATEGY_KEYS, STRATEGY_META
 from webui.backend.api_config import ApiConfig, load_config
 from webui.backend.errors import (
+    ApiError,
+    AuthError,
+    ForbiddenError,
     NotFoundResponder,
     error_payload,
     register_exception_handlers,
+    safe_exception_message,
 )
 from webui.backend.middleware import (
+    AuditMiddleware,
+    ErrorStatusMiddleware,
     RateLimitMiddleware,
     RequestIdMiddleware,
+    SecurityHeadersMiddleware,
     TimingMiddleware,
     metrics,
 )
 from webui.backend.security import (
     api_key_scheme,
     bearer_scheme,
+    current_user,
     require_api_key,
+    require_risk_ack,
+    require_role,
 )
 
 # 各 LLM 提供商的默认 API 地址。
@@ -140,6 +156,39 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
+def _validate_backend_url(url: str | None) -> None:
+    """限制请求级 backend_url，避免把 API Key 发到任意地址。
+
+    允许：已知 provider 域名、配置中的默认 backend_url、回环地址。
+    这套白名单可以覆盖自建 OpenAI 兼容端点（把地址写进 .env），
+    但不允许 analyst 在请求里临时指向攻击者服务器。
+    """
+    if not url:
+        return
+    from urllib.parse import urlparse
+
+    parsed = urlparse(str(url))
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("backend_url 必须是 http/https 地址")
+    host = parsed.hostname.lower()
+    allowed = {
+        urlparse(item).hostname
+        for item in PROVIDER_BASE_URLS.values()
+        if urlparse(item).hostname
+    }
+    configured = DEFAULT_CONFIG.get("backend_url")
+    if configured:
+        configured_host = urlparse(str(configured)).hostname
+        if configured_host:
+            allowed.add(configured_host.lower())
+    allowed.update({"localhost", "127.0.0.1", "::1"})
+    if host not in allowed:
+        raise ValueError(
+            f"backend_url 域名不在白名单内：{host}；"
+            "请把自建端点写入 .env 的 TRADINGAGENTS_BACKEND_URL"
+        )
+
+
 def resolve_backend_url(provider: str, model: str, requested: str | None) -> str | None:
     """按 provider/model 解析 API 地址，允许请求显式覆盖。"""
     if requested:
@@ -168,6 +217,9 @@ api_router = APIRouter(
         Depends(bearer_scheme),
     ]
 )
+
+#: 登录相关路由不能挂 require_api_key（否则无法首次登录）。
+auth_router = APIRouter()
 
 active_connections: set[WebSocket] = set()
 _main_loop: asyncio.AbstractEventLoop | None = None
@@ -199,6 +251,9 @@ ANALYSIS_WORKERS = int(os.getenv("WEBUI_ANALYSIS_WORKERS", "1"))
 
 #: 允许同时处于运行 + 排队状态的分析任务数上限。
 MAX_PENDING_ANALYSES = int(os.getenv("WEBUI_MAX_PENDING_ANALYSES", "3"))
+
+#: 模拟盘状态是"读-改-写"的 JSON 快照，必须串行化，避免两个请求互相覆盖。
+PAPER_STATE_LOCK = threading.Lock()
 
 
 # ============================================================================
@@ -239,9 +294,43 @@ class AnalyzeRequest(BaseModel):
     )
 
 
+class LoginRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=1, max_length=256)
+
+
+class ChangePasswordRequest(BaseModel):
+    old_password: str = Field(..., min_length=1)
+    new_password: str = Field(..., min_length=8)
+
+
+class UserCreateRequest(BaseModel):
+    username: str = Field(..., min_length=1, max_length=64)
+    password: str = Field(..., min_length=8)
+    role: str = "analyst"
+    display_name: str = ""
+
+
+class UserUpdateRequest(BaseModel):
+    role: str | None = None
+    enabled: bool | None = None
+    display_name: str | None = None
+    password: str | None = Field(default=None, min_length=8)
+
+
 class WatchRequest(BaseModel):
-    ticker: str
-    name: str = ""
+    ticker: str = Field(..., min_length=1, max_length=20)
+    name: str = Field(default="", max_length=40)
+
+    @field_validator("ticker")
+    @classmethod
+    def _safe_ticker(cls, value: str) -> str:
+        text = str(value).strip()
+        if not text:
+            raise ValueError("股票代码不能为空")
+        if any(char in text for char in "<>\"'`\\;"):
+            raise ValueError("股票代码包含非法字符")
+        return text
 
 
 class IntentRequest(BaseModel):
@@ -293,6 +382,133 @@ class ScheduledJobUpdateRequest(BaseModel):
     name: str | None = None
     schedule_time: str | None = None
     enabled: bool | None = None
+
+
+class EvaluationRequest(BaseModel):
+    """手动触发一次推荐评估（可选回写记忆）。"""
+
+    ticker: str | None = None
+    limit: int = Field(default=50, ge=1, le=500)
+    horizons: list[int] | None = None
+    write_memory: bool = False
+
+
+class PortfolioAccountRequest(BaseModel):
+    account: str | None = None
+
+
+class PortfolioSnapshotRequest(PortfolioAccountRequest):
+    date: str | None = None
+
+
+class PortfolioRiskRequest(BaseModel):
+    account: str | None = None
+    lookback: int = Field(default=252, ge=60, le=1000)
+    benchmark: str = "000300"
+    rebalance_method: str = "equal"
+
+
+class RebalanceRequest(BaseModel):
+    account: str | None = None
+    method: str = "equal"
+    max_single_weight: float | None = Field(default=None, gt=0, le=1)
+    max_total_weight: float | None = Field(default=None, gt=0, le=1)
+
+
+class PaperResetRequest(BaseModel):
+    account: str | None = None
+    initial_cash: float = Field(default=100000.0, gt=0)
+
+
+class PaperOrderRequest(BaseModel):
+    ticker: str = Field(..., min_length=1)
+    side: str = Field(..., min_length=1)
+    quantity: int = Field(..., gt=0)
+    order_type: str = "market"
+    limit_price: float | None = Field(default=None, gt=0)
+    name: str = ""
+    reason: str = ""
+    note: str = ""
+    stop_loss: float = 0.0
+    take_profit: float = 0.0
+    account: str | None = None
+
+
+class PaperPlanRequest(BaseModel):
+    ticker: str = Field(..., min_length=1)
+    plan: dict[str, Any] = Field(default_factory=dict)
+    name: str = ""
+    account: str | None = None
+
+
+class PaperMarkRequest(BaseModel):
+    account: str | None = None
+    date: str | None = None
+    prices: dict[str, float] | None = None
+
+
+class PaperAdvanceRequest(BaseModel):
+    account: str | None = None
+    start_date: str
+    end_date: str
+
+
+class DataSyncRequest(BaseModel):
+    """同步一只或多只标的到本地行情库。"""
+
+    ticker: str | None = None
+    tickers: list[str] | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    adjust: str = "qfq"
+    force: bool = False
+
+
+class AlertRuleRequest(BaseModel):
+    ticker: str = Field(..., min_length=1)
+    rule_type: str = Field(..., min_length=1)
+    threshold: float
+    name: str = ""
+    cooldown_minutes: int = Field(default=30, ge=1, le=1440)
+    note: str = ""
+    enabled: bool = True
+
+
+class AlertRuleUpdateRequest(BaseModel):
+    threshold: float | None = None
+    cooldown_minutes: int | None = Field(default=None, ge=1, le=1440)
+    enabled: bool | None = None
+    name: str | None = None
+    note: str | None = None
+
+
+class AlertCheckRequest(BaseModel):
+    tickers: list[str] | None = None
+    notify: bool = False
+    include_portfolio: bool = True
+    account: str | None = None
+
+
+class SocialSnapshotRequest(BaseModel):
+    ticker: str = Field(..., min_length=1)
+    name: str = ""
+    include_xueqiu: bool = False
+
+
+class ScreenerRequest(BaseModel):
+    top: int = Field(default=30, ge=1, le=200)
+    style: str = "balanced"
+    min_amount_yi: float = Field(default=1.0, ge=0)
+    min_market_cap_yi: float = Field(default=30.0, ge=0)
+    max_market_cap_yi: float | None = Field(default=None, ge=0)
+    exclude_st: bool = True
+    exclude_limit: bool = True
+    exclude_loss: bool = False
+    boards: list[str] | None = None
+    include_financials: bool = True
+    include_fund_flow: bool = False
+    industry_neutral: bool = False
+    save: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -459,14 +675,20 @@ async def websocket_endpoint(websocket: WebSocket):
     global _main_loop
     _main_loop = asyncio.get_running_loop()
 
-    # 浏览器无法为 WebSocket 自定义请求头，因此用查询参数传递 API 密钥。
+    # 浏览器无法为 WebSocket 自定义请求头，因此用查询参数传递 API 密钥 / 会话 token。
     config = load_config()
     if config.auth_enabled:
         provided = websocket.query_params.get("api_key") or ""
-        expected = config.api_key or ""
-        if not provided or not secrets.compare_digest(
-            provided.encode("utf-8"), expected.encode("utf-8")
+        valid = False
+        if config.api_key and provided and secrets.compare_digest(
+            provided.encode("utf-8"), config.api_key.encode("utf-8")
         ):
+            valid = True
+        if not valid and config.multi_user and provided:
+            from webui.backend.users import get_session_user
+
+            valid = bool(get_session_user(provided))
+        if not valid:
             await websocket.close(code=1008, reason="invalid api key")
             return
 
@@ -724,7 +946,7 @@ def _analysis_job_handler(job_id: str, payload: dict, cancel_event) -> dict:
     # 让队列的取消事件与分析内部的取消事件联动
     if cancel_event is not None:
         _bridge_cancel_event(cancel_event)
-    run_analysis_sync(request, job_id)
+    run_analysis_sync(request, job_id, owner=str(payload.get("owner") or ""))
     return {"success": True, "job_id": job_id}
 
 
@@ -744,7 +966,9 @@ def _bridge_cancel_event(cancel_event) -> None:
     threading.Thread(target=_relay, daemon=True, name="cancel-relay").start()
 
 
-def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
+def run_analysis_sync(
+    request: AnalyzeRequest, job_id: str = "", owner: str = ""
+):
     global analysis_status
 
     from tradingagents.runtime import ANALYSIS_LOCK
@@ -985,8 +1209,19 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             compare_decisions,
             format_decision_plan,
         )
+        from tradingagents.services.decision_schema import (
+            format_structured_decision,
+            parse_structured_decision,
+        )
         from tradingagents.services.fast_preview import preliminary_decision
 
+        structured_decision = final_state.get("decision_structured") or (
+            parse_structured_decision(
+                final_state.get("final_trade_decision", ""), decision
+            )
+        )
+
+        account = f"默认账户@{owner}" if owner else "默认账户"
         strategy_result = final_state.get("strategy_result")
         decision_plan = build_decision_plan(strategy_result, decision)
 
@@ -1010,8 +1245,12 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             portfolio_evaluation = evaluate_plan_for_account(
                 plan=decision_plan,
                 summary=(strategy_result or {}).get("summary") or {},
+                account=account,
                 ticker=request.company,
+                owner=owner,
             )
+        except ApiError:
+            raise
         except Exception as exc:
             portfolio_evaluation = {"error": str(exc)}
 
@@ -1023,7 +1262,9 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
                 advice_for_analysis,
             )
 
-            position_advice = advice_for_analysis(request.company, decision_plan)
+            position_advice = advice_for_analysis(
+                request.company, decision_plan, account=account, owner=owner
+            )
         except Exception:
             logger.debug("持仓建议生成失败", exc_info=True)
 
@@ -1039,6 +1280,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             "trader_investment_plan": final_state.get("trader_investment_plan", ""),
             "final_trade_decision": final_state.get("final_trade_decision", ""),
             "decision_plan": format_decision_plan(decision_plan),
+            "decision_structured": format_structured_decision(structured_decision),
         }
         if position_advice:
             reports["position_advice"] = position_advice["markdown"]
@@ -1053,6 +1295,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
                     decision_text=final_state.get("final_trade_decision", ""),
                     reports=reports,
                     source="webui",
+                    owner=owner,
                     meta={
                         "llm_provider": request.llm_provider,
                         "deep_think_llm": request.deep_think_llm,
@@ -1063,10 +1306,13 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
                         "strategies": strategy_keys,
                         "decision_plan": decision_plan,
                         "decision_diff": decision_diff,
+                        "decision_structured": structured_decision,
                         "portfolio_evaluation": portfolio_evaluation,
                         "position_advice": position_advice,
                     },
                 )
+            except ApiError:
+                raise
             except Exception as exc:
                 broadcast_threadsafe({
                     "type": "progress",
@@ -1085,6 +1331,7 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
             "strategies": strategy_keys,
             "decision_plan": decision_plan,
             "decision_diff": decision_diff,
+            "decision_structured": structured_decision,
             "portfolio_evaluation": portfolio_evaluation,
             "position_advice": position_advice,
             "cancelled": cancelled,
@@ -1148,13 +1395,325 @@ def run_analysis_sync(request: AnalyzeRequest, job_id: str = ""):
 
 
 # ============================================================================
+# 多用户账户归属
+# ============================================================================
+
+def _is_admin_user(user: dict[str, Any] | None) -> bool:
+    if not load_config().multi_user:
+        return True
+    return (user or {}).get("role") == "admin"
+
+
+def _default_account_for(user: dict[str, Any] | None) -> str:
+    if not load_config().multi_user or _is_admin_user(user):
+        return "默认账户"
+    username = (user or {}).get("username") or "user"
+    return f"默认账户@{username}"
+
+
+def _resolve_account(
+    account: str | None, user: dict[str, Any] | None
+) -> str:
+    """解析并校验账户归属；非管理员只能访问自己的账户。"""
+    name = (account or "").strip() or _default_account_for(user)
+    if not load_config().multi_user or _is_admin_user(user):
+        return name
+    row = get_account(name)
+    username = (user or {}).get("username") or ""
+    if row and str(row.get("owner") or "") != username:
+        raise ForbiddenError("无权访问该账户")
+    return name
+
+
+def _resolve_paper_account(
+    account: str | None, user: dict[str, Any] | None
+) -> str:
+    if not load_config().multi_user or _is_admin_user(user):
+        return (account or "默认模拟盘").strip() or "默认模拟盘"
+    username = (user or {}).get("username") or "user"
+    name = (account or "").strip() or f"默认模拟盘@{username}"
+    from tradingagents.storage import get_paper_owner
+
+    owner = get_paper_owner(name)
+    if owner and owner != username:
+        raise ForbiddenError("无权访问该模拟盘账户")
+    return name
+
+
+# ============================================================================
+# 模拟盘辅助：状态按账户存取
+# ============================================================================
+
+def _paper_account_name(
+    account: str | None, user: dict[str, Any] | None = None
+) -> str:
+    if user is not None:
+        return _resolve_paper_account(account, user)
+    return (account or "默认模拟盘").strip() or "默认模拟盘"
+
+
+def _load_paper_broker(
+    account: str | None, user: dict[str, Any] | None = None
+):
+    from tradingagents.services.paper_trading import PaperBroker
+
+    name = _paper_account_name(account, user)
+    state = load_paper_state(name)
+    broker = PaperBroker.from_state(state) if state else PaperBroker()
+    # WebUI 的模拟盘是“实时”账户：历史回放不得让今天提交的委托按过去价格成交。
+    broker.enforce_submission_date = True
+    return name, broker
+
+
+def _save_paper_broker(name: str, broker, owner: str = "") -> None:
+    save_paper_state(name, broker.to_state(), owner=owner)
+
+
+def _paper_payload(name: str, broker) -> dict[str, Any]:
+    return {
+        "success": True,
+        "paper_account": name,
+        **broker.report(last_orders=100),
+    }
+
+
+# ============================================================================
+# 认证 / 用户 / 审计
+# ============================================================================
+
+@auth_router.get("/auth/config", tags=["认证"], summary="查询登录模式")
+async def api_auth_config():
+    config = load_config()
+    from webui.backend.users import ROLES
+
+    return {
+        "success": True,
+        "multi_user": bool(config.multi_user),
+        "api_key_enabled": bool(config.api_key),
+        "session_days": int(config.session_days),
+        "roles": list(ROLES),
+    }
+
+
+@auth_router.post("/auth/login", tags=["认证"], summary="用户登录")
+async def api_auth_login(request: Request, payload: LoginRequest):
+    from webui.backend.users import audit_log, authenticate, create_session
+
+    user = await run_in_threadpool(
+        authenticate, payload.username, payload.password
+    )
+    config = load_config()
+    ip = request.client.host if request.client else ""
+    if not user:
+        audit_log(
+            username=payload.username,
+            role=None,
+            action="login_failed",
+            method="POST",
+            path=request.url.path,
+            status=401,
+            ip=ip,
+            request_id=getattr(request.state, "request_id", ""),
+        )
+        raise AuthError("用户名或密码错误")
+    token = create_session(
+        user["username"],
+        ip=ip,
+        user_agent=request.headers.get("user-agent", ""),
+    )
+    audit_log(
+        username=user["username"],
+        role=user["role"],
+        action="login",
+        method="POST",
+        path=request.url.path,
+        status=200,
+        ip=ip,
+        request_id=getattr(request.state, "request_id", ""),
+    )
+    return {"success": True, "token": token, "user": user, "session_days": config.session_days}
+
+
+@api_router.get("/auth/me", tags=["认证"], summary="当前用户")
+async def api_auth_me(user: dict = Depends(current_user)):
+    return {"success": True, "user": user}
+
+
+@api_router.post("/auth/logout", tags=["认证"], summary="退出登录")
+async def api_auth_logout(request: Request, user: dict = Depends(current_user)):
+    from webui.backend.security import extract_api_key
+    from webui.backend.users import audit_log, revoke_session
+
+    token = extract_api_key(request)
+    revoked = revoke_session(token) if token else False
+    audit_log(
+        username=user.get("username"),
+        role=user.get("role"),
+        action="logout",
+        method="POST",
+        path=request.url.path,
+        status=200,
+        ip=request.client.host if request.client else "",
+        request_id=getattr(request.state, "request_id", ""),
+    )
+    return {"success": True, "revoked": bool(revoked)}
+
+
+@api_router.post("/auth/change-password", tags=["认证"], summary="修改密码")
+async def api_auth_change_password(
+    request: Request,
+    payload: ChangePasswordRequest,
+    user: dict = Depends(current_user),
+):
+    from webui.backend.users import (
+        audit_log,
+        authenticate,
+        revoke_user_sessions,
+        update_user,
+    )
+
+    username = user.get("username")
+    if username in ("local", "api-key") or not authenticate(
+        username, payload.old_password
+    ):
+        raise AuthError("原密码不正确")
+    update_user(username, password=payload.new_password)
+    revoke_user_sessions(username)
+    audit_log(
+        username=username,
+        role=user.get("role"),
+        action="change_password",
+        method="POST",
+        path=request.url.path,
+        status=200,
+        ip=request.client.host if request.client else "",
+        request_id=getattr(request.state, "request_id", ""),
+    )
+    return {"success": True, "message": "密码已修改，请重新登录", "relogin": True}
+
+
+@api_router.post("/auth/risk-ack", tags=["认证"], summary="确认风险揭示")
+async def api_auth_risk_ack(user: dict = Depends(current_user)):
+    from webui.backend.users import ack_risk
+
+    updated = ack_risk(user.get("username"))
+    return {"success": bool(updated), "user": updated}
+
+
+@api_router.get(
+    "/users",
+    tags=["认证"],
+    summary="用户列表（管理员）",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def api_list_users():
+    from webui.backend.users import list_users
+
+    return {"success": True, "items": await run_in_threadpool(list_users)}
+
+
+@api_router.post(
+    "/users",
+    tags=["认证"],
+    summary="创建用户（管理员）",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def api_create_user(payload: UserCreateRequest):
+    from webui.backend.users import create_user
+
+    try:
+        user = await run_in_threadpool(
+            create_user,
+            payload.username,
+            payload.password,
+            role=payload.role,
+            display_name=payload.display_name,
+        )
+        return {"success": True, "user": user}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc), code="bad_request")
+
+
+@api_router.patch(
+    "/users/{username}",
+    tags=["认证"],
+    summary="修改用户（管理员）",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def api_update_user(username: str, payload: UserUpdateRequest):
+    from webui.backend.users import update_user
+
+    try:
+        user = await run_in_threadpool(
+            update_user,
+            username,
+            role=payload.role,
+            enabled=payload.enabled,
+            display_name=payload.display_name,
+            password=payload.password,
+        )
+        if not user:
+            return error_payload("用户不存在", code="not_found")
+        return {"success": True, "user": user}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc), code="bad_request")
+
+
+@api_router.delete(
+    "/users/{username}",
+    tags=["认证"],
+    summary="删除用户（管理员）",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def api_delete_user(username: str, user: dict = Depends(current_user)):
+    from webui.backend.users import delete_user
+
+    if user.get("username") == username:
+        return error_payload("不能删除当前登录用户", code="bad_request")
+    try:
+        removed = await run_in_threadpool(delete_user, username)
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc), code="bad_request")
+    return {"success": bool(removed), "message": "已删除" if removed else "用户不存在"}
+
+
+@api_router.get(
+    "/audit",
+    tags=["认证"],
+    summary="审计日志（管理员）",
+    dependencies=[Depends(require_role("admin"))],
+)
+async def api_audit_logs(limit: int = 100, username: str | None = None):
+    from webui.backend.users import list_audit_logs
+
+    items = await run_in_threadpool(
+        list_audit_logs, max(1, min(int(limit), 1000)), username=username
+    )
+    return {"success": True, "items": items}
+
+
+# ============================================================================
 # REST API 端点
 # ============================================================================
 
 @api_router.post("/analyze", tags=["分析"], summary="启动深度分析任务")
-async def start_analysis(request: AnalyzeRequest):
+async def start_analysis(
+    request: AnalyzeRequest,
+    _user: dict = Depends(current_user),
+    _risk: None = Depends(require_risk_ack),
+):
     # 允许用户在不重启服务的情况下新建/修改 .env 中缺失的密钥
     load_dotenv()
+    try:
+        _validate_backend_url(request.backend_url)
+    except ValueError as exc:
+        return error_payload(safe_exception_message(exc), code="bad_request")
 
     # 先做参数校验，再检查队列容量 —— 无效请求不应该先占用/探测队列。
     date_ok, date_msg, adjusted_date = validate_analysis_date(
@@ -1215,10 +1774,13 @@ async def start_analysis(request: AnalyzeRequest):
             request.llm_provider, backend_url, None
         )
     except RuntimeError as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
+    owner = ""
+    if load_config().multi_user and not _is_admin_user(_user):
+        owner = (_user or {}).get("username") or ""
     job_id = queue.submit(
-        payload={"request": request.model_dump()},
+        payload={"request": request.model_dump(), "owner": owner},
         kind="analysis",
         company=request.company,
         trade_date=request.date,
@@ -1366,8 +1928,9 @@ async def api_delete_job(job_id: str):
     summary="查询自选股列表",
     response_model=ItemListResponse,
 )
-async def api_list_watchlist():
-    return {"success": True, "items": list_watchlist()}
+async def api_list_watchlist(user: dict = Depends(current_user)):
+    owner = None if _is_admin_user(user) else (user or {}).get("username") or ""
+    return {"success": True, "items": list_watchlist(owner)}
 
 
 @api_router.post(
@@ -1376,8 +1939,11 @@ async def api_list_watchlist():
     summary="新增自选股",
     response_model=WatchlistItemResponse,
 )
-async def api_add_watch(request: WatchRequest):
-    item = add_watch(request.ticker, request.name)
+async def api_add_watch(
+    request: WatchRequest, user: dict = Depends(current_user)
+):
+    owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+    item = add_watch(request.ticker, request.name, owner)
     return {"success": True, "item": item}
 
 
@@ -1387,8 +1953,11 @@ async def api_add_watch(request: WatchRequest):
     summary="删除自选股",
     response_model=SuccessMessageResponse,
 )
-async def api_remove_watch(ticker: str):
-    removed = remove_watch(ticker)
+async def api_remove_watch(
+    ticker: str, user: dict = Depends(current_user)
+):
+    owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+    removed = remove_watch(ticker, owner)
     if not removed:
         return error_payload("自选股不存在", code="not_found")
     return {"success": True, "message": "已删除"}
@@ -1428,8 +1997,10 @@ async def api_backtest(request: BacktestRequest):
             stock_name=_resolve_stock_name(request.ticker),
         )
         return {"success": True, "result": result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/market/kline", tags=["市场"], summary="查询 K 线数据")
@@ -1497,8 +2068,10 @@ async def api_kline(
             "bars": len(items),
             "items": items,
         }
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 def _to_float(value) -> float:
@@ -1548,8 +2121,10 @@ async def api_fast_preview(
             end_date,
             _parse_strategy_keys(strategies),
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get(
@@ -1592,8 +2167,10 @@ async def api_strategy_backtest(
             _parse_strategy_keys(strategies),
             days,
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/strategies", tags=["策略"], summary="运行经典策略扫描")
@@ -1612,8 +2189,10 @@ async def api_strategies(
             end_date,
             _parse_strategy_keys(strategies),
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/strategies/watchlist", tags=["策略"], summary="扫描自选股的策略共识")
@@ -1634,8 +2213,10 @@ async def api_strategies_watchlist(
             _parse_strategy_keys(strategies),
         )
         return {"success": True, "items": results}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/strategy-alerts", tags=["策略"], summary="查询策略触发预警")
@@ -1658,8 +2239,10 @@ async def api_strategy_alerts(
             _parse_strategy_keys(strategies),
             only_triggered,
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.post("/strategy-alerts/notify", tags=["策略"], summary="推送策略预警到 Webhook")
@@ -1678,8 +2261,10 @@ async def api_strategy_alerts_notify(request: StrategyAlertNotifyRequest):
             request.only_triggered,
             request.notify_empty,
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/market/review", tags=["市场"], summary="查询市场复盘快照")
@@ -1689,8 +2274,10 @@ async def api_market_review(date: str | None = None):
         from tradingagents.services.market_review import build_market_review
 
         return await run_in_threadpool(build_market_review, date)
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/daily-briefing", tags=["报告"], summary="查询每日盘后简报")
@@ -1700,8 +2287,10 @@ async def api_daily_briefing(date: str | None = None):
         from tradingagents.services.daily_briefing import build_daily_briefing
 
         return await run_in_threadpool(build_daily_briefing, date)
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.post("/daily-briefing/notify", tags=["报告"], summary="推送每日盘后简报")
@@ -1713,8 +2302,10 @@ async def api_daily_briefing_notify(request: DailyBriefingNotifyRequest):
         return await run_in_threadpool(
             send_daily_briefing, request.date, "webui"
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.post("/daily-briefing/archive", tags=["报告"], summary="归档每日盘后简报")
@@ -1728,8 +2319,10 @@ async def api_daily_briefing_archive(request: DailyBriefingNotifyRequest):
         return await run_in_threadpool(
             archive_daily_briefing, request.date, "webui"
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get(
@@ -1774,8 +2367,10 @@ async def api_market_sectors():
 
         items = await run_in_threadpool(list_sector_names)
         return {"success": True, "items": items}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/market/sector-history", tags=["市场"], summary="查询行业近期走势")
@@ -1785,8 +2380,10 @@ async def api_sector_history(name: str, days: int = 60):
         from tradingagents.services.sector_history import get_sector_history
 
         return await run_in_threadpool(get_sector_history, name, days)
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/market/stock-search", tags=["市场"], summary="搜索 A 股标的")
@@ -1796,8 +2393,10 @@ async def api_stock_search(q: str = "", limit: int = 20):
         from tradingagents.services.market_search import search_stocks
 
         return await run_in_threadpool(search_stocks, q, limit)
+    except ApiError:
+        raise
     except Exception as exc:
-        return {**error_payload(str(exc)), "items": []}
+        return {**error_payload(safe_exception_message(exc)), "items": []}
 
 
 @api_router.get("/market/hot-stocks", tags=["市场"], summary="查询涨停池热门股")
@@ -1807,8 +2406,10 @@ async def api_hot_stocks(limit: int = 30, date: str | None = None):
         from tradingagents.services.market_search import get_hot_stocks
 
         return await run_in_threadpool(get_hot_stocks, limit, date)
+    except ApiError:
+        raise
     except Exception as exc:
-        return {**error_payload(str(exc)), "items": []}
+        return {**error_payload(safe_exception_message(exc)), "items": []}
 
 
 @api_router.post("/market/review/notify", tags=["市场"], summary="推送市场复盘到 Webhook")
@@ -1818,8 +2419,10 @@ async def api_market_review_notify(request: MarketReviewNotifyRequest):
         from tradingagents.services.market_review import send_market_review
 
         return await run_in_threadpool(send_market_review, request.date)
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/market/capital-flow", tags=["市场"], summary="查询个股主力资金流向")
@@ -1856,8 +2459,10 @@ async def api_capital_flow(ticker: str, days: int = 60):
                 }
             )
         return {"success": True, "ticker": ticker, "items": items}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/market/northbound", tags=["市场"], summary="查询北向资金净流入")
@@ -1892,14 +2497,20 @@ async def api_northbound(days: int = 10):
                 }
             )
         return {"success": True, "items": items}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.post("/test-llm", tags=["分析"], summary="测试模型端点连通性")
 async def api_test_llm(request: LLMTestRequest):
     """用一次最小请求测试模型端点连通性（不返回密钥）。"""
     load_dotenv()
+    try:
+        _validate_backend_url(request.backend_url)
+    except ValueError as exc:
+        return error_payload(safe_exception_message(exc), code="bad_request")
     from tradingagents.llm_clients.auth import ensure_provider_credentials
     from tradingagents.llm_clients.factory import create_llm_client
 
@@ -1920,17 +2531,21 @@ async def api_test_llm(request: LLMTestRequest):
             "model": request.model,
             "message": f"连接成功：{text}",
         }
+    except ApiError:
+        raise
     except Exception as exc:
         return {
-            **error_payload(f"{type(exc).__name__}: {exc}"),
+            **error_payload(safe_exception_message(exc)),
             "backend_url": backend,
             "model": request.model,
         }
 
 
 @api_router.get("/config/defaults", tags=["分析"], summary="查询 WebUI 默认模型配置")
-async def api_config_defaults():
+async def api_config_defaults(user: dict = Depends(current_user)):
     """返回 WebUI 可用的模型/Base URL 默认值（不含密钥）。"""
+    config = load_config()
+    is_admin = (not config.multi_user) or user.get("role") == "admin"
     return {
         "success": True,
         "llm_provider": DEFAULT_CONFIG.get("llm_provider", "anthropic"),
@@ -1938,7 +2553,7 @@ async def api_config_defaults():
         "quick_think_llm": DEFAULT_CONFIG.get(
             "quick_think_llm", "MiniMax-M3.1-Flash"
         ),
-        "backend_url": DEFAULT_CONFIG.get("backend_url"),
+        "backend_url": DEFAULT_CONFIG.get("backend_url") if is_admin else None,
         "max_debate_rounds": DEFAULT_CONFIG.get("max_debate_rounds", 1),
         "max_risk_discuss_rounds": DEFAULT_CONFIG.get(
             "max_risk_discuss_rounds", 1
@@ -2031,8 +2646,10 @@ async def api_add_scheduled(request: ScheduledJobRequest):
             request.schedule_time,
         )
         return {"success": True, "item": item}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.patch("/scheduled/{job_id}", tags=["任务"], summary="更新定时任务")
@@ -2046,8 +2663,10 @@ async def api_update_scheduled(
             schedule_time=request.schedule_time,
             enabled=request.enabled,
         )
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
     if not item:
         return error_payload("定时任务不存在", code="not_found")
     return {"success": True, "item": item}
@@ -2075,19 +2694,38 @@ async def healthz():
     return {"status": "ok"}
 
 
+def _report_owner(user: dict[str, Any] | None) -> str | None:
+    if not load_config().multi_user or _is_admin_user(user):
+        return None
+    return (user or {}).get("username") or ""
+
+
 @api_router.get(
     "/reports",
     tags=["报告"],
     summary="查询分析报告列表",
     response_model=ReportListResponse,
 )
-async def api_list_reports(ticker: str | None = None, limit: int = 50, offset: int = 0):
-    return {"success": True, "reports": list_reports(ticker=ticker, limit=limit, offset=offset)}
+async def api_list_reports(
+    ticker: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    user: dict = Depends(current_user),
+):
+    return {
+        "success": True,
+        "reports": list_reports(
+            ticker=ticker,
+            limit=limit,
+            offset=offset,
+            owner=_report_owner(user),
+        ),
+    }
 
 
 @api_router.get("/reports/{report_id}", tags=["报告"], summary="查询分析报告详情")
-async def api_get_report(report_id: int):
-    report = get_report(report_id)
+async def api_get_report(report_id: int, user: dict = Depends(current_user)):
+    report = get_report(report_id, owner=_report_owner(user))
     if not report:
         return error_payload("报告不存在", code="not_found")
     return {"success": True, "report": report}
@@ -2099,8 +2737,8 @@ async def api_get_report(report_id: int):
     summary="删除分析报告",
     response_model=SuccessMessageResponse,
 )
-async def api_delete_report(report_id: int):
-    deleted = delete_report(report_id)
+async def api_delete_report(report_id: int, user: dict = Depends(current_user)):
+    deleted = delete_report(report_id, owner=_report_owner(user))
     if not deleted:
         return error_payload("报告不存在", code="not_found")
     return {"success": True, "message": "已删除"}
@@ -2129,15 +2767,182 @@ async def api_check_trade_date(company: str, date: str):
 
 
 @api_router.get("/portfolio", tags=["组合"], summary="查询组合持仓与风险体检")
-async def api_portfolio(account: str | None = None):
+async def api_portfolio(
+    account: str | None = None, user: dict = Depends(current_user)
+):
     """返回账户持仓、组合权重与风险体检结果。"""
     try:
         from tradingagents.services.portfolio import portfolio_snapshot
 
-        snapshot = await run_in_threadpool(portfolio_snapshot, account)
+        name = _resolve_account(account, user)
+        snapshot = await run_in_threadpool(portfolio_snapshot, name)
         return {"success": True, "portfolio": snapshot}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/portfolio/accounts", tags=["组合"], summary="查询所有账户")
+async def api_portfolio_accounts(user: dict = Depends(current_user)):
+    try:
+        if load_config().multi_user and not _is_admin_user(user):
+            items = await run_in_threadpool(
+                list_accounts, (user or {}).get("username") or ""
+            )
+        else:
+            items = await run_in_threadpool(list_accounts)
+        return {"success": True, "items": items}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/portfolio/refresh", tags=["组合"], summary="刷新持仓最新价")
+async def api_portfolio_refresh(
+    request: PortfolioAccountRequest | None = None,
+    user: dict = Depends(current_user),
+):
+    """用全市场快照刷新持仓最新价。
+
+    WHY：``last_price`` 此前只在录入/成交时写入，组合市值和风控会一直
+    停留在旧价格。刷新后同时返回更新后的组合快照，前端无需再请求一次。
+    """
+    try:
+        from tradingagents.services.portfolio import refresh_prices
+
+        account = _resolve_account(request.account if request else None, user)
+        result = await run_in_threadpool(refresh_prices, account)
+        return {"success": True, **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/portfolio/snapshot", tags=["组合"], summary="记录组合每日快照")
+async def api_portfolio_snapshot(
+    request: PortfolioSnapshotRequest | None = None,
+    user: dict = Depends(current_user),
+):
+    try:
+        from tradingagents.services.portfolio import record_snapshot
+
+        account = _resolve_account(request.account if request else None, user)
+        snapshot_date = request.date if request else None
+        result = await run_in_threadpool(
+            record_snapshot,
+            account,
+            snapshot_date,
+            (user or {}).get("username") or "",
+        )
+        return {"success": True, **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get(
+    "/portfolio/performance", tags=["组合"], summary="查询组合绩效曲线与指标"
+)
+async def api_portfolio_performance(
+    account: str | None = None,
+    limit: int = 500,
+    user: dict = Depends(current_user),
+):
+    try:
+        from tradingagents.services.portfolio import portfolio_performance
+
+        account = _resolve_account(account, user)
+        result = await run_in_threadpool(
+            portfolio_performance, account, max(2, min(int(limit), 2000))
+        )
+        return {"success": True, **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get(
+    "/portfolio/transactions", tags=["组合"], summary="查询组合成交流水"
+)
+async def api_portfolio_transactions(
+    account: str | None = None,
+    limit: int = 200,
+    user: dict = Depends(current_user),
+):
+    try:
+        from tradingagents.storage import list_transactions
+
+        account = _resolve_account(account, user)
+        rows = await run_in_threadpool(
+            list_transactions, account, max(1, min(int(limit), 1000))
+        )
+        return {"success": True, "items": rows}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get(
+    "/portfolio/risk", tags=["组合"], summary="组合风险、压力测试与再平衡"
+)
+async def api_portfolio_risk(
+    account: str | None = None,
+    lookback: int = 252,
+    benchmark: str = "000300",
+    rebalance_method: str = "equal",
+    user: dict = Depends(current_user),
+):
+    try:
+        from tradingagents.services.portfolio_risk import portfolio_risk_report
+
+        account = _resolve_account(account, user)
+        result = await run_in_threadpool(
+            portfolio_risk_report,
+            account,
+            lookback=max(60, min(int(lookback), 1000)),
+            benchmark=benchmark,
+            rebalance_method=rebalance_method,
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post(
+    "/portfolio/rebalance", tags=["组合"], summary="生成再平衡建议"
+)
+async def api_portfolio_rebalance(
+    request: RebalanceRequest, user: dict = Depends(current_user)
+):
+    try:
+        from tradingagents.services.portfolio_risk import suggest_rebalance
+        from tradingagents.services.risk_engine import RiskLimits
+
+        request.account = _resolve_account(request.account, user)
+        limits = RiskLimits()
+        if request.max_single_weight is not None:
+            limits.max_single_weight = request.max_single_weight
+        if request.max_total_weight is not None:
+            limits.max_total_weight = request.max_total_weight
+        result = await run_in_threadpool(
+            suggest_rebalance,
+            request.account,
+            method=request.method,
+            limits=limits,
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
 
 
 class PositionUpsertRequest(BaseModel):
@@ -2158,7 +2963,9 @@ class PositionUpsertRequest(BaseModel):
 @api_router.post(
     "/portfolio/position", tags=["组合"], summary="录入或更新一条持仓"
 )
-async def api_upsert_position(request: PositionUpsertRequest):
+async def api_upsert_position(
+    request: PositionUpsertRequest, user: dict = Depends(current_user)
+):
     """手工录入 / 修正持仓。
 
     WHY：持仓建议与止损止盈提醒都依赖真实持仓数据。此前只有只读接口，
@@ -2170,9 +2977,11 @@ async def api_upsert_position(request: PositionUpsertRequest):
         from tradingagents.services.portfolio import ensure_account
         from tradingagents.storage import upsert_position
 
-        account = request.account or "默认账户"
+        account = _resolve_account(request.account, user)
         # 账户按需创建：用户第一次录入持仓时不应该先手动"开户"
-        await run_in_threadpool(ensure_account, account)
+        await run_in_threadpool(
+            ensure_account, account, 100000.0, (user or {}).get("username") or ""
+        )
         row = await run_in_threadpool(
             upsert_position,
             account,
@@ -2181,6 +2990,7 @@ async def api_upsert_position(request: PositionUpsertRequest):
             avg_cost=request.avg_cost,
             last_price=request.avg_cost,
             name=request.name,
+            sector=request.sector,
             stop_loss=request.stop_loss,
             take_profit=request.take_profit,
         )
@@ -2191,26 +3001,33 @@ async def api_upsert_position(request: PositionUpsertRequest):
                 update_account_cash, account, float(request.cash)
             )
         return {"success": True, "position": row}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.delete(
     "/portfolio/position/{ticker}", tags=["组合"], summary="删除一条持仓"
 )
-async def api_delete_position(ticker: str, account: str | None = None):
+async def api_delete_position(
+    ticker: str,
+    account: str | None = None,
+    user: dict = Depends(current_user),
+):
     try:
         from tradingagents.storage import delete_position
 
-        deleted = await run_in_threadpool(
-            delete_position, account or "默认账户", ticker
-        )
+        account = _resolve_account(account, user)
+        deleted = await run_in_threadpool(delete_position, account, ticker)
         return {
             "success": bool(deleted),
             "message": "已删除" if deleted else "未找到该持仓",
         }
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 class FillRequest(BaseModel):
@@ -2228,11 +3045,16 @@ class FillRequest(BaseModel):
 
 
 @api_router.post("/portfolio/fill", tags=["组合"], summary="记录一笔买卖成交")
-async def api_record_fill(request: FillRequest):
+async def api_record_fill(
+    request: FillRequest,
+    user: dict = Depends(current_user),
+    _risk: None = Depends(require_risk_ack),
+):
     """记录成交并自动更新持仓与现金（移动加权平均成本）。"""
     try:
         from tradingagents.services.portfolio import record_fill
 
+        request.account = _resolve_account(request.account, user)
         result = await run_in_threadpool(
             record_fill,
             request.account,
@@ -2246,10 +3068,13 @@ async def api_record_fill(request: FillRequest):
             request.sector,
             request.stop_loss,
             request.take_profit,
+            owner=(user or {}).get("username") or "",
         )
         return {"success": True, **result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 class PortfolioEvaluateRequest(BaseModel):
@@ -2261,11 +3086,23 @@ class PortfolioEvaluateRequest(BaseModel):
 
 
 @api_router.post("/portfolio/evaluate", tags=["组合"], summary="在组合语境下评估决策卡")
-async def api_portfolio_evaluate(request: PortfolioEvaluateRequest):
+async def api_portfolio_evaluate(
+    request: PortfolioEvaluateRequest, user: dict = Depends(current_user)
+):
     """把一份决策卡放到组合语境下重新评估，给出真正可执行的仓位。"""
     try:
-        from tradingagents.services.portfolio import evaluate_plan_for_account
+        from tradingagents.services.portfolio import (
+            ensure_account,
+            evaluate_plan_for_account,
+        )
 
+        request.account = _resolve_account(request.account, user)
+        await run_in_threadpool(
+            ensure_account,
+            request.account,
+            100000.0,
+            (user or {}).get("username") or "",
+        )
         result = await run_in_threadpool(
             evaluate_plan_for_account,
             request.plan,
@@ -2275,8 +3112,10 @@ async def api_portfolio_evaluate(request: PortfolioEvaluateRequest):
             request.sector,
         )
         return {"success": True, "evaluation": result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 # ============================================================================
@@ -2305,8 +3144,10 @@ async def api_valuation_percentile(
             get_valuation_percentile, ticker, curr_date, int(years)
         )
         return {"success": bool(result.get("success")), "valuation": result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/earnings/forecast", tags=["估值"], summary="查询业绩预告与快报")
@@ -2318,8 +3159,10 @@ async def api_earnings_forecast(ticker: str, curr_date: str | None = None):
             get_earnings_forecast, ticker, curr_date
         )
         return {"success": bool(result.get("success")), "forecast": result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get(
@@ -2336,8 +3179,10 @@ async def api_financial_red_flags(ticker: str, curr_date: str | None = None):
             get_financial_red_flags, ticker, curr_date
         )
         return {"success": bool(result.get("success")), "red_flags": result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/events/calendar", tags=["估值"], summary="未来事件日历")
@@ -2350,13 +3195,18 @@ async def api_event_calendar(ticker: str, days: int = 30):
             build_event_calendar, ticker, int(days)
         )
         return {"success": bool(result.get("success")), "calendar": result}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/position/advice", tags=["组合"], summary="按当前持仓给出操作建议")
 async def api_position_advice(
-    ticker: str, account: str | None = None, decision: str | None = None
+    ticker: str,
+    account: str | None = None,
+    decision: str | None = None,
+    user: dict = Depends(current_user),
 ):
     """结合持仓与最新决策卡，给出加仓/减仓/清仓/持有建议。
 
@@ -2381,20 +3231,29 @@ async def api_position_advice(
             chosen = preliminary_decision(summary)
 
         plan = build_decision_plan(strategy_result, chosen)
+        account = _resolve_account(account, user)
         advice = await run_in_threadpool(
-            advise_position, ticker, plan, account
+            advise_position,
+            ticker,
+            plan,
+            account,
+            owner="" if _is_admin_user(user) else (user or {}).get("username") or "",
         )
         return {
             "success": bool(advice.get("success")),
             "advice": advice,
             "decision_source": "manual" if decision else "rule_preview",
         }
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/portfolio/alerts", tags=["组合"], summary="持仓止损止盈提醒")
-async def api_portfolio_alerts(account: str | None = None):
+async def api_portfolio_alerts(
+    account: str | None = None, user: dict = Depends(current_user)
+):
     """对当前持仓做止损/止盈/深亏/未设止损检查。"""
     try:
         from tradingagents.services.portfolio import load_positions
@@ -2403,6 +3262,7 @@ async def api_portfolio_alerts(account: str | None = None):
             summarize_alerts,
         )
 
+        account = _resolve_account(account, user)
         positions = await run_in_threadpool(load_positions, account)
         alerts = await run_in_threadpool(check_position_alerts, positions)
         return {
@@ -2410,8 +3270,10 @@ async def api_portfolio_alerts(account: str | None = None):
             "alerts": alerts,
             "summary": summarize_alerts(alerts),
         }
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get(
@@ -2425,8 +3287,10 @@ async def api_sentiment_history(days: int = 60):
         )
 
         return await run_in_threadpool(get_sentiment_history, int(days))
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.post(
@@ -2440,8 +3304,10 @@ async def api_sentiment_snapshot(date: str | None = None):
         )
 
         return await run_in_threadpool(snapshot_market_sentiment, date)
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/runs", tags=["任务"], summary="查询最近运行指标")
@@ -2454,8 +3320,29 @@ async def api_list_runs(ticker: str | None = None, limit: int = 50, offset: int 
             list_run_logs, ticker, int(limit), int(offset)
         )
         return {"success": True, "runs": logs}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/runs/budget", tags=["任务"], summary="查询单次运行预算策略")
+async def api_runs_budget():
+    try:
+        from tradingagents.services.observability import (
+            budget_policy,
+            budget_status,
+        )
+
+        return {
+            "success": True,
+            "policy": budget_policy(),
+            "current": budget_status(),
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
 
 
 @api_router.get("/runs/aggregate", tags=["任务"], summary="查询聚合运行指标")
@@ -2466,8 +3353,1193 @@ async def api_aggregate_runs():
 
         aggregate = await run_in_threadpool(aggregate_run_logs)
         return {"success": True, "aggregate": aggregate}
+    except ApiError:
+        raise
     except Exception as exc:
-        return error_payload(str(exc))
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 盘中实时行情 / 告警中心 API
+# ============================================================================
+
+
+@api_router.get("/realtime/session", tags=["实时"], summary="查询当前交易时段")
+async def api_realtime_session():
+    try:
+        from tradingagents.dataflows.realtime import market_session
+
+        return {"success": True, **market_session()}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/realtime/quote", tags=["实时"], summary="查询实时行情")
+async def api_realtime_quote(
+    ticker: str | None = None, tickers: str | None = None
+):
+    try:
+        from tradingagents.dataflows.ashare_rules import normalize_code
+        from tradingagents.dataflows.realtime import get_realtime_quotes
+
+        wanted: list[str] = []
+        if ticker:
+            wanted.append(ticker)
+        if tickers:
+            wanted.extend(
+                item.strip() for item in tickers.replace("，", ",").split(",")
+            )
+        codes = list(
+            dict.fromkeys(
+                code
+                for code in (normalize_code(item) for item in wanted)
+                if code
+            )
+        )
+        if not codes:
+            return error_payload("请提供 ticker 或 tickers", code="bad_request")
+        if len(codes) > 200:
+            return error_payload("一次最多查询 200 只标的", code="bad_request")
+        quotes = await run_in_threadpool(get_realtime_quotes, codes)
+        return {"success": True, "items": quotes}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/realtime/intraday", tags=["实时"], summary="查询分钟线")
+async def api_realtime_intraday(
+    ticker: str, period: str = "5", days: int = 3
+):
+    try:
+        from tradingagents.dataflows.realtime import get_intraday_bars
+
+        items = await run_in_threadpool(
+            get_intraday_bars, ticker, period, max(1, min(int(days), 10))
+        )
+        return {
+            "success": True,
+            "ticker": ticker,
+            "period": period,
+            "items": items,
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/realtime/orderbook", tags=["实时"], summary="查询五档盘口")
+async def api_realtime_orderbook(ticker: str):
+    try:
+        from tradingagents.dataflows.realtime import get_order_book
+
+        return {"success": True, **await run_in_threadpool(get_order_book, ticker)}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/alerts/summary", tags=["告警"], summary="查询告警概览")
+async def api_alerts_summary():
+    try:
+        from tradingagents.storage import alert_summary
+
+        return {"success": True, **await run_in_threadpool(alert_summary)}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/alerts/rules", tags=["告警"], summary="查询告警规则")
+async def api_alert_rules():
+    try:
+        from tradingagents.storage import list_alert_rules
+
+        return {
+            "success": True,
+            "items": await run_in_threadpool(list_alert_rules),
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/alerts/rules", tags=["告警"], summary="新增/更新告警规则")
+async def api_add_alert_rule(request: AlertRuleRequest):
+    try:
+        from tradingagents.dataflows.ashare_rules import normalize_code
+        from tradingagents.services.alert_engine import RULE_TYPES
+        from tradingagents.storage import add_alert_rule
+
+        if request.rule_type not in RULE_TYPES:
+            return error_payload(
+                f"不支持的规则类型：{request.rule_type}", code="bad_request"
+            )
+        ticker = normalize_code(request.ticker) or request.ticker
+        rule = await run_in_threadpool(
+            add_alert_rule,
+            ticker,
+            request.rule_type,
+            request.threshold,
+            name=request.name,
+            cooldown_minutes=request.cooldown_minutes,
+            note=request.note,
+            enabled=request.enabled,
+        )
+        return {"success": True, "item": rule}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.patch("/alerts/rules/{rule_id}", tags=["告警"], summary="更新告警规则")
+async def api_update_alert_rule(rule_id: int, request: AlertRuleUpdateRequest):
+    try:
+        from tradingagents.storage import update_alert_rule
+
+        rule = await run_in_threadpool(
+            update_alert_rule,
+            rule_id,
+            threshold=request.threshold,
+            cooldown_minutes=request.cooldown_minutes,
+            enabled=request.enabled,
+            name=request.name,
+            note=request.note,
+        )
+        if not rule:
+            return error_payload("规则不存在", code="not_found")
+        return {"success": True, "item": rule}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.delete(
+    "/alerts/rules/{rule_id}", tags=["告警"], summary="删除告警规则"
+)
+async def api_delete_alert_rule(rule_id: int):
+    try:
+        from tradingagents.storage import delete_alert_rule
+
+        removed = await run_in_threadpool(delete_alert_rule, rule_id)
+        return {
+            "success": bool(removed),
+            "message": "已删除" if removed else "规则不存在",
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/alerts/events", tags=["告警"], summary="查询告警事件")
+async def api_alert_events(
+    limit: int = 100,
+    unacked_only: bool = False,
+    ticker: str | None = None,
+):
+    try:
+        from tradingagents.storage import list_alert_events
+
+        items = await run_in_threadpool(
+            list_alert_events,
+            max(1, min(int(limit), 1000)),
+            unacked_only=bool(unacked_only),
+            ticker=ticker,
+        )
+        return {"success": True, "items": items}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post(
+    "/alerts/events/{event_id}/ack", tags=["告警"], summary="确认单条告警"
+)
+async def api_ack_alert_event(event_id: int):
+    try:
+        from tradingagents.storage import ack_alert_event
+
+        ok = await run_in_threadpool(ack_alert_event, event_id)
+        return {
+            "success": bool(ok),
+            "message": "已确认" if ok else "事件不存在",
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post(
+    "/alerts/events/ack-all", tags=["告警"], summary="确认全部告警"
+)
+async def api_ack_all_alert_events():
+    try:
+        from tradingagents.storage import ack_all_alert_events
+
+        count = await run_in_threadpool(ack_all_alert_events)
+        return {"success": True, "acknowledged": count}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/alerts/check", tags=["告警"], summary="立即检查一次告警")
+async def api_check_alerts(request: AlertCheckRequest):
+    try:
+        from tradingagents.services.alert_engine import check_alerts
+
+        result = await run_in_threadpool(
+            check_alerts,
+            notify=request.notify,
+            tickers=request.tickers,
+            include_portfolio=request.include_portfolio,
+            account=request.account,
+        )
+        return {"success": True, **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 宏观 / 两融 / 行业轮动 / ETF API
+# ============================================================================
+
+
+@api_router.get("/macro/overview", tags=["宏观"], summary="宏观指标概览")
+async def api_macro_overview():
+    try:
+        from tradingagents.dataflows.macro_data import get_macro_indicators
+
+        result = await run_in_threadpool(get_macro_indicators)
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/macro/margin", tags=["宏观"], summary="两融余额与变化")
+async def api_macro_margin(days: int = 60):
+    try:
+        from tradingagents.dataflows.macro_data import get_margin_snapshot
+
+        result = await run_in_threadpool(
+            get_margin_snapshot, max(5, min(int(days), 240))
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/market/rotation", tags=["宏观"], summary="行业轮动排行")
+async def api_market_rotation(limit: int = 20):
+    try:
+        from tradingagents.dataflows.macro_data import get_industry_rotation
+
+        result = await run_in_threadpool(
+            get_industry_rotation, max(1, min(int(limit), 50))
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/market/etf-flows", tags=["宏观"], summary="ETF 主力资金流")
+async def api_market_etf_flows(limit: int = 20):
+    try:
+        from tradingagents.dataflows.macro_data import get_etf_flows
+
+        result = await run_in_threadpool(
+            get_etf_flows, max(1, min(int(limit), 100))
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/macro/dashboard", tags=["宏观"], summary="宏观/两融/轮动/ETF 面板")
+async def api_macro_dashboard():
+    try:
+        from tradingagents.dataflows.macro_data import get_macro_dashboard
+
+        result = await run_in_threadpool(get_macro_dashboard)
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 社媒舆情 API
+# ============================================================================
+
+
+@api_router.get("/social/sentiment", tags=["舆情"], summary="个股社媒热度与情绪")
+async def api_social_sentiment(
+    ticker: str,
+    name: str = "",
+    curr_date: str | None = None,
+    include_xueqiu: bool = False,
+):
+    try:
+        from tradingagents.dataflows.social_sentiment import get_social_sentiment
+
+        result = await run_in_threadpool(
+            get_social_sentiment,
+            ticker,
+            name=name,
+            curr_date=curr_date,
+            include_xueqiu=bool(include_xueqiu),
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/social/history", tags=["舆情"], summary="社媒舆情历史快照")
+async def api_social_history(ticker: str, days: int = 60):
+    try:
+        from tradingagents.dataflows.social_sentiment import get_social_history
+
+        result = await run_in_threadpool(
+            get_social_history, ticker, max(1, min(int(days), 365))
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/social/snapshot", tags=["舆情"], summary="记录一次社媒快照")
+async def api_social_snapshot(request: SocialSnapshotRequest):
+    try:
+        from tradingagents.dataflows.social_sentiment import get_social_sentiment
+
+        result = await run_in_threadpool(
+            get_social_sentiment,
+            request.ticker,
+            name=request.name,
+            include_xueqiu=request.include_xueqiu,
+            save=True,
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/social/hot", tags=["舆情"], summary="社媒热度榜")
+async def api_social_hot(limit: int = 30):
+    try:
+        from tradingagents.dataflows.social_sentiment import get_social_hot
+
+        result = await run_in_threadpool(
+            get_social_hot, max(1, min(int(limit), 100))
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 公告 / 研报一致预期 / 股东变化 API
+# ============================================================================
+
+
+@api_router.get("/disclosure/summary", tags=["披露"], summary="公告/研报/股东合并摘要")
+async def api_disclosure_summary(
+    ticker: str, days: int = 30, curr_date: str | None = None
+):
+    try:
+        from tradingagents.dataflows.disclosure import get_disclosure_summary
+
+        result = await run_in_threadpool(
+            get_disclosure_summary,
+            ticker,
+            days=max(1, min(int(days), 180)),
+            curr_date=curr_date,
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/disclosure/announcements", tags=["披露"], summary="个股公告")
+async def api_disclosure_announcements(
+    ticker: str,
+    days: int = 30,
+    limit: int = 50,
+    curr_date: str | None = None,
+):
+    try:
+        from tradingagents.dataflows.disclosure import get_announcements
+
+        result = await run_in_threadpool(
+            get_announcements,
+            ticker,
+            days=max(1, min(int(days), 180)),
+            limit=max(1, min(int(limit), 200)),
+            curr_date=curr_date,
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/disclosure/research", tags=["披露"], summary="研报一致预期")
+async def api_disclosure_research(
+    ticker: str, days: int = 180, curr_date: str | None = None
+):
+    try:
+        from tradingagents.dataflows.disclosure import get_research_consensus
+
+        result = await run_in_threadpool(
+            get_research_consensus,
+            ticker,
+            days=max(1, min(int(days), 730)),
+            curr_date=curr_date,
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/disclosure/shareholders", tags=["披露"], summary="股东变化")
+async def api_disclosure_shareholders(
+    ticker: str, curr_date: str | None = None
+):
+    try:
+        from tradingagents.dataflows.disclosure import get_shareholder_changes
+
+        result = await run_in_threadpool(
+            get_shareholder_changes, ticker, curr_date=curr_date
+        )
+        return {"success": bool(result.get("success")), **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 全市场选股 API
+# ============================================================================
+
+
+def _screener_kwargs(request: ScreenerRequest) -> dict[str, Any]:
+    return {
+        "top": request.top,
+        "style": request.style,
+        "min_amount_yi": request.min_amount_yi,
+        "min_market_cap_yi": request.min_market_cap_yi,
+        "max_market_cap_yi": request.max_market_cap_yi,
+        "exclude_st": request.exclude_st,
+        "exclude_limit": request.exclude_limit,
+        "exclude_loss": request.exclude_loss,
+        "boards": request.boards,
+        "include_financials": request.include_financials,
+        "include_fund_flow": request.include_fund_flow,
+        "industry_neutral": request.industry_neutral,
+        "save": request.save,
+    }
+
+
+@api_router.get("/screener/styles", tags=["选股"], summary="查询选股风格与权重")
+async def api_screener_styles():
+    try:
+        from tradingagents.services.screener import SCREENER_STYLES
+
+        return {"success": True, "items": SCREENER_STYLES}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/screener", tags=["选股"], summary="全市场多因子选股")
+async def api_screener(
+    top: int = 30,
+    style: str = "balanced",
+    min_amount_yi: float = 1.0,
+    min_market_cap_yi: float = 30.0,
+    max_market_cap_yi: float | None = None,
+    exclude_st: bool = True,
+    exclude_limit: bool = True,
+    exclude_loss: bool = False,
+    include_financials: bool = True,
+    include_fund_flow: bool = False,
+    industry_neutral: bool = False,
+    save: bool = False,
+):
+    try:
+        from tradingagents.services.screener import run_screener
+
+        result = await run_in_threadpool(
+            run_screener,
+            top=max(1, min(int(top), 200)),
+            style=style,
+            min_amount_yi=max(0.0, float(min_amount_yi)),
+            min_market_cap_yi=max(0.0, float(min_market_cap_yi)),
+            max_market_cap_yi=max_market_cap_yi,
+            exclude_st=bool(exclude_st),
+            exclude_limit=bool(exclude_limit),
+            exclude_loss=bool(exclude_loss),
+            include_financials=bool(include_financials),
+            include_fund_flow=bool(include_fund_flow),
+            industry_neutral=bool(industry_neutral),
+            save=bool(save),
+        )
+        return {**result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/screener/run", tags=["选股"], summary="按完整参数运行选股")
+async def api_screener_run(request: ScreenerRequest):
+    try:
+        from tradingagents.services.screener import run_screener
+
+        result = await run_in_threadpool(
+            run_screener, **_screener_kwargs(request)
+        )
+        return {**result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get(
+    "/screener/latest", tags=["选股"], summary="查询最近一次选股结果"
+)
+async def api_screener_latest(
+    run_date: str | None = None, style: str | None = None
+):
+    try:
+        from tradingagents.storage import get_latest_screener_run
+
+        result = await run_in_threadpool(
+            get_latest_screener_run, run_date, style
+        )
+        if not result:
+            return {
+                "success": True,
+                "run": None,
+                "message": "暂无选股记录",
+            }
+        return {"success": True, "run": result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/screener/history", tags=["选股"], summary="查询选股历史")
+async def api_screener_history(limit: int = 20):
+    try:
+        from tradingagents.storage import list_screener_runs
+
+        items = await run_in_threadpool(
+            list_screener_runs, max(1, min(int(limit), 200))
+        )
+        return {"success": True, "items": items}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get(
+    "/screener/runs/{run_id}", tags=["选股"], summary="查询某次选股详情"
+)
+async def api_screener_run_detail(run_id: int):
+    try:
+        from tradingagents.storage import get_screener_run
+
+        result = await run_in_threadpool(get_screener_run, run_id)
+        if not result:
+            return error_payload("选股记录不存在", code="not_found")
+        return {"success": True, "run": result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.delete(
+    "/screener/runs/{run_id}", tags=["选股"], summary="删除选股记录"
+)
+async def api_screener_delete(run_id: int):
+    try:
+        from tradingagents.storage import delete_screener_run
+
+        removed = await run_in_threadpool(delete_screener_run, run_id)
+        return {
+            "success": bool(removed),
+            "message": "已删除" if removed else "记录不存在",
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 本地数据仓库 API（覆盖 / 质量 / 同步）
+# ============================================================================
+
+
+@api_router.get("/data/status", tags=["数据"], summary="查询本地行情仓库状态")
+async def api_data_status(ticker: str | None = None):
+    try:
+        from tradingagents.services.market_data import coverage, market_stats
+
+        payload: dict[str, Any] = {
+            "success": True,
+            "cache": await run_in_threadpool(market_stats),
+        }
+        if ticker:
+            payload["ticker"] = await run_in_threadpool(coverage, ticker)
+        return payload
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/data/symbols", tags=["数据"], summary="列出本地已缓存标的")
+async def api_data_symbols():
+    try:
+        from tradingagents.storage.market_store import list_market_symbols
+
+        return {
+            "success": True,
+            "items": await run_in_threadpool(list_market_symbols),
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/data/quality", tags=["数据"], summary="检查本地行情数据质量")
+async def api_data_quality(
+    ticker: str,
+    start_date: str | None = None,
+    end_date: str | None = None,
+):
+    try:
+        from tradingagents.services.data_quality import quality_report
+
+        result = await run_in_threadpool(
+            quality_report, ticker, start_date, end_date
+        )
+        return {"success": True, **result}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/data/sync", tags=["数据"], summary="同步标的到本地行情库")
+async def api_data_sync(request: DataSyncRequest):
+    try:
+        from tradingagents.dataflows.interface import route_to_vendor
+        from tradingagents.services.market_data import sync_symbol
+
+        tickers = [item for item in (request.tickers or []) if str(item).strip()]
+        if request.ticker:
+            tickers.append(request.ticker)
+        tickers = list(dict.fromkeys(str(item).strip() for item in tickers))
+        if not tickers:
+            return error_payload("请提供 ticker 或 tickers", code="bad_request")
+        if len(tickers) > 50:
+            return error_payload("一次最多同步 50 只标的", code="bad_request")
+
+        end_date = request.end_date or datetime.now().strftime("%Y-%m-%d")
+        start_date = request.start_date or (
+            datetime.now() - timedelta(days=365 * 3)
+        ).strftime("%Y-%m-%d")
+
+        def _fetch(code: str, start: str, end: str) -> str:
+            return route_to_vendor("get_stock_data", code, start, end)
+
+        results = []
+        for code in tickers:
+            try:
+                result = await run_in_threadpool(
+                    sync_symbol,
+                    code,
+                    start_date,
+                    end_date,
+                    fetch=_fetch,
+                    adjust=request.adjust,
+                    force=request.force,
+                )
+                results.append({"success": True, **result})
+            except ApiError:
+                raise
+            except Exception as exc:
+                results.append(
+                    {
+                        "success": False,
+                        "ticker": code,
+                        "message": f"{type(exc).__name__}: {exc}",
+                    }
+                )
+        return {
+            "success": all(item.get("success") for item in results),
+            "start_date": start_date,
+            "end_date": end_date,
+            "items": results,
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 推荐评估 API（决策 → 前瞻收益）
+# ============================================================================
+
+
+def _parse_horizons(value: str | None) -> list[int] | None:
+    if not value:
+        return None
+    items: list[int] = []
+    for part in str(value).replace("，", ",").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            number = int(part)
+        except ValueError:
+            continue
+        if 1 <= number <= 250 and number not in items:
+            items.append(number)
+    return items or None
+
+
+@api_router.get(
+    "/evaluation", tags=["评估"], summary="评估历史推荐的前瞻收益与命中率"
+)
+async def api_evaluation(
+    ticker: str | None = None,
+    limit: int = 50,
+    horizons: str | None = None,
+    user: dict = Depends(current_user),
+):
+    """把历史报告与之后 5/10/20 个交易日的真实行情对齐。
+
+    GET 只读、不写记忆；需要积累经验时用 ``POST /api/evaluation/run``。
+    """
+    try:
+        from tradingagents.services.evaluation import evaluate_reports
+
+        parsed = _parse_horizons(horizons)
+        result = await run_in_threadpool(
+            evaluate_reports,
+            ticker,
+            max(1, min(int(limit), 200)),
+            parsed or (5, 10, 20),
+            write_memory=False,
+            owner=_report_owner(user),
+        )
+        return {
+            "success": True,
+            "ticker": ticker or "",
+            "horizons": parsed or [5, 10, 20],
+            **result,
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post(
+    "/evaluation/run", tags=["评估"], summary="手动运行推荐评估并可回写记忆"
+)
+async def api_evaluation_run(
+    request: EvaluationRequest, user: dict = Depends(current_user)
+):
+    try:
+        from tradingagents.services.evaluation import evaluate_reports
+
+        result = await run_in_threadpool(
+            evaluate_reports,
+            request.ticker,
+            request.limit,
+            request.horizons or (5, 10, 20),
+            write_memory=request.write_memory,
+            owner=_report_owner(user),
+        )
+        return {
+            "success": True,
+            "ticker": request.ticker or "",
+            "horizons": request.horizons or [5, 10, 20],
+            "memory_written": result.get("summary", {}).get("memory_written", 0),
+            **result,
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get(
+    "/evaluation/report/{report_id}",
+    tags=["评估"],
+    summary="评估单条历史报告",
+)
+async def api_evaluation_report(
+    report_id: int, user: dict = Depends(current_user)
+):
+    """从报告详情直接查看"这条推荐后来赚了还是亏了"。"""
+    try:
+        from tradingagents.services.evaluation import evaluate_decision
+
+        report = await run_in_threadpool(
+            get_report, report_id, _report_owner(user)
+        )
+        if not report:
+            return error_payload("报告不存在", code="not_found")
+        row = await run_in_threadpool(
+            evaluate_decision,
+            report.get("ticker") or "",
+            report.get("decision") or "",
+            report.get("trade_date") or "",
+        )
+        row["report_id"] = report_id
+        row["source"] = report.get("source") or ""
+        return {"success": True, "evaluation": row}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+# ============================================================================
+# 模拟盘 API（持久化 PaperBroker 状态）
+# ============================================================================
+
+
+@api_router.get("/paper", tags=["模拟盘"], summary="查询模拟盘账户与持仓")
+async def api_paper(
+    account: str | None = None, user: dict = Depends(current_user)
+):
+    try:
+        with PAPER_STATE_LOCK:
+            name, broker = _load_paper_broker(account, user)
+            # GET 不落库：查看默认模拟盘不应产生写副作用。
+            return _paper_payload(name, broker)
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.get("/paper/accounts", tags=["模拟盘"], summary="查询模拟盘账户列表")
+async def api_paper_accounts(user: dict = Depends(current_user)):
+    try:
+        if load_config().multi_user and not _is_admin_user(user):
+            items = list_paper_accounts((user or {}).get("username") or "")
+        else:
+            items = list_paper_accounts()
+        return {"success": True, "items": items}
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/paper/reset", tags=["模拟盘"], summary="新建/重置模拟盘账户")
+async def api_paper_reset(
+    request: PaperResetRequest, user: dict = Depends(current_user)
+):
+    try:
+        from tradingagents.services.paper_trading import PaperBroker
+
+        name = _paper_account_name(request.account, user)
+        owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+        broker = PaperBroker(initial_cash=request.initial_cash)
+        with PAPER_STATE_LOCK:
+            _save_paper_broker(name, broker, owner)
+        return _paper_payload(name, broker)
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.delete("/paper", tags=["模拟盘"], summary="删除模拟盘账户")
+async def api_paper_delete(
+    account: str | None = None, user: dict = Depends(current_user)
+):
+    try:
+        with PAPER_STATE_LOCK:
+            removed = delete_paper_state(_paper_account_name(account, user))
+        return {
+            "success": bool(removed),
+            "message": "已删除" if removed else "模拟盘账户不存在",
+        }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/paper/order", tags=["模拟盘"], summary="提交模拟委托")
+async def api_paper_order(
+    request: PaperOrderRequest,
+    user: dict = Depends(current_user),
+    _risk: None = Depends(require_risk_ack),
+):
+    try:
+        with PAPER_STATE_LOCK:
+            name, broker = _load_paper_broker(request.account, user)
+            owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+            order = broker.submit_order(
+                request.ticker,
+                request.side,
+                request.quantity,
+                order_type=request.order_type,
+                limit_price=request.limit_price,
+                name=request.name,
+                reason=request.reason,
+                note=request.note,
+                stop_loss=request.stop_loss,
+                take_profit=request.take_profit,
+            )
+            _save_paper_broker(name, broker, owner)
+            return {
+                "success": True,
+                "order": order.to_dict(),
+                "report": broker.report(last_orders=100),
+            }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/paper/cancel", tags=["模拟盘"], summary="撤销模拟委托")
+async def api_paper_cancel(
+    order_id: str,
+    account: str | None = None,
+    user: dict = Depends(current_user),
+):
+    try:
+        with PAPER_STATE_LOCK:
+            name, broker = _load_paper_broker(account, user)
+            owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+            cancelled = broker.cancel_order(order_id)
+            _save_paper_broker(name, broker, owner)
+            return {
+                "success": bool(cancelled),
+                "message": "已撤单" if cancelled else "未找到可撤销的委托",
+                "report": broker.report(last_orders=100),
+            }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post(
+    "/paper/from-plan", tags=["模拟盘"], summary="把决策卡转成模拟委托"
+)
+async def api_paper_from_plan(
+    request: PaperPlanRequest,
+    user: dict = Depends(current_user),
+    _risk: None = Depends(require_risk_ack),
+):
+    try:
+        from tradingagents.services.paper_trading import order_from_decision_plan
+
+        with PAPER_STATE_LOCK:
+            name, broker = _load_paper_broker(request.account, user)
+            owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+            order = order_from_decision_plan(
+                request.plan,
+                request.ticker,
+                broker=broker,
+                name=request.name,
+            )
+            _save_paper_broker(name, broker, owner)
+            return {
+                "success": True,
+                "order": order.to_dict() if order else None,
+                "message": "已生成模拟委托" if order else "决策为 HOLD/冲突/无可卖持仓，未下单",
+                "report": broker.report(last_orders=100),
+            }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post("/paper/mark", tags=["模拟盘"], summary="按最新价盯市")
+async def api_paper_mark(
+    request: PaperMarkRequest, user: dict = Depends(current_user)
+):
+    """盯市：不传 prices 时自动抓全市场快照，更新持仓与净值曲线。"""
+    try:
+        # 先在锁内只读状态并收集标的，网络取数放到锁外，避免阻塞全站。
+        with PAPER_STATE_LOCK:
+            name, broker = _load_paper_broker(request.account, user)
+            tickers = list(broker.positions().keys())
+            tickers += [
+                order.ticker
+                for order in broker.account().orders
+                if order.status == "pending"
+            ]
+            tickers = sorted({str(item) for item in tickers if item})
+        prices = request.prices
+        error = ""
+        if not prices and tickers:
+            try:
+                from tradingagents.dataflows.akshare_adapter import (
+                    get_akshare_spot_prices,
+                )
+
+                prices = await run_in_threadpool(
+                    get_akshare_spot_prices, tickers
+                )
+            except ApiError:
+                raise
+            except Exception as exc:
+                error = str(exc)
+        with PAPER_STATE_LOCK:
+            # 重新读取，避免覆盖锁外期间的新委托。
+            name, broker = _load_paper_broker(request.account, user)
+            owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+            broker.mark_to_market(
+                request.date or datetime.now().strftime("%Y-%m-%d"),
+                prices or {},
+            )
+            _save_paper_broker(name, broker, owner)
+            return {
+                "success": True,
+                "prices": prices or {},
+                "error": error,
+                "report": broker.report(last_orders=100),
+            }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
+
+
+@api_router.post(
+    "/paper/advance", tags=["模拟盘"], summary="用历史日线推进模拟盘撮合"
+)
+async def api_paper_advance(
+    request: PaperAdvanceRequest, user: dict = Depends(current_user)
+):
+    """按给定日期区间逐日撮合，适合回放策略信号。"""
+    try:
+        from tradingagents.services.paper_trading import (
+            advance_broker,
+            load_price_frames,
+        )
+
+        try:
+            span = (
+                datetime.fromisoformat(request.end_date[:10])
+                - datetime.fromisoformat(request.start_date[:10])
+            ).days
+        except ValueError:
+            return error_payload("日期格式必须是 YYYY-MM-DD", code="bad_request")
+        if span < 0 or span > 366:
+            return error_payload("推进区间需在 0-366 天内", code="bad_request")
+
+        with PAPER_STATE_LOCK:
+            name, broker = _load_paper_broker(request.account, user)
+            tickers = set(broker.positions().keys())
+            tickers.update(
+                order.ticker
+                for order in broker.account().orders
+                if order.status == "pending"
+            )
+            last_date = broker.last_processed_date
+        # 不允许重放已经处理过的日期；前端默认“最近两周”时自动从上次之后开始。
+        start_date = request.start_date
+        if last_date and start_date <= last_date:
+            start_date = (
+                datetime.fromisoformat(last_date).date() + timedelta(days=1)
+            ).isoformat()
+        if start_date > request.end_date:
+            return error_payload(
+                f"开始日期 {start_date} 晚于结束日期 {request.end_date}；"
+                "请选择更晚的区间或先重置模拟盘",
+                code="bad_request",
+            )
+        frames = (
+            await run_in_threadpool(
+                load_price_frames,
+                sorted(tickers),
+                start_date,
+                request.end_date,
+            )
+            if tickers
+            else {}
+        )
+        with PAPER_STATE_LOCK:
+            # 重新读取状态，避免覆盖取数期间新增的委托。
+            name, broker = _load_paper_broker(request.account, user)
+            if frames:
+                # 纯 CPU 撮合：在锁内同步执行，避免持锁 await 导致事件循环死锁。
+                advance_broker(broker, frames)
+            owner = "" if _is_admin_user(user) else (user or {}).get("username") or ""
+            _save_paper_broker(name, broker, owner)
+            return {
+                "success": True,
+                "start_date": start_date,
+                "tickers": sorted(tickers),
+                "report": broker.report(last_orders=100),
+            }
+    except ApiError:
+        raise
+    except Exception as exc:
+        return error_payload(safe_exception_message(exc))
 
 
 # ============================================================================
@@ -2551,6 +4623,8 @@ def _check_database() -> dict[str, Any]:
             "required": True,
             "detail": f"{path}（{len(tables)} 张表）",
         }
+    except ApiError:
+        raise
     except Exception as exc:
         return {
             "name": "database",
@@ -2593,6 +4667,8 @@ def _check_scheduler() -> dict[str, Any]:
             "required": True,
             "detail": "定时任务线程未运行",
         }
+    except ApiError:
+        raise
     except Exception as exc:
         return {
             "name": "scheduler",
@@ -2622,6 +4698,8 @@ def _check_disk() -> dict[str, Any]:
             "required": False,
             "detail": f"剩余 {free_mb:.0f} MB",
         }
+    except ApiError:
+        raise
     except Exception as exc:
         return {
             "name": "disk",
@@ -2698,6 +4776,14 @@ async def lifespan(application: FastAPI):
     """
     _warn_if_unauthenticated(load_config())
 
+    # 多用户模式首次启动：创建初始管理员（密码来自 env 或随机写入 data/）。
+    try:
+        from webui.backend.users import ensure_bootstrap_admin
+
+        ensure_bootstrap_admin()
+    except Exception:
+        logger.warning("初始化管理员失败", exc_info=True)
+
     # 启动有界任务队列：分析任务不再直接起线程。
     # recover_pending=False —— 重启不自动执行历史排队任务。
     try:
@@ -2734,6 +4820,7 @@ async def lifespan(application: FastAPI):
 
 
 OPENAPI_TAGS = [
+    {"name": "认证", "description": "登录、会话、用户管理、风险确认与审计日志。"},
     {"name": "分析", "description": "深度分析任务的启动、状态与模型连通性。"},
     {"name": "任务", "description": "分析任务、定时任务与运行指标。"},
     {"name": "自选", "description": "自选股维护。"},
@@ -2741,6 +4828,15 @@ OPENAPI_TAGS = [
     {"name": "市场", "description": "行情、K 线、资金流与市场复盘。"},
     {"name": "报告", "description": "分析报告、盘后简报与交易日历。"},
     {"name": "组合", "description": "组合持仓、组合级风控评估与持仓操作建议。"},
+    {"name": "实时", "description": "盘中实时行情、分钟线与五档盘口。"},
+    {"name": "告警", "description": "价格/涨跌幅/量比告警规则、事件与确认。"},
+    {"name": "选股", "description": "全市场多因子选股、每日候选池与历史归档。"},
+    {"name": "宏观", "description": "宏观指标、两融余额、行业轮动与 ETF 资金流。"},
+    {"name": "舆情", "description": "东财人气榜、概念热度、微博情绪与社媒异常热度。"},
+    {"name": "披露", "description": "公告、研报一致预期、股东户数与十大股东。"},
+    {"name": "数据", "description": "本地行情仓库、覆盖范围与数据质量检查。"},
+    {"name": "评估", "description": "历史推荐的前瞻收益、命中率与置信度校准。"},
+    {"name": "模拟盘", "description": "模拟账户、委托、持仓与逐日撮合。"},
     {"name": "估值", "description": "估值历史分位、业绩预告、财务排雷与事件日历。"},
     {"name": "系统", "description": "健康探针、就绪探针与指标导出。"},
 ]
@@ -2765,6 +4861,10 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     #   RequestId → CORS → Timing → RateLimit → 路由
     application.add_middleware(TimingMiddleware)
     application.add_middleware(RateLimitMiddleware)
+    # ErrorStatus 必须在 Audit 内层：这样审计能看到最终 4xx/5xx 状态。
+    application.add_middleware(ErrorStatusMiddleware)
+    application.add_middleware(AuditMiddleware)
+    application.add_middleware(SecurityHeadersMiddleware)
     if current.cors_enabled:
         application.add_middleware(
             CORSMiddleware,
@@ -2780,7 +4880,8 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
         )
     application.add_middleware(RequestIdMiddleware)
 
-    # 受保护的 API 路由（鉴权依赖挂在路由器级别）
+    # 登录路由不挂鉴权依赖；其余 API 默认受保护。
+    application.include_router(auth_router, prefix=current.api_prefix)
     application.include_router(api_router, prefix=current.api_prefix)
 
     # 豁免鉴权 / 限流的系统路由

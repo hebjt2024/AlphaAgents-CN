@@ -2713,6 +2713,649 @@ def backtest(
     )
 
 
+@app.command()
+def evaluate(
+    ticker: str | None = typer.Option(None, "--ticker", "-t", help="只评估某个标的"),
+    limit: int = typer.Option(50, "--limit", "-n", help="最多读取多少条历史报告"),
+    horizons: str = typer.Option("5,10,20", "--horizons", help="前瞻周期，逗号分隔"),
+    write_memory: bool = typer.Option(
+        False, "--write-memory", help="把评估结果写回角色记忆（会改变后续分析）"
+    ),
+    json_output: bool = typer.Option(False, "--json", help="输出完整 JSON"),
+):
+    """评估历史推荐的 5/10/20 日前瞻收益与命中率。
+
+    示例：
+      alphaagents evaluate
+      alphaagents evaluate --ticker 600519 --limit 20
+      alphaagents evaluate --horizons 5,10 --write-memory
+    """
+    import json as _json
+
+    from tradingagents.services.evaluation import evaluate_reports
+
+    parsed: list[int] = []
+    for part in horizons.replace("，", ",").split(","):
+        part = part.strip()
+        if part.isdigit() and int(part) > 0 and int(part) not in parsed:
+            parsed.append(int(part))
+    if not parsed:
+        parsed = [5, 10, 20]
+
+    console.print(
+        f"[dim]评估历史推荐：标的 {ticker or '全部'}，最多 {limit} 条，"
+        f"周期 {parsed}[/dim]"
+    )
+    try:
+        result = evaluate_reports(
+            ticker=ticker,
+            limit=limit,
+            horizons=parsed,
+            write_memory=write_memory,
+        )
+    except Exception as exc:
+        console.print(f"[red]评估失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(_json.dumps(result, ensure_ascii=False, default=str))
+        return
+
+    rows = result.get("rows") or []
+    if not rows:
+        console.print("[yellow]暂无可评估的历史报告（先运行 analyze）[/yellow]")
+        return
+
+    table = Table(title="推荐评估明细", box=box.ROUNDED)
+    table.add_column("股票", style="cyan")
+    table.add_column("决策日", style="green")
+    table.add_column("决策", style="yellow")
+    for horizon in parsed:
+        table.add_column(f"{horizon}日收益", justify="right")
+    table.add_column("结果", style="magenta")
+    for row in rows:
+        cells = [str(row.get("ticker") or ""), str(row.get("entry_date") or "")]
+        cells.append(str(row.get("normalized_decision") or row.get("decision") or ""))
+        for horizon in parsed:
+            item = (row.get("horizons") or {}).get(str(horizon)) or {}
+            value = item.get("forward_return")
+            cells.append(
+                f"{value * 100:+.2f}%" if value is not None else "—"
+            )
+        correct = row.get("correct")
+        cells.append("✅" if correct is True else "❌" if correct is False else "—")
+        table.add_row(*cells)
+    console.print(table)
+
+    summary = result.get("summary") or {}
+    overall = summary.get("overall") or {}
+    stat = Table(title="汇总", box=box.SIMPLE)
+    stat.add_column("指标", style="cyan")
+    stat.add_column("数值", style="green")
+    stat.add_row("样本数", str(summary.get("raw_count") or 0))
+    stat.add_row("有效样本量", str(summary.get("effective_sample_size") or 0))
+    stat.add_row("命中率", f"{(overall.get('hit_rate') or 0) * 100:.1f}%")
+    stat.add_row(
+        "平均前瞻收益", f"{(overall.get('avg_forward_return') or 0) * 100:.2f}%"
+    )
+    if summary.get("sample_insufficient"):
+        stat.add_row("提示", "有效样本不足，命中率暂不可当结论")
+    console.print(stat)
+
+
+@app.command()
+def portfolio(
+    account: str = typer.Option("默认账户", "--account", "-a", help="账户名"),
+    refresh: bool = typer.Option(False, "--refresh", help="先用最新行情刷新持仓"),
+    snapshot: bool = typer.Option(False, "--snapshot", help="记录今日组合快照"),
+    json_output: bool = typer.Option(False, "--json", help="输出完整 JSON"),
+):
+    """查看组合持仓、风险体检与绩效。
+
+    示例：
+      alphaagents portfolio
+      alphaagents portfolio --refresh
+      alphaagents portfolio --refresh --snapshot
+    """
+    import json as _json
+
+    from tradingagents.services.portfolio import (
+        portfolio_performance,
+        record_snapshot,
+        refresh_prices,
+    )
+
+    try:
+        if refresh:
+            refresh_prices(account)
+        if snapshot:
+            record_snapshot(account)
+        result = portfolio_performance(account)
+    except Exception as exc:
+        console.print(f"[red]组合读取失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(_json.dumps(result, ensure_ascii=False, default=str))
+        return
+
+    current = result.get("current") or {}
+    perf = result.get("performance") or {}
+    table = Table(title=f"组合持仓 · {current.get('account') or account}", box=box.ROUNDED)
+    table.add_column("代码", style="cyan")
+    table.add_column("名称")
+    table.add_column("数量", justify="right")
+    table.add_column("成本", justify="right")
+    table.add_column("现价", justify="right")
+    table.add_column("市值", justify="right")
+    table.add_column("浮盈", justify="right")
+    for pos in current.get("positions") or []:
+        pnl = float(pos.get("unrealised_pnl") or 0)
+        table.add_row(
+            str(pos.get("ticker") or ""),
+            str(pos.get("name") or ""),
+            str(pos.get("quantity") or 0),
+            f"{float(pos.get('avg_cost') or 0):.2f}",
+            f"{float(pos.get('last_price') or 0):.2f}",
+            f"{float(pos.get('market_value') or 0):,.2f}",
+            f"{pnl:+,.2f}",
+        )
+    console.print(table)
+    console.print(
+        f"[dim]现金 {float(current.get('cash') or 0):,.2f} · "
+        f"权益 {float(current.get('equity') or 0):,.2f} · "
+        f"总收益 {float(perf.get('total_return') or 0) * 100:.2f}% · "
+        f"最大回撤 {float(perf.get('max_drawdown') or 0) * 100:.2f}%[/dim]"
+    )
+
+
+@app.command()
+def sync(
+    ticker: str = typer.Argument(..., help="股票代码，如 600519"),
+    start: str | None = typer.Option(None, "--start", help="开始日期，默认三年前"),
+    end: str | None = typer.Option(None, "--end", help="结束日期，默认今天"),
+    force: bool = typer.Option(False, "--force", help="忽略本地覆盖范围，强制重抓"),
+):
+    """把某只股票的历史日线同步到本地行情库。
+
+    示例：
+      alphaagents sync 600519
+      alphaagents sync 600519 --start 2015-01-01
+      alphaagents sync 600519 --force
+    """
+    from tradingagents.dataflows.interface import route_to_vendor
+    from tradingagents.services.market_data import sync_symbol
+
+    end_date = end or datetime.datetime.now().strftime("%Y-%m-%d")
+    start_date = start or (
+        datetime.datetime.now() - datetime.timedelta(days=365 * 3)
+    ).strftime("%Y-%m-%d")
+    console.print(
+        f"[dim]同步 {ticker}：{start_date} ~ {end_date} → 本地行情库[/dim]"
+    )
+    try:
+        result = sync_symbol(
+            ticker,
+            start_date,
+            end_date,
+            fetch=lambda code, begin, finish: route_to_vendor(
+                "get_stock_data", code, begin, finish
+            ),
+            force=force,
+        )
+    except Exception as exc:
+        console.print(f"[red]同步失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    after = result.get("after") or ("", "")
+    table = Table(title=f"{ticker} 本地行情", box=box.ROUNDED)
+    table.add_column("项目", style="cyan")
+    table.add_column("值", style="green")
+    table.add_row("写入行数", str(result.get("written") or 0))
+    table.add_row("覆盖范围", f"{after[0] or '--'} ~ {after[1] or '--'}")
+    table.add_row("复权口径", str(result.get("adjust") or "qfq"))
+    console.print(table)
+    for warning in result.get("warnings") or []:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@app.command("data-quality")
+def data_quality(
+    ticker: str = typer.Argument(..., help="股票代码，如 600519"),
+    start: str | None = typer.Option(None, "--start", help="开始日期，默认三年前"),
+    end: str | None = typer.Option(None, "--end", help="结束日期，默认今天"),
+):
+    """检查本地行情的数据质量（缺口 / OHLC 不自洽 / 异常涨跌幅）。"""
+    from tradingagents.services.data_quality import quality_report
+
+    try:
+        result = quality_report(ticker, start, end)
+    except Exception as exc:
+        console.print(f"[red]检查失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    console.print(
+        f"[bold]{ticker}[/bold]：{result.get('rows', 0)} 根 K 线 · "
+        f"{result.get('first_date') or '--'} ~ {result.get('last_date') or '--'} · "
+        f"{'健康' if result.get('healthy') else '有问题'}"
+    )
+    issues = result.get("issues") or []
+    if not issues:
+        console.print("[green]未发现异常[/green]")
+        return
+    table = Table(title="数据质量问题", box=box.ROUNDED)
+    table.add_column("级别", style="yellow")
+    table.add_column("问题", style="red")
+    for item in issues:
+        table.add_row(str(item.get("level")), str(item.get("message")))
+    console.print(table)
+
+
+@app.command()
+def screen(
+    top: int = typer.Option(30, "--top", "-n", help="候选池数量"),
+    style: str = typer.Option(
+        "balanced", "--style", help="balanced / value / growth / momentum / quality"
+    ),
+    min_amount: float = typer.Option(1.0, "--min-amount", help="最小成交额（亿元）"),
+    min_cap: float = typer.Option(30.0, "--min-cap", help="最小总市值（亿元）"),
+    financials: bool = typer.Option(
+        True, "--financials/--no-financials", help="是否合并最新业绩报表"
+    ),
+    fund_flow: bool = typer.Option(
+        False, "--fund-flow", help="是否合并主力资金流排行（较慢，易限流）"
+    ),
+    industry_neutral: bool = typer.Option(
+        False, "--industry-neutral", help="按行业均值中心化综合分"
+    ),
+    save: bool = typer.Option(True, "--save/--no-save", help="是否归档本次结果"),
+):
+    """全市场多因子选股，输出每日候选池。"""
+    from tradingagents.services.screener import SCREENER_STYLES, run_screener
+
+    if style not in SCREENER_STYLES:
+        console.print(
+            f"[red]不支持的风格: {style}；可用: {', '.join(SCREENER_STYLES)}[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    console.print(
+        f"[dim]全市场选股：风格 {style}，Top {top}，"
+        f"成交额≥{min_amount}亿，市值≥{min_cap}亿[/dim]"
+    )
+    try:
+        result = run_screener(
+            top=top,
+            style=style,
+            min_amount_yi=min_amount,
+            min_market_cap_yi=min_cap,
+            include_financials=financials,
+            include_fund_flow=fund_flow,
+            industry_neutral=industry_neutral,
+            save=save,
+        )
+    except Exception as exc:
+        console.print(f"[red]选股失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if not result.get("success", True):
+        console.print(f"[red]{result.get('message') or '选股失败'}[/red]")
+        raise typer.Exit(code=1)
+
+    summary = result.get("summary") or {}
+    console.print(
+        f"全市场 {summary.get('universe', 0)} 只 → 过滤后 {summary.get('after_filters', 0)} 只"
+        f" · 平均因子覆盖 {float(summary.get('average_coverage') or 0) * 100:.0f}%"
+    )
+    for warning in summary.get("warnings") or []:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    items = result.get("items") or []
+    if not items:
+        console.print("[yellow]没有符合条件的标的[/yellow]")
+        return
+    table = Table(title="每日候选池", box=box.ROUNDED)
+    table.add_column("#", style="dim")
+    table.add_column("代码", style="cyan")
+    table.add_column("名称")
+    table.add_column("行业")
+    table.add_column("现价", justify="right")
+    table.add_column("涨跌", justify="right")
+    table.add_column("评分", justify="right")
+    table.add_column("价值/质量/成长/动量", justify="right")
+    table.add_column("理由 / 风险")
+    for item in items:
+        factors = item.get("factor_scores") or {}
+        table.add_row(
+            str(item.get("rank")),
+            str(item.get("ticker")),
+            str(item.get("name") or ""),
+            str(item.get("industry") or ""),
+            f"{float(item.get('price') or 0):.2f}",
+            f"{float(item.get('change_pct') or 0):+.2f}%",
+            f"{float(item.get('score') or 0):.1f}",
+            "/".join(
+                f"{float(factors.get(key) or 0):.0f}"
+                for key in ("value", "quality", "growth", "momentum")
+            ),
+            "；".join(item.get("reasons") or [])
+            + ("｜" + "、".join(item.get("flags") or []) if item.get("flags") else ""),
+        )
+    console.print(table)
+    console.print("[dim]候选池仅为规则化排序，不构成投资建议。[/dim]")
+
+
+@app.command()
+def risk(
+    account: str = typer.Option("默认账户", "--account", "-a", help="账户名"),
+    lookback: int = typer.Option(252, "--lookback", help="历史交易日窗口"),
+    benchmark: str = typer.Option("000300", "--benchmark", help="基准指数/ETF"),
+    method: str = typer.Option(
+        "equal", "--method", help="再平衡方法：equal / risk_parity / cap_breaches"
+    ),
+):
+    """组合风险度量、压力测试与再平衡建议。"""
+    from tradingagents.services.portfolio_risk import portfolio_risk_report
+
+    console.print(f"[dim]计算 {account} 组合风险（{lookback} 日，基准 {benchmark}）…[/dim]")
+    try:
+        result = portfolio_risk_report(
+            account,
+            lookback=lookback,
+            benchmark=benchmark,
+            rebalance_method=method,
+        )
+    except Exception as exc:
+        console.print(f"[red]计算失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    if not result.get("success"):
+        console.print(f"[yellow]{result.get('message') or '暂无持仓'}[/yellow]")
+        return
+
+    metrics = result.get("metrics") or {}
+    table = Table(title="组合风险指标", box=box.ROUNDED)
+    table.add_column("指标", style="cyan")
+    table.add_column("数值", style="green")
+    rows = [
+        ("组合权益", f"{float(metrics.get('equity') or 0):,.2f}"),
+        ("年化收益", f"{float(metrics.get('annual_return') or 0) * 100:.2f}%"),
+        ("年化波动", f"{float(metrics.get('annual_volatility') or 0) * 100:.2f}%"),
+        ("夏普", f"{float(metrics.get('sharpe') or 0):.2f}"),
+        ("最大回撤", f"{float(metrics.get('max_drawdown') or 0) * 100:.2f}%"),
+        ("1日 VaR95", f"{float(metrics.get('var_95_1d') or 0) * 100:.2f}%"),
+        ("1日 CVaR95", f"{float(metrics.get('cvar_95_1d') or 0) * 100:.2f}%"),
+        ("VaR95 金额", f"{float(metrics.get('var_95_amount') or 0):,.0f}"),
+        ("Beta", f"{metrics.get('beta')}" if metrics.get("beta") is not None else "--"),
+        ("集中度 HHI", f"{float(metrics.get('concentration_hhi') or 0):.3f}"),
+        ("有效持仓数", f"{float(metrics.get('effective_positions') or 0):.1f}"),
+    ]
+    for label, value in rows:
+        table.add_row(label, value)
+    console.print(table)
+
+    stress = Table(title="压力测试", box=box.ROUNDED)
+    stress.add_column("情景", style="cyan")
+    stress.add_column("估算亏损", justify="right")
+    stress.add_column("亏损比例", justify="right")
+    stress.add_column("说明")
+    for item in result.get("stress") or []:
+        stress.add_row(
+            item.get("scenario") or "",
+            f"{float(item.get('loss_amount') or 0):,.0f}",
+            f"{float(item.get('loss_pct') or 0):.2f}%",
+            item.get("note") or "",
+        )
+    console.print(stress)
+
+    rebalance = result.get("rebalance") or {}
+    if rebalance.get("success"):
+        table = Table(title="再平衡建议", box=box.ROUNDED)
+        table.add_column("代码", style="cyan")
+        table.add_column("动作")
+        table.add_column("当前→目标", justify="right")
+        table.add_column("调整股数", justify="right")
+        table.add_column("金额", justify="right")
+        for item in rebalance.get("items") or []:
+            table.add_row(
+                item.get("ticker") or "",
+                item.get("action") or "",
+                f"{float(item.get('current_weight') or 0) * 100:.1f}% → "
+                f"{float(item.get('target_weight') or 0) * 100:.1f}%",
+                f"{int(item.get('delta_quantity') or 0):+d}",
+                f"{float(item.get('amount') or 0):,.0f}",
+            )
+        console.print(table)
+    for warning in result.get("warnings") or []:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@app.command()
+def macro(
+    json_output: bool = typer.Option(False, "--json", help="输出完整 JSON"),
+    rotation_limit: int = typer.Option(15, "--rotation-limit", help="轮动榜条数"),
+    etf_limit: int = typer.Option(10, "--etf-limit", help="ETF 资金流条数"),
+):
+    """查看宏观指标、两融余额、行业轮动与 ETF 资金流。"""
+    import json as _json
+
+    from tradingagents.dataflows.macro_data import (
+        get_etf_flows,
+        get_industry_rotation,
+        get_macro_indicators,
+        get_margin_snapshot,
+    )
+
+    console.print("[dim]读取宏观 / 两融 / 轮动 / ETF 数据…[/dim]")
+    try:
+        macro_data = get_macro_indicators()
+        margin = get_margin_snapshot()
+        rotation = get_industry_rotation(rotation_limit)
+        etf = get_etf_flows(etf_limit)
+    except Exception as exc:
+        console.print(f"[red]读取失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(
+            _json.dumps(
+                {
+                    "macro": macro_data,
+                    "margin": margin,
+                    "rotation": rotation,
+                    "etf": etf,
+                },
+                ensure_ascii=False,
+                default=str,
+            )
+        )
+        return
+
+    table = Table(title="宏观指标", box=box.ROUNDED)
+    table.add_column("指标", style="cyan")
+    table.add_column("最新值", justify="right")
+    table.add_column("前值", justify="right")
+    table.add_column("变化", justify="right")
+    table.add_column("日期")
+    for item in macro_data.get("items") or []:
+        table.add_row(
+            item.get("label") or "",
+            f"{item.get('value')}{item.get('unit') or ''}",
+            f"{item.get('previous')}" if item.get("previous") is not None else "--",
+            f"{item.get('change'):+.2f}" if item.get("change") is not None else "--",
+            item.get("date") or "",
+        )
+    console.print(table)
+    console.print(macro_data.get("summary") or "")
+
+    console.print("\n[bold]两融[/bold]")
+    console.print(margin.get("summary") or "暂无数据")
+
+    rotation_table = Table(title="行业轮动", box=box.ROUNDED)
+    rotation_table.add_column("行业", style="cyan")
+    rotation_table.add_column("今日", justify="right")
+    rotation_table.add_column("5日", justify="right")
+    rotation_table.add_column("10日", justify="right")
+    rotation_table.add_column("5日主力净流入(亿)", justify="right")
+    rotation_table.add_column("轮动分", justify="right")
+    for item in (rotation.get("items") or []):
+        rotation_table.add_row(
+            item.get("name") or "",
+            f"{item.get('change_today') or 0:+.2f}%",
+            f"{item.get('change_5d') or 0:+.2f}%",
+            f"{item.get('change_10d') or 0:+.2f}%",
+            f"{item.get('main_net_5d_yi') or 0:+.2f}",
+            f"{item.get('rotation_score') or 0:.1f}",
+        )
+    console.print(rotation_table)
+
+    etf_table = Table(title="ETF 主力净流入", box=box.ROUNDED)
+    etf_table.add_column("代码", style="cyan")
+    etf_table.add_column("名称")
+    etf_table.add_column("涨跌", justify="right")
+    etf_table.add_column("主力净流入(亿)", justify="right")
+    for item in (etf.get("items") or []):
+        etf_table.add_row(
+            item.get("code") or "",
+            item.get("name") or "",
+            f"{item.get('change_pct') or 0:+.2f}%",
+            f"{item.get('main_net_yi') or 0:+.2f}",
+        )
+    console.print(etf_table)
+    for warning in (
+        macro_data.get("warnings", [])
+        + margin.get("warnings", [])
+        + rotation.get("warnings", [])
+        + etf.get("warnings", [])
+    ):
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@app.command()
+def social(
+    ticker: str = typer.Argument(..., help="股票代码，如 600519"),
+    name: str = typer.Option("", "--name", help="股票简称，用于匹配微博情绪"),
+    include_xueqiu: bool = typer.Option(
+        False, "--xueqiu", help="是否尝试雪球热度（需要 cookie，常失败）"
+    ),
+    snapshot: bool = typer.Option(False, "--snapshot", help="写入今日社媒快照"),
+    history: bool = typer.Option(False, "--history", help="查看历史快照"),
+):
+    """查看真实社媒热度与情绪（东财人气榜 / 概念热度 / 微博情绪）。"""
+    from tradingagents.dataflows.social_sentiment import (
+        get_social_history,
+        get_social_sentiment,
+    )
+
+    if history:
+        result = get_social_history(ticker)
+        items = result.get("items") or []
+        if not items:
+            console.print("[yellow]暂无社媒快照，先运行 --snapshot[/yellow]")
+            return
+        table = Table(title=f"{ticker} 社媒快照", box=box.ROUNDED)
+        table.add_column("日期")
+        table.add_column("热度", justify="right")
+        table.add_column("情绪", justify="right")
+        table.add_column("人气排名", justify="right")
+        table.add_column("微博", justify="right")
+        for item in items:
+            table.add_row(
+                str(item.get("snapshot_date")),
+                f"{float(item.get('heat_score') or 0):.1f}",
+                f"{float(item.get('sentiment_score') or 0):.1f}",
+                str(item.get("guba_rank") or "--"),
+                str(item.get("weibo_rate") if item.get("weibo_rate") is not None else "--"),
+            )
+        console.print(table)
+        return
+
+    result = get_social_sentiment(
+        ticker,
+        name=name,
+        include_xueqiu=include_xueqiu,
+        save=snapshot,
+    )
+    if not result.get("success"):
+        console.print(f"[yellow]{result.get('message') or '社媒数据不可用'}[/yellow]")
+        return
+    console.print(f"[bold]{result.get('name') or ticker}[/bold] · {result.get('as_of')}")
+    console.print(result.get("summary") or "")
+    table = Table(title="社媒指标", box=box.SIMPLE)
+    table.add_column("指标", style="cyan")
+    table.add_column("值", style="green")
+    table.add_row("人气榜排名", str(result.get("guba_rank") or "未上榜"))
+    table.add_row("综合热度", f"{result.get('heat_score')}（{result.get('attention')}）")
+    table.add_row("情绪", f"{result.get('sentiment_score')}（{result.get('sentiment')}）")
+    table.add_row("微博情绪", str(result.get("weibo_rate") if result.get("weibo_rate") is not None else "--"))
+    table.add_row("异常判断", str(result.get("abnormal")))
+    console.print(table)
+    for item in result.get("keywords") or []:
+        console.print(f"- {item.get('name')}：热度 {item.get('heat')}")
+    for warning in result.get("warnings") or []:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
+@app.command()
+def disclosure(
+    ticker: str = typer.Argument(..., help="股票代码，如 600519"),
+    days: int = typer.Option(30, "--days", help="公告回看天数"),
+    curr_date: str | None = typer.Option(None, "--date", help="分析日 YYYY-MM-DD"),
+    json_output: bool = typer.Option(False, "--json", help="输出完整 JSON"),
+):
+    """查看公告、研报一致预期与股东变化。"""
+    import json as _json
+
+    from tradingagents.dataflows.disclosure import get_disclosure_summary
+
+    console.print(f"[dim]读取 {ticker} 的公告 / 研报 / 股东数据…[/dim]")
+    try:
+        result = get_disclosure_summary(ticker, days=days, curr_date=curr_date)
+    except Exception as exc:
+        console.print(f"[red]读取失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    if json_output:
+        console.print_json(_json.dumps(result, ensure_ascii=False, default=str))
+        return
+
+    announcements = result.get("announcements") or {}
+    research = result.get("research") or {}
+    shareholders = result.get("shareholders") or {}
+
+    console.print(f"[bold]{result.get('ticker')}[/bold] · {result.get('as_of')}")
+    console.print(announcements.get("summary") or "")
+    for item in announcements.get("items") or []:
+        if item.get("level") == "high":
+            console.print(
+                f"  [yellow]{item.get('date')} {item.get('impact_label')}[/yellow] "
+                f"{item.get('title')}"
+            )
+
+    console.print("\n[bold]研报一致预期[/bold]")
+    console.print(research.get("summary") or "暂无研报")
+    ratings = research.get("ratings") or {}
+    if ratings:
+        console.print(
+            "  评级：" + "，".join(f"{key} {value} 篇" for key, value in ratings.items())
+        )
+    forecasts = research.get("forecasts") or {}
+    for year, item in sorted(forecasts.items()):
+        if item.get("eps") is not None:
+            console.print(
+                f"  {year}: EPS {item.get('eps')} · PE {item.get('pe')} · "
+                f"样本 {item.get('count')} 家"
+            )
+
+    console.print("\n[bold]股东变化[/bold]")
+    console.print(shareholders.get("summary") or "暂无股东数据")
+    for item in (shareholders.get("top10") or [])[:5]:
+        console.print(
+            f"  {item.get('rank')}. {item.get('name')} {item.get('ratio')}%"
+        )
+    for warning in result.get("warnings") or []:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+
 @app.command("strategies")
 def strategy_scan(
     ticker: str = typer.Argument(..., help="股票代码或名称，如 600519 / 贵州茅台"),
@@ -2826,6 +3469,251 @@ def watch_remove(ticker: str = typer.Argument(..., help="股票代码")):
         console.print(f"[green]已删除:[/green] {ticker}")
     else:
         console.print(f"[yellow]未找到:[/yellow] {ticker}")
+
+
+alerts_app = typer.Typer(help="盘中告警规则与事件")
+app.add_typer(alerts_app, name="alerts")
+
+
+@alerts_app.command("list")
+def alerts_list():
+    """列出告警规则。"""
+    from tradingagents.storage import list_alert_rules
+
+    rules = list_alert_rules()
+    if not rules:
+        console.print("[yellow]暂无告警规则[/yellow]")
+        return
+    table = Table(title="告警规则", box=box.ROUNDED)
+    table.add_column("ID", style="dim")
+    table.add_column("代码", style="cyan")
+    table.add_column("类型")
+    table.add_column("阈值", justify="right")
+    table.add_column("冷却", justify="right")
+    table.add_column("状态")
+    table.add_column("最近触发", style="dim")
+    for rule in rules:
+        table.add_row(
+            str(rule["id"]),
+            rule["ticker"],
+            rule["rule_type"],
+            f"{rule['threshold']:g}",
+            f"{rule['cooldown_minutes']}m",
+            "启用" if rule["enabled"] else "暂停",
+            rule.get("last_triggered_at") or "--",
+        )
+    console.print(table)
+
+
+@alerts_app.command("add")
+def alerts_add(
+    ticker: str = typer.Argument(..., help="股票代码"),
+    rule_type: str = typer.Option(
+        "price_above", "--type", help="price_above / price_below / change_pct_above / change_pct_below / volume_ratio_above / turnover_above / amount_above"
+    ),
+    threshold: float = typer.Option(..., "--threshold", "-t", help="阈值"),
+    cooldown: int = typer.Option(30, "--cooldown", help="冷却分钟"),
+):
+    """新增告警规则。"""
+    from tradingagents.dataflows.ashare_rules import normalize_code
+    from tradingagents.services.alert_engine import RULE_TYPES
+    from tradingagents.storage import add_alert_rule
+
+    if rule_type not in RULE_TYPES:
+        console.print(f"[red]不支持的规则类型: {rule_type}[/red]")
+        raise typer.Exit(code=1)
+    rule = add_alert_rule(
+        normalize_code(ticker) or ticker,
+        rule_type,
+        threshold,
+        cooldown_minutes=cooldown,
+    )
+    console.print(
+        f"[green]已保存规则:[/green] #{rule['id']} {rule['ticker']} "
+        f"{rule_type} {threshold:g}"
+    )
+
+
+@alerts_app.command("remove")
+def alerts_remove(rule_id: int = typer.Argument(..., help="规则 ID")):
+    """删除告警规则。"""
+    from tradingagents.storage import delete_alert_rule
+
+    if delete_alert_rule(rule_id):
+        console.print(f"[green]已删除规则 #{rule_id}[/green]")
+    else:
+        console.print(f"[yellow]规则不存在: {rule_id}[/yellow]")
+
+
+@alerts_app.command("check")
+def alerts_check(notify: bool = typer.Option(False, "--notify", help="触发后推送 Webhook")):
+    """立即检查一次告警。"""
+    from tradingagents.services.alert_engine import check_alerts
+
+    result = check_alerts(notify=notify)
+    console.print(
+        f"检查完成：{result.get('rules', 0)} 条规则，"
+        f"触发 [bold]{result.get('triggered', 0)}[/bold] 条"
+    )
+    for event in result.get("events") or []:
+        console.print(
+            f"- {event.get('triggered_at')} {event.get('ticker')} "
+            f"{event.get('rule_type')}：{event.get('message')}"
+        )
+    if notify:
+        console.print(f"[dim]推送结果: {result.get('notify')}[/dim]")
+
+
+@alerts_app.command("events")
+def alerts_events(
+    limit: int = typer.Option(20, "--limit", "-n", help="显示条数"),
+    unacked: bool = typer.Option(False, "--unacked", help="只看未确认"),
+):
+    """查看告警事件。"""
+    from tradingagents.storage import list_alert_events
+
+    items = list_alert_events(limit, unacked_only=unacked)
+    if not items:
+        console.print("[yellow]暂无告警事件[/yellow]")
+        return
+    table = Table(title="告警事件", box=box.ROUNDED)
+    table.add_column("时间", style="dim")
+    table.add_column("代码", style="cyan")
+    table.add_column("类型")
+    table.add_column("说明")
+    table.add_column("确认")
+    for item in items:
+        table.add_row(
+            item.get("triggered_at") or "",
+            item.get("ticker") or "",
+            item.get("rule_type") or "",
+            item.get("message") or "",
+            "是" if item.get("acknowledged") else "否",
+        )
+    console.print(table)
+
+
+@alerts_app.command("ack")
+def alerts_ack(
+    event_id: int | None = typer.Option(None, "--id", help="只确认某条事件"),
+    all_events: bool = typer.Option(False, "--all", help="确认全部未确认事件"),
+):
+    """确认告警事件。"""
+    from tradingagents.storage import ack_alert_event, ack_all_alert_events
+
+    if all_events:
+        count = ack_all_alert_events()
+        console.print(f"[green]已确认 {count} 条事件[/green]")
+        return
+    if event_id is None:
+        console.print("[red]请提供 --id 或 --all[/red]")
+        raise typer.Exit(code=1)
+    if ack_alert_event(event_id):
+        console.print(f"[green]已确认事件 #{event_id}[/green]")
+    else:
+        console.print(f"[yellow]事件不存在: {event_id}[/yellow]")
+
+
+users_app = typer.Typer(help="多用户与权限管理")
+app.add_typer(users_app, name="users")
+
+
+@users_app.command("list")
+def users_list():
+    """列出用户。"""
+    from webui.backend.users import list_users
+
+    items = list_users()
+    if not items:
+        console.print("[yellow]暂无用户；设置 WEBUI_MULTI_USER=1 后首次启动会自动创建管理员[/yellow]")
+        return
+    table = Table(title="用户", box=box.ROUNDED)
+    table.add_column("用户名", style="cyan")
+    table.add_column("角色")
+    table.add_column("状态")
+    table.add_column("风险确认")
+    table.add_column("最近登录", style="dim")
+    for item in items:
+        table.add_row(
+            item["username"],
+            item["role"],
+            "启用" if item.get("enabled") else "禁用",
+            item.get("risk_ack_at") or "未确认",
+            item.get("last_login_at") or "--",
+        )
+    console.print(table)
+
+
+@users_app.command("create")
+def users_create(
+    username: str = typer.Argument(..., help="用户名"),
+    role: str = typer.Option("analyst", "--role", help="admin / analyst / viewer"),
+    password: str = typer.Option(..., "--password", prompt=True, hide_input=True, help="密码（至少 8 位）"),
+):
+    """创建用户。"""
+    from webui.backend.users import create_user
+
+    try:
+        user = create_user(username, password, role=role)
+    except Exception as exc:
+        console.print(f"[red]创建失败: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+    console.print(f"[green]已创建用户:[/green] {user['username']}（{user['role']}）")
+
+
+@users_app.command("passwd")
+def users_passwd(
+    username: str = typer.Argument(..., help="用户名"),
+    password: str = typer.Option(..., "--password", prompt=True, hide_input=True),
+):
+    """重置密码。"""
+    from webui.backend.users import update_user
+
+    user = update_user(username, password=password)
+    if not user:
+        console.print(f"[yellow]用户不存在: {username}[/yellow]")
+        return
+    console.print(f"[green]已重置密码:[/green] {username}（旧会话已失效）")
+
+
+@users_app.command("delete")
+def users_delete(username: str = typer.Argument(..., help="用户名")):
+    """删除用户。"""
+    from webui.backend.users import delete_user
+
+    if delete_user(username):
+        console.print(f"[green]已删除:[/green] {username}")
+    else:
+        console.print(f"[yellow]用户不存在: {username}[/yellow]")
+
+
+@app.command()
+def audit(
+    limit: int = typer.Option(50, "--limit", "-n", help="显示条数"),
+    username: str = typer.Option("", "--username", help="只看某个用户"),
+):
+    """查看审计日志（写操作 / 登录）。"""
+    from webui.backend.users import list_audit_logs
+
+    items = list_audit_logs(limit, username=username or None)
+    if not items:
+        console.print("[yellow]暂无审计日志[/yellow]")
+        return
+    table = Table(title="审计日志", box=box.ROUNDED)
+    table.add_column("时间", style="dim")
+    table.add_column("用户", style="cyan")
+    table.add_column("角色")
+    table.add_column("动作")
+    table.add_column("状态", justify="right")
+    for item in items:
+        table.add_row(
+            item.get("created_at") or "",
+            item.get("username") or "",
+            item.get("role") or "",
+            item.get("action") or "",
+            str(item.get("status") or ""),
+        )
+    console.print(table)
 
 
 jobs_app = typer.Typer(help="分析任务记录管理（查看 / 清理历史任务）")

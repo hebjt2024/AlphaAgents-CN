@@ -568,6 +568,46 @@ def record_evaluation_outcomes(
 # ---------------------------------------------------------------------------
 # 入口：从历史报告生成对齐表
 # ---------------------------------------------------------------------------
+def _prefetch_frames(
+    reports: Sequence[dict[str, Any]],
+    horizons: Sequence[int],
+    loader: Callable[[str, str, str], pd.DataFrame],
+) -> dict[str, pd.DataFrame]:
+    """按标的预取一次宽区间行情，避免每条报告都发起一次网络请求。
+
+    WHY：``evaluate_reports`` 默认会逐条调用 ``evaluate_decision``，而后者
+    每次都会拉一次行情。50 条报告就是 50 次 AkShare 请求，既慢又容易触发
+    限流。这里按 (ticker, 最早决策日 - 10 天, 最晚决策日 + 最长周期) 取一次，
+    后续所有报告复用同一张表。
+    """
+    wanted: dict[str, list[date]] = {}
+    for report in reports or []:
+        code = str(report.get("ticker") or "").strip()
+        entry = _parse_date(report.get("trade_date"))
+        if code and entry is not None:
+            wanted.setdefault(code, []).append(entry)
+    if not wanted:
+        return {}
+
+    max_horizon = max([int(item) for item in (horizons or DEFAULT_HORIZONS)] or [20])
+    tail_days = int(max_horizon * 1.6) + 30
+    frames: dict[str, pd.DataFrame] = {}
+    for code, dates in wanted.items():
+        start = min(dates) - timedelta(days=10)
+        end = max(dates) + timedelta(days=tail_days)
+        try:
+            frame = _normalize_frame(
+                loader(code, start.isoformat(), end.isoformat())
+            )
+        except Exception as exc:  # 单标的取数失败不影响其他标的
+            logger.warning("评估预取行情失败（%s）：%s", code, exc)
+            continue
+        if frame.empty:
+            continue
+        frames[code] = frame
+    return frames
+
+
 def evaluate_reports(
     ticker: str | None = None,
     limit: int = 50,
@@ -578,6 +618,8 @@ def evaluate_reports(
     reports: Sequence[dict[str, Any]] | None = None,
     write_memory: bool = False,
     memory_roles: Sequence[str] = ("portfolio_manager", "trader"),
+    prefetch: bool = True,
+    owner: str | None = None,
 ) -> dict[str, Any]:
     """
     读取历史报告（``storage/report_store.py`` 的 ``reports`` 表）并生成对齐表。
@@ -594,6 +636,7 @@ def evaluate_reports(
         reports: 直接给定报告列表（优先于读库，便于测试）
         write_memory: 是否把评估结果回写进记忆库（默认关闭）
         memory_roles: 回写时写入哪些角色记忆
+        prefetch: 是否按标的预取一次宽区间行情（默认开启，能显著减少网络请求）
 
     返回：
         dict: ``{"rows": [评估行...], "summary": 对齐表}``
@@ -601,7 +644,12 @@ def evaluate_reports(
     if reports is None:
         from tradingagents.storage.report_store import list_reports
 
-        reports = list_reports(ticker=ticker, limit=limit)
+        reports = list_reports(ticker=ticker, limit=limit, owner=owner)
+
+    loader = price_loader or _load_prices
+    frames = (
+        _prefetch_frames(reports, horizons, loader) if prefetch else {}
+    )
 
     rows: list[dict[str, Any]] = []
     situations: dict[tuple[str, str], str] = {}
@@ -619,10 +667,15 @@ def evaluate_reports(
                 horizons=horizons,
                 price_loader=price_loader,
                 hold_band=hold_band,
+                frame=frames.get(str(code)),
             )
         except Exception as exc:  # 单条失败不影响整体
             logger.warning("评估失败（%s %s）：%s", code, trade_date, exc)
             continue
+        # 把报告 id / 来源带进评估行，前端才能从"指标"跳回"原始报告"。
+        if report.get("id") is not None:
+            row["report_id"] = report.get("id")
+        row["source"] = report.get("source") or ""
         rows.append(row)
         situations[(str(code), str(trade_date))] = situation_from_report(report)
 

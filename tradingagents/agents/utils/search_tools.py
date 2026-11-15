@@ -8,6 +8,7 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from tradingagents.agents.utils.prompt_guard import wrap_untrusted
 from tradingagents.dataflows.tavily_search import (
     search_stock_news as _search_stock_news,
 )
@@ -25,12 +26,15 @@ def search_web(
     当本地新闻接口覆盖不足、或需要核实最新事件时使用。
     """
     try:
-        return _tavily_search(
-            query,
-            max_results=max_results,
-            search_depth="advanced",
-            topic="news",
-            days=days,
+        return wrap_untrusted(
+            _tavily_search(
+                query,
+                max_results=max_results,
+                search_depth="advanced",
+                topic="news",
+                days=days,
+            ),
+            "tavily_web",
         )
     except Exception as exc:
         return f"联网搜索暂时不可用（{type(exc).__name__}: {exc}）"
@@ -45,11 +49,14 @@ def search_stock_news(
 ) -> str:
     """联网搜索个股最新新闻与公告（Tavily news 模式）。"""
     try:
-        return _search_stock_news(
-            ticker,
-            curr_date=curr_date,
-            look_back_days=look_back_days,
-            max_results=max_results,
+        return wrap_untrusted(
+            _search_stock_news(
+                ticker,
+                curr_date=curr_date,
+                look_back_days=look_back_days,
+                max_results=max_results,
+            ),
+            "tavily_stock_news",
         )
     except Exception as exc:
         return f"个股新闻搜索暂时不可用（{type(exc).__name__}: {exc}）"

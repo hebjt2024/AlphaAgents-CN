@@ -91,6 +91,8 @@ from typing import Annotated
 
 from langchain_core.tools import tool
 
+from tradingagents.agents.utils.prompt_guard import wrap_untrusted
+
 # route_to_vendor: 统一的数据供应商路由接口
 # 将数据请求转发到配置的供应商（如 NewsAPI、Alpha Vantage 等）
 # 这是 dataflows/interface.py 中定义的核心函数
@@ -150,7 +152,10 @@ def get_news(
     #   3. 调用对应供应商的实现函数
     #   4. 如果主供应商失败，自动降级到备选供应商
     # 三个参数透传给供应商实现函数：ticker, start_date, end_date
-    return route_to_vendor("get_news", ticker, start_date, end_date)
+    return wrap_untrusted(
+        route_to_vendor("get_news", ticker, start_date, end_date),
+        "company_news",
+    )
 
 
 # =============================================================================
@@ -199,7 +204,10 @@ def get_global_news(
     """
     # 调用统一路由接口，将请求转发到配置的新闻数据供应商
     # 三个参数透传给供应商实现函数：curr_date, look_back_days, limit
-    return route_to_vendor("get_global_news", curr_date, look_back_days, limit)
+    return wrap_untrusted(
+        route_to_vendor("get_global_news", curr_date, look_back_days, limit),
+        "global_news",
+    )
 
 
 # =============================================================================
@@ -238,4 +246,7 @@ def get_insider_transactions(
     """
     # 调用统一路由接口，将请求转发到配置的新闻数据供应商
     # 只有一个参数 ticker 透传给供应商实现函数
-    return route_to_vendor("get_insider_transactions", ticker)
+    return wrap_untrusted(
+        route_to_vendor("get_insider_transactions", ticker),
+        "insider_transactions",
+    )

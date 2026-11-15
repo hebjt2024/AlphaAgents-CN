@@ -27,6 +27,7 @@ def _init_portfolio() -> None:
             CREATE TABLE IF NOT EXISTS portfolio_accounts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL UNIQUE,
+                owner TEXT NOT NULL DEFAULT '',
                 initial_cash REAL NOT NULL DEFAULT 100000,
                 cash REAL NOT NULL DEFAULT 100000,
                 currency TEXT NOT NULL DEFAULT 'CNY',
@@ -35,6 +36,14 @@ def _init_portfolio() -> None:
             )
             """
         )
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(portfolio_accounts)")
+        }
+        if "owner" not in columns:
+            conn.execute(
+                "ALTER TABLE portfolio_accounts ADD COLUMN owner TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS portfolio_positions (
@@ -42,6 +51,7 @@ def _init_portfolio() -> None:
                 account_id INTEGER NOT NULL,
                 ticker TEXT NOT NULL,
                 name TEXT,
+                sector TEXT DEFAULT '',
                 quantity REAL NOT NULL DEFAULT 0,
                 avg_cost REAL NOT NULL DEFAULT 0,
                 last_price REAL NOT NULL DEFAULT 0,
@@ -53,6 +63,15 @@ def _init_portfolio() -> None:
             )
             """
         )
+        # 旧库补列：sector 用于行业暴露与行业压力测试。
+        columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(portfolio_positions)")
+        }
+        if "sector" not in columns:
+            conn.execute(
+                "ALTER TABLE portfolio_positions ADD COLUMN sector TEXT DEFAULT ''"
+            )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS portfolio_transactions (
@@ -76,6 +95,22 @@ def _init_portfolio() -> None:
             ON portfolio_transactions(account_id, trade_date)
             """
         )
+        # 每日组合快照：绩效曲线、回撤和"当时仓位"都依赖它。
+        # 此前只有实时快照，历史权益无法复原，也没法算组合最大回撤。
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id INTEGER NOT NULL,
+                snapshot_date TEXT NOT NULL,
+                cash REAL NOT NULL DEFAULT 0,
+                position_value REAL NOT NULL DEFAULT 0,
+                equity REAL NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL,
+                UNIQUE(account_id, snapshot_date)
+            )
+            """
+        )
 
 
 def _now() -> str:
@@ -91,6 +126,7 @@ def create_account(
     name: str = "默认账户",
     initial_cash: float = 100000.0,
     currency: str = "CNY",
+    owner: str = "",
 ) -> dict[str, Any]:
     """创建账户；同名账户已存在时直接返回既有账户。"""
     _init_portfolio()
@@ -99,10 +135,18 @@ def create_account(
         conn.execute(
             """
             INSERT OR IGNORE INTO portfolio_accounts
-                (name, initial_cash, cash, currency, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+                (name, owner, initial_cash, cash, currency, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (name, float(initial_cash), float(initial_cash), currency, now, now),
+            (
+                name,
+                str(owner or ""),
+                float(initial_cash),
+                float(initial_cash),
+                currency,
+                now,
+                now,
+            ),
         )
         row = conn.execute(
             "SELECT * FROM portfolio_accounts WHERE name = ?", (name,)
@@ -110,12 +154,18 @@ def create_account(
     return dict(row) if row else {}
 
 
-def list_accounts() -> list[dict[str, Any]]:
+def list_accounts(owner: str | None = None) -> list[dict[str, Any]]:
     _init_portfolio()
     with _connect() as conn:
-        rows = conn.execute(
-            "SELECT * FROM portfolio_accounts ORDER BY id"
-        ).fetchall()
+        if owner is None:
+            rows = conn.execute(
+                "SELECT * FROM portfolio_accounts ORDER BY id"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT * FROM portfolio_accounts WHERE owner = ? ORDER BY id",
+                (str(owner),),
+            ).fetchall()
     return [dict(row) for row in rows]
 
 
@@ -163,6 +213,7 @@ def upsert_position(
     avg_cost: float,
     last_price: float | None = None,
     name: str = "",
+    sector: str = "",
     stop_loss: float | None = None,
     take_profit: float | None = None,
     opened_at: str | None = None,
@@ -178,11 +229,16 @@ def upsert_position(
         conn.execute(
             """
             INSERT INTO portfolio_positions
-                (account_id, ticker, name, quantity, avg_cost, last_price,
-                 stop_loss, take_profit, opened_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (account_id, ticker, name, sector, quantity, avg_cost,
+                 last_price, stop_loss, take_profit, opened_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(account_id, ticker) DO UPDATE SET
                 name = excluded.name,
+                sector = CASE
+                    WHEN excluded.sector IS NULL OR excluded.sector = ''
+                    THEN portfolio_positions.sector
+                    ELSE excluded.sector
+                END,
                 quantity = excluded.quantity,
                 avg_cost = excluded.avg_cost,
                 last_price = excluded.last_price,
@@ -195,6 +251,7 @@ def upsert_position(
                 account_id,
                 ticker,
                 name,
+                sector,
                 float(quantity),
                 float(avg_cost),
                 float(last_price if last_price is not None else avg_cost),
@@ -309,3 +366,107 @@ def list_transactions(
             (account_name, int(limit)),
         ).fetchall()
     return [dict(row) for row in rows]
+
+
+# ---------------------------------------------------------------------------
+# 行情刷新 / 每日快照 / 绩效
+# ---------------------------------------------------------------------------
+
+
+def update_position_prices(
+    account_name: str, prices: dict[str, float]
+) -> list[dict[str, Any]]:
+    """按 ``{ticker: price}`` 批量刷新持仓最新价。
+
+    WHY：持仓表里的 ``last_price`` 此前只在录入/成交时写入，组合市值、
+    浮盈和仓位风控都会一直停留在旧价格。这里用一次事务批量更新，避免
+    逐只持仓打开连接。
+    """
+    if not prices:
+        return list_positions(account_name)
+    _init_portfolio()
+    account = get_account(account_name)
+    if not account:
+        return []
+    now = _now()
+    with _connect() as conn:
+        for ticker, price in prices.items():
+            try:
+                value = float(price)
+            except (TypeError, ValueError):
+                continue
+            if value <= 0:
+                continue
+            conn.execute(
+                """
+                UPDATE portfolio_positions
+                SET last_price = ?, updated_at = ?
+                WHERE account_id = ? AND ticker = ?
+                """,
+                (value, now, int(account["id"]), str(ticker)),
+            )
+    return list_positions(account_name)
+
+
+def save_portfolio_snapshot(
+    account_name: str,
+    snapshot_date: str,
+    cash: float,
+    position_value: float,
+    equity: float,
+) -> dict[str, Any]:
+    """写入/覆盖某账户某日的组合快照。"""
+    _init_portfolio()
+    account = get_account(account_name)
+    if not account:
+        raise ValueError(f"账户不存在：{account_name}")
+    now = _now()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO portfolio_snapshots
+                (account_id, snapshot_date, cash, position_value, equity, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT(account_id, snapshot_date) DO UPDATE SET
+                cash = excluded.cash,
+                position_value = excluded.position_value,
+                equity = excluded.equity,
+                created_at = excluded.created_at
+            """,
+            (
+                int(account["id"]),
+                str(snapshot_date)[:10],
+                float(cash),
+                float(position_value),
+                float(equity),
+                now,
+            ),
+        )
+        row = conn.execute(
+            """
+            SELECT s.* FROM portfolio_snapshots s
+            JOIN portfolio_accounts a ON a.id = s.account_id
+            WHERE a.name = ? AND s.snapshot_date = ?
+            """,
+            (account_name, str(snapshot_date)[:10]),
+        ).fetchone()
+    return dict(row) if row else {}
+
+
+def list_portfolio_snapshots(
+    account_name: str = "默认账户", limit: int = 500
+) -> list[dict[str, Any]]:
+    """按日期升序返回组合快照，供绩效曲线与回撤计算使用。"""
+    _init_portfolio()
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT s.* FROM portfolio_snapshots s
+            JOIN portfolio_accounts a ON a.id = s.account_id
+            WHERE a.name = ?
+            ORDER BY s.snapshot_date DESC
+            LIMIT ?
+            """,
+            (account_name, int(limit)),
+        ).fetchall()
+    return [dict(row) for row in reversed(rows)]

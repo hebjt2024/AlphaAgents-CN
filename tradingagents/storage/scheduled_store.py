@@ -16,6 +16,7 @@ Schema 迁移
 from __future__ import annotations
 
 import json
+import os
 import uuid
 from datetime import datetime, timedelta
 from typing import Any
@@ -27,6 +28,7 @@ _SCHEDULED_COLUMN_MIGRATIONS: dict[str, str] = {
     "claimed_at": "TEXT",
     "claimed_by": "TEXT",
     "retry_count": "INTEGER NOT NULL DEFAULT 0",
+    "next_retry_at": "TEXT",
     "last_error": "TEXT",
 }
 
@@ -210,7 +212,8 @@ def mark_scheduled_run(job_id: int, run_date: str) -> None:
     _init_scheduled()
     with _connect() as conn:
         conn.execute(
-            "UPDATE scheduled_jobs SET last_run_date = ?, updated_at = ? "
+            "UPDATE scheduled_jobs SET last_run_date = ?, retry_count = 0, "
+            "next_retry_at = NULL, last_error = NULL, updated_at = ? "
             "WHERE id = ?",
             (
                 run_date,
@@ -227,17 +230,33 @@ def mark_scheduled_failure(job_id: int, error: str) -> None:
     下一轮 tick 会重新执行（受重试次数上限与退避时间约束）。
     """
     _init_scheduled()
-    now = datetime.now().isoformat(timespec="seconds")
+    now_dt = datetime.now()
+    now = now_dt.isoformat(timespec="seconds")
     with _connect() as conn:
+        row = conn.execute(
+            "SELECT retry_count FROM scheduled_jobs WHERE id = ?", (int(job_id),)
+        ).fetchone()
+        attempts = int(row["retry_count"] or 0) + 1 if row else 1
+        try:
+            base = float(os.getenv("SCHEDULE_RETRY_BASE_SECONDS", "60"))
+        except ValueError:
+            base = 60.0
+        delay = min(3600.0, max(30.0, base * (2 ** max(0, attempts - 1))))
+        next_retry = (now_dt + timedelta(seconds=delay)).isoformat(timespec="seconds")
         conn.execute(
             "UPDATE scheduled_jobs SET retry_count = retry_count + 1, "
-            "last_error = ?, updated_at = ? WHERE id = ?",
-            (str(error)[:500], now, int(job_id)),
+            "next_retry_at = ?, last_error = ?, updated_at = ? WHERE id = ?",
+            (next_retry, str(error)[:500], now, int(job_id)),
         )
 
 
 def due_scheduled_jobs(now_time: str, today: str) -> list[dict[str, Any]]:
     _init_scheduled()
+    try:
+        max_attempts = max(1, int(os.getenv("SCHEDULE_MAX_ATTEMPTS", "3")))
+    except ValueError:
+        max_attempts = 3
+    now = datetime.now().isoformat(timespec="seconds")
     with _connect() as conn:
         rows = conn.execute(
             """
@@ -245,9 +264,11 @@ def due_scheduled_jobs(now_time: str, today: str) -> list[dict[str, Any]]:
             WHERE enabled = 1
               AND schedule_time <= ?
               AND (last_run_date IS NULL OR last_run_date != ?)
+              AND retry_count < ?
+              AND (next_retry_at IS NULL OR next_retry_at <= ?)
             ORDER BY schedule_time, id
             """,
-            (now_time, today),
+            (now_time, today, max_attempts, now),
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
 

@@ -291,6 +291,12 @@ def create_portfolio_manager(llm, memory):
 1. **评级（Rating）**：明确给出买入 / 超配 / 持有 / 低配 / 卖出 之一。
 2. **执行摘要（Executive Summary）**：涵盖入场策略、仓位规模、关键风险位和时间维度的简明行动计划。
 3. **投资论点（Investment Thesis）**：基于分析师辩论和过往反思的详细推理。
+4. **引用来源**：关键结论后标注来源，例如 `[公告]`、`[研报]`、`[行情]`、`[资金流]`、`[社媒]`；不得编造未提供的数据。
+5. **结构化决策块**：在全文最后输出一个 JSON 代码块，格式如下（只能有一个）：
+```json
+{{"decision":"BUY|OVERWEIGHT|HOLD|UNDERWEIGHT|SELL","confidence":0-100,"summary":"一句话结论","key_points":["..."],"risk_flags":["..."],"citations":["公告: ...","研报: ..."]}}
+```
+JSON 必须与正文评级一致；若正文没有把握，`confidence` 应低于 50，并在 `risk_flags` 中写明数据缺口。
 
 ---
 

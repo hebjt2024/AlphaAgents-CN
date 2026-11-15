@@ -34,7 +34,8 @@ from fastapi import Request
 from fastapi.security import APIKeyHeader, HTTPBearer
 
 from webui.backend.api_config import load_config
-from webui.backend.errors import AuthError
+from webui.backend.errors import AuthError, ForbiddenError
+from webui.backend.users import READ_METHODS, get_session_user
 
 __all__ = [
     "API_KEY_HEADER",
@@ -42,8 +43,11 @@ __all__ = [
     "EXEMPT_PATHS",
     "api_key_scheme",
     "bearer_scheme",
+    "current_user",
     "extract_api_key",
     "require_api_key",
+    "require_role",
+    "require_risk_ack",
     "verify_api_key",
 ]
 
@@ -80,35 +84,109 @@ def extract_api_key(request: Request) -> str | None:
     return None
 
 
-def verify_api_key(request: Request) -> None:
-    """校验 API 密钥。
+def _local_principal() -> dict[str, str]:
+    return {"username": "local", "role": "admin", "display_name": "本机用户"}
 
-    未配置 ``WEBUI_API_KEY`` 时直接放行（鉴权关闭）；密钥缺失或不匹配时抛出
-    :class:`~webui.backend.errors.AuthError`（401 + 统一错误信封）。
+
+def verify_api_key(request: Request) -> None:
+    """校验 API 密钥 / 多用户会话，并把用户写入 ``request.state.user``。
+
+    - 单用户模式（未配置 API Key 且未开启多用户）：匿名放行，角色视为 admin；
+    - 配置 ``WEBUI_API_KEY``：密钥匹配视为 admin（供自动化/脚本使用）；
+    - 开启 ``WEBUI_MULTI_USER``：``X-API-Key`` / Bearer 里可以放会话 token；
+      会话用户按角色执行 RBAC，viewer 禁止写操作。
     """
-    config = load_config()
-    expected = config.api_key
-    if not expected:
+    path = request.url.path
+    # 登录与登录页配置必须在未认证时访问。
+    if path.endswith("/auth/login") or path.endswith("/auth/config"):
         return
 
+    config = load_config()
     provided = extract_api_key(request)
-    if not provided:
-        raise AuthError(
-            "缺少 API 密钥，请通过 X-API-Key 头或 Authorization: Bearer 头提供",
-            details={"header": API_KEY_HEADER},
-        )
-    if not secrets.compare_digest(
-        provided.encode("utf-8"), expected.encode("utf-8")
+
+    if config.api_key and provided and secrets.compare_digest(
+        provided.encode("utf-8"), config.api_key.encode("utf-8")
     ):
-        raise AuthError(
-            "API 密钥无效",
-            details={"header": API_KEY_HEADER},
+        request.state.user = {
+            "username": "api-key",
+            "role": "admin",
+            "display_name": "API Key",
+        }
+        return
+
+    if config.multi_user:
+        if not provided:
+            raise AuthError(
+                "请先登录，或通过 X-API-Key / Authorization: Bearer 提供会话 token",
+                details={"header": API_KEY_HEADER},
+            )
+        user = get_session_user(provided)
+        if not user:
+            raise AuthError("会话已失效，请重新登录")
+        viewer_self_service = path.endswith(
+            ("/auth/logout", "/auth/risk-ack", "/auth/change-password")
         )
+        if (
+            user.get("role") == "viewer"
+            and request.method.upper() not in READ_METHODS
+            and not viewer_self_service
+        ):
+            raise ForbiddenError("viewer 角色为只读，不能执行写操作")
+        request.state.user = user
+        return
+
+    if config.api_key:
+        if not provided:
+            raise AuthError(
+                "缺少 API 密钥，请通过 X-API-Key 头或 Authorization: Bearer 头提供",
+                details={"header": API_KEY_HEADER},
+            )
+        raise AuthError("API 密钥无效", details={"header": API_KEY_HEADER})
+
+    # 单用户模式：不需要登录。
+    request.state.user = _local_principal()
 
 
 async def require_api_key(request: Request) -> None:
-    """FastAPI 依赖：``dependencies=[Depends(require_api_key)]``。
-
-    挂到 APIRouter 上即可保护该路由器下的全部路由。
-    """
+    """FastAPI 依赖：``dependencies=[Depends(require_api_key)]``。"""
     verify_api_key(request)
+
+
+async def current_user(request: Request) -> dict[str, str]:
+    """返回当前请求的用户信息（单用户模式返回本机 admin）。"""
+    user = getattr(request.state, "user", None)
+    if user:
+        return user
+    if load_config().auth_enabled:
+        raise AuthError("未认证")
+    return _local_principal()
+
+
+async def require_risk_ack(request: Request) -> None:
+    """多用户模式下，分析/交易类写接口必须先确认风险揭示。"""
+    config = load_config()
+    if not config.multi_user:
+        return
+    user = getattr(request.state, "user", None) or {}
+    if not user.get("risk_ack_at"):
+        raise ForbiddenError("请先阅读并确认风险揭示后再执行该操作")
+
+
+def require_role(*roles: str):
+    """生成一个角色校验依赖：``Depends(require_role("admin"))``。"""
+
+    allowed = set(roles)
+
+    async def _dependency(request: Request) -> dict[str, str]:
+        user = getattr(request.state, "user", None)
+        if not user:
+            if load_config().auth_enabled:
+                raise AuthError("未认证")
+            user = _local_principal()
+        if user.get("role") not in allowed:
+            raise ForbiddenError(
+                f"需要角色：{', '.join(sorted(allowed))}；当前：{user.get('role')}"
+            )
+        return user
+
+    return _dependency

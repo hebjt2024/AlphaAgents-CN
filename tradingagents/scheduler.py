@@ -409,12 +409,235 @@ def _run_sentiment_snapshot_once() -> None:
         logger.exception("情绪快照记录失败")
 
 
+def _run_portfolio_snapshot_once() -> None:
+    """每日收盘后刷新持仓价并记录组合快照。
+
+    WHY 默认开启：不记录快照，组合绩效曲线和最大回撤永远只有当前一个点，
+    "组合赚了多少"这个问题就无法回答。即使没有持仓，记录现金账户也有意义。
+    """
+    if not _enabled_by_default("SCHEDULE_PORTFOLIO"):
+        return
+    today = cn_today_str()
+    if not is_cn_trading_day(today):
+        logger.info("非交易日，跳过组合快照")
+        return
+    try:
+        from tradingagents.services.portfolio import (
+            record_snapshot,
+            refresh_prices,
+        )
+        from tradingagents.storage import list_accounts
+
+        accounts = list_accounts()
+        for account in accounts:
+            name = account.get("name") or "默认账户"
+            refresh_prices(name)
+            record_snapshot(name, today)
+        logger.info("组合快照已记录: %s（%s 个账户）", today, len(accounts))
+    except Exception:
+        logger.exception("组合快照记录失败")
+
+
+def _run_intraday_alerts_once() -> None:
+    """盘中按价格/涨跌幅/量比/止损止盈检查告警。
+
+    默认关闭：只有显式设置 ``SCHEDULE_INTRADAY_ALERTS=1`` 才会在
+    9:30-11:30 / 13:00-15:00 每 30 秒检查一次，避免默认产生大量网络请求。
+    """
+    if not _enabled("SCHEDULE_INTRADAY_ALERTS"):
+        return
+    try:
+        from tradingagents.dataflows.realtime import market_session
+        from tradingagents.services.alert_engine import check_alerts
+
+        session = market_session()
+        if not session.get("is_open"):
+            return
+        result = check_alerts(notify=True)
+        if result.get("triggered"):
+            logger.info(
+                "盘中告警触发 %s 条（检查 %s 只标的）",
+                result.get("triggered"),
+                len(result.get("quotes") or {}),
+            )
+    except Exception:
+        logger.exception("盘中告警检查失败")
+
+
+def _run_data_sync_once() -> None:
+    """把自选股 / 持仓 / 定时分析标的的最近行情同步到本地库。
+
+    默认关闭：首次同步历史数据会产生较多网络请求，应该由用户显式开启。
+    开启后只补最近 90 天，真正的长历史仍由 ``alphaagents sync`` 或首次
+    回测/分析按需拉取。
+    """
+    if not _enabled("SCHEDULE_DATA_SYNC"):
+        return
+    try:
+        from tradingagents.dataflows.interface import route_to_vendor
+        from tradingagents.services.market_data import sync_symbol
+        from tradingagents.storage import (
+            list_positions,
+            list_watchlist,
+        )
+
+        tickers: set[str] = {
+            str(item.get("ticker") or "").strip()
+            for item in list_watchlist(None)
+            if item.get("ticker")
+        }
+        try:
+            tickers.update(
+                str(item.get("ticker") or "").strip()
+                for item in list_positions("默认账户")
+                if item.get("ticker")
+            )
+        except Exception:
+            logger.debug("读取组合持仓失败，跳过持仓同步", exc_info=True)
+        tickers.update(
+            item.strip()
+            for item in os.getenv("SCHEDULE_STOCKS", "").split(",")
+            if item.strip()
+        )
+        tickers.discard("")
+        if not tickers:
+            return
+
+        end_date = cn_today_str()
+        start_date = (
+            datetime.now() - timedelta(days=90)
+        ).strftime("%Y-%m-%d")
+        written = 0
+        for ticker in sorted(tickers):
+            try:
+                result = sync_symbol(
+                    ticker,
+                    start_date,
+                    end_date,
+                    fetch=lambda code, begin, finish: route_to_vendor(
+                        "get_stock_data", code, begin, finish
+                    ),
+                )
+                written += int(result.get("written") or 0)
+            except Exception as exc:
+                logger.warning("行情同步失败 %s: %s", ticker, exc)
+        logger.info(
+            "本地行情同步完成: %s 只标的，写入 %s 行", len(tickers), written
+        )
+    except Exception:
+        logger.exception("本地行情同步失败")
+
+
+def _run_social_snapshot_once() -> None:
+    """每日记录自选股/持仓的社媒热度快照，用于异常升温判断。"""
+    if not _enabled("SCHEDULE_SOCIAL"):
+        return
+    try:
+        from tradingagents.dataflows.social_sentiment import get_social_sentiment
+        from tradingagents.storage import list_positions, list_watchlist
+
+        tickers: set[str] = {
+            str(item.get("ticker") or "").strip()
+            for item in list_watchlist(None)
+            if item.get("ticker")
+        }
+        try:
+            tickers.update(
+                str(item.get("ticker") or "").strip()
+                for item in list_positions("默认账户")
+                if item.get("ticker")
+            )
+        except Exception:
+            logger.debug("读取持仓失败，跳过持仓社媒快照", exc_info=True)
+        tickers.update(
+            item.strip()
+            for item in os.getenv("SCHEDULE_STOCKS", "").split(",")
+            if item.strip()
+        )
+        tickers.discard("")
+        for ticker in sorted(tickers):
+            try:
+                get_social_sentiment(ticker, save=True)
+            except Exception as exc:
+                logger.warning("社媒快照失败 %s: %s", ticker, exc)
+        if tickers:
+            logger.info("社媒快照已记录: %s 只标的", len(tickers))
+    except Exception:
+        logger.exception("社媒快照任务失败")
+
+
+def _run_screener_once() -> None:
+    """每日盘后生成候选池并归档。
+
+    默认关闭：全市场选股会拉取最新业绩报表（多页），首次运行较慢；
+    用户可在 WebUI 手动运行，确认网络与限流情况后再开启定时。
+    """
+    if not _enabled("SCHEDULE_SCREENER"):
+        return
+    if not is_cn_trading_day(cn_today_str()):
+        logger.info("非交易日，跳过全市场选股")
+        return
+    try:
+        from tradingagents.services.screener import run_screener
+
+        result = run_screener(
+            top=max(1, _env_int("SCHEDULE_SCREENER_TOP", 50)),
+            style=os.getenv("SCHEDULE_SCREENER_STYLE", "balanced"),
+            include_financials=True,
+            include_fund_flow=False,
+            save=True,
+        )
+        summary = result.get("summary") or {}
+        logger.info(
+            "全市场选股完成: %s 只候选（全市场 %s 只）",
+            len(result.get("items") or []),
+            summary.get("universe", 0),
+        )
+    except Exception:
+        logger.exception("全市场选股失败")
+
+
+def _run_evaluation_once() -> None:
+    """每日把到期的历史推荐与真实行情对齐，并写回角色记忆。
+
+    WHY 默认开启：推荐评估是唯一能回答"策略/模型到底准不准"的环节；
+    不自动跑，用户几乎不会主动去点。评估失败不应影响其它定时任务。
+    """
+    if not _enabled_by_default("SCHEDULE_EVALUATION"):
+        return
+    today = cn_today_str()
+    if not is_cn_trading_day(today):
+        logger.info("非交易日，跳过推荐评估")
+        return
+    try:
+        from tradingagents.services.evaluation import evaluate_reports
+
+        limit = max(1, _env_int("SCHEDULE_EVALUATION_LIMIT", 100))
+        result = evaluate_reports(limit=limit, write_memory=True)
+        summary = result.get("summary") or {}
+        overall = summary.get("overall") or {}
+        logger.info(
+            "推荐评估完成: %s 条，命中率 %.1f%%，有效样本 %s",
+            summary.get("raw_count", 0),
+            float(overall.get("hit_rate") or 0) * 100,
+            summary.get("effective_sample_size", 0),
+        )
+    except Exception:
+        logger.exception("推荐评估失败")
+
+
 def _run_once() -> None:
-    """执行一次每日批量任务（简报/预警/复盘 + 情绪快照 + 定时分析）。"""
+    """执行一次每日批量任务（快照 / 评估 / 简报 / 预警 / 复盘 + 定时分析）。"""
     errors: list[str] = []
 
     # 情绪快照优先：它不依赖推送渠道，纯粹是本地历史积累
     _run_sentiment_snapshot_once()
+    # 组合盯市与推荐评估同样不依赖推送渠道，先做本地闭环
+    _run_portfolio_snapshot_once()
+    _run_data_sync_once()
+    _run_social_snapshot_once()
+    _run_screener_once()
+    _run_evaluation_once()
 
     if _enabled("SCHEDULE_BRIEFING"):
         _run_briefing_once()
@@ -588,6 +811,7 @@ def _loop() -> None:
                 time.sleep(30)
                 continue
 
+            _run_intraday_alerts_once()
             _run_scheduled_jobs()
             _run_daily_batch_if_due()
         except Exception:
@@ -619,8 +843,9 @@ def run_scheduler_forever(poll_seconds: float = 30.0) -> None:
     """独立运行调度器（不依赖 WebUI），阻塞直到收到停止信号。"""
     logger.info("独立调度器已启动")
     try:
-        while not _stop_event.is_set():
-            _stop_event.wait(poll_seconds)
+        # 复用后台线程的轮询逻辑，而不是只等待停止事件；
+        # 此前 --loop 模式实际不会执行任何任务。
+        _loop()
     except KeyboardInterrupt:  # pragma: no cover - 交互式中断
         logger.info("收到中断信号，调度器退出")
     finally:

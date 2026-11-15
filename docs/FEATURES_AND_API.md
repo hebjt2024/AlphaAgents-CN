@@ -78,6 +78,8 @@ AlphaAgents-CN 是一个面向 A 股的多智能体投研系统，基于 Trading
 | 功能 | 说明 | 入口 |
 |---|---|---|
 | A 股数据适配 | 代码归一化、北交所、B 股排除、交易日历、停牌提示、涨跌停/ST 规则 | 数据层 / CLI / WebUI |
+| 本地行情仓库 | 日线 OHLCV 落 SQLite；回测/评估/K 线/模拟盘本地优先，只补缺失区间 | 数据层 / CLI / API / WebUI |
+| 数据质量检查 | 覆盖范围、新鲜度、OHLC 不自洽、异常涨跌幅、长期缺口 | CLI / API / WebUI |
 | 多智能体分析 | 分析师、多空辩论、交易员、风险辩论、组合经理 | WebUI / CLI |
 | 并行分析 | 多个分析师并行执行，缩短首轮耗时；并发度可配置 | 默认开启 |
 | 快速预览 | 策略规则初判，不调用 LLM；深度分析同时后台运行 | WebUI / API |
@@ -92,14 +94,24 @@ AlphaAgents-CN 是一个面向 A 股的多智能体投研系统，基于 Trading
 | 回测统计门槛 | 样本内/样本外切分、有效样本量、显著性检验、多重检验校正 | WebUI / API |
 | 结构化决策卡 | 评分、置信度、止损/目标、风险收益比、仓位 | WebUI / 报告 |
 | 决策分歧可见 | 规则初判与 LLM 最终决策的差异随结果返回 | API / 报告 |
-| 组合管理 | 账户、持仓账本、成交流水、组合快照 | API / 存储 |
+| 组合管理 | 账户、持仓账本、成交流水、组合快照；WebUI 组合页支持盯市、绩效曲线 | WebUI / API / CLI |
 | 组合级风控 | 单票/行业/总仓位上限、单笔风险预算、亏损与回撤熔断 | API / 决策 |
-| 模拟盘 | T+1 批次锁定、涨跌停不可成交、整手、现金冻结、决策卡转委托单 | 服务层 |
-| 评估闭环 | 决策与前瞻收益对齐、命中率汇总、有效样本量口径 | 服务层 |
-| 反思与记忆 | 分析结束写入角色记忆并落库，下次分析可检索 | 图编排 |
-| 可观测性 | token / 成本 / 逐阶段耗时采集与落库 | API / 存储 |
+| 组合绩效 | 每日快照、累计/年化收益、最大回撤、波动率、夏普 | WebUI / API / CLI |
+| 模拟盘 | T+1 批次锁定、涨跌停不可成交、整手、现金冻结、决策卡转委托单；WebUI 委托/撤单/盯市/推进撮合 | WebUI / API |
+| 评估闭环 | 决策与前瞻收益对齐、命中率汇总、有效样本量；WebUI 评估页、CLI、每日自动评估 | WebUI / API / CLI / Scheduler |
+| 反思与记忆 | 分析结束写入角色记忆并落库，下次分析可检索；评估结果可写回记忆 | 图编排 / Scheduler |
+| 可观测性 | token / 成本 / 逐阶段耗时采集与落库；WebUI 设置页展示聚合指标 | API / WebUI / 存储 |
 | 访问鉴权 | 可选 API Key（`WEBUI_API_KEY`）、限流、请求 ID | API |
 | 任务队列 | 有界 worker 队列、原子认领、取消、僵尸回收、优雅退出 | API / Scheduler |
+| 盘中实时行情 | 全市场快照、分钟线、五档盘口、交易时段判断 | WebUI / API |
+| 盘中告警 | 价格/涨跌幅/量比/换手率/成交额 + 持仓止损止盈；冷却去重、确认、推送 | WebUI / API / CLI / Scheduler |
+| 全市场选股 | 快照 + 最新业绩 + 可选资金流；6 因子打分、风格权重、过滤、Top-N、候选池归档 | WebUI / API / CLI / Scheduler |
+| 公告 / 研报 / 股东 | 公告利好利空分类、研报评级与盈利预测、股东户数与前十大股东 | WebUI / API / CLI / LLM |
+| 真实社媒舆情 | 东财人气榜、概念热度、微博情绪、雪球热度（可选）；热度/情绪评分与异常升温/降温 | WebUI / API / CLI / LLM / Scheduler |
+| 宏观 / 轮动 / 两融 / ETF | PMI/CPI/PPI/M2/LPR/Shibor/国债收益率、两融余额、行业轮动、ETF 主力资金流 | WebUI / API / CLI / LLM |
+| 组合风险与再平衡 | 年化波动/回撤/VaR/CVaR/Beta/跟踪误差/集中度/风险贡献、压力测试、等权与风险平价调仓 | WebUI / API / CLI |
+| LLM 可靠性 | 结构化决策 JSON、引用字段、外部数据不可信隔离、注入检测、单次成本/token 预算 | 图编排 / API / WebUI |
+| 多用户与权限 | 登录会话、admin/analyst/viewer、风险确认、审计日志 | WebUI / API / CLI |
 | 自选股预警 | 只保留触发信号，支持手动/定时 Webhook 推送 | WebUI / API / Scheduler |
 | 市场复盘 | 指数、情绪、行业/概念热度、资金流、涨停分布 | WebUI / API |
 | 板块历史 | 同花顺行业 1/5/20 日涨跌幅和 60 日走势 | WebUI / API |
@@ -580,6 +592,18 @@ tradingagents <command>
 | `jobs list` | 查看分析任务记录 | `alphaagents jobs list -n 20` |
 | `jobs clean` | 清理终态任务记录 | `alphaagents jobs clean --dry-run` |
 | `jobs purge` | 按条件清理任务记录 | `alphaagents jobs purge --before 2026-11-01` |
+| `evaluate` | 推荐评估 | `alphaagents evaluate --limit 30` |
+| `portfolio` | 组合快照/绩效 | `alphaagents portfolio --refresh --snapshot` |
+| `risk` | 组合风险/压力测试/再平衡 | `alphaagents risk --method risk_parity` |
+| `sync` | 同步本地行情 | `alphaagents sync 600519 --start 2015-01-01` |
+| `data-quality` | 数据质量检查 | `alphaagents data-quality 600519` |
+| `screen` | 全市场选股 | `alphaagents screen --style value --top 50` |
+| `disclosure` | 公告/研报/股东 | `alphaagents disclosure 600519` |
+| `social` | 社媒舆情 | `alphaagents social 600519 --name 贵州茅台` |
+| `macro` | 宏观/轮动/两融/ETF | `alphaagents macro` |
+| `alerts` | 告警规则与事件 | `alphaagents alerts check --notify` |
+| `users` | 用户管理 | `alphaagents users list` |
+| `audit` | 审计日志 | `alphaagents audit --limit 50` |
 
 任务记录清理的安全约定：
 
@@ -796,6 +820,22 @@ http://127.0.0.1:8000
 | GET | `/api/market/stock-search` | 股票代码/名称搜索 |
 | GET | `/api/market/hot-stocks` | 涨停池热门股 |
 
+### 10.4b 本地行情仓库与数据质量
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/data/status` | 仓库概览（路径 / 标的数 / K 线数 / 覆盖范围） |
+| GET | `/api/data/symbols` | 已缓存标的与覆盖范围 |
+| POST | `/api/data/sync` | 同步一只或多只标的到本地库 |
+| GET | `/api/data/quality` | 覆盖、新鲜度、OHLC 一致性、异常涨跌幅、长期缺口 |
+
+CLI：
+
+```bash
+alphaagents sync 600519 --start 2015-01-01
+alphaagents data-quality 600519
+```
+
 ### 10.5 策略
 
 | 方法 | 路径 | 说明 |
@@ -813,9 +853,28 @@ http://127.0.0.1:8000
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/api/portfolio` | 账户持仓、组合权重与风险体检 |
+| GET | `/api/portfolio/accounts` | 账户列表 |
+| GET | `/api/portfolio/performance` | 每日快照绩效：收益、回撤、波动率、夏普 |
+| POST | `/api/portfolio/refresh` | 用全市场快照刷新持仓最新价 |
+| POST | `/api/portfolio/position` | 录入/更新持仓 |
+| DELETE | `/api/portfolio/position/{ticker}` | 删除持仓 |
+| POST | `/api/portfolio/fill` | 记录一笔成交并更新持仓/现金 |
+| POST | `/api/portfolio/snapshot` | 记录当日组合快照 |
+| GET | `/api/portfolio/transactions` | 成交流水 |
 | POST | `/api/portfolio/evaluate` | 把决策卡放到组合语境下重新评估 |
 | GET | `/api/portfolio/alerts` | 持仓止损 / 止盈 / 深亏 / 未设止损提醒 |
 | GET | `/api/position/advice` | 结合持仓给出加仓 / 减仓 / 清仓股数 |
+| GET | `/api/paper` | 模拟账户、持仓、委托与净值曲线 |
+| GET | `/api/paper/accounts` | 模拟盘账户列表 |
+| POST | `/api/paper/reset` | 新建/重置模拟盘 |
+| POST | `/api/paper/order` | 提交模拟委托 |
+| POST | `/api/paper/cancel` | 撤销未成交委托 |
+| POST | `/api/paper/from-plan` | 把决策卡转成模拟委托 |
+| POST | `/api/paper/mark` | 按最新价盯市 |
+| POST | `/api/paper/advance` | 按历史日线逐日撮合 |
+| GET | `/api/evaluation` | 历史推荐的前瞻收益、命中率与有效样本量 |
+| POST | `/api/evaluation/run` | 手动评估并可选写回记忆 |
+| GET | `/api/evaluation/report/{id}` | 单条报告的后续结果 |
 | GET | `/api/runs` | 最近运行的 token / 成本 / 耗时指标 |
 | GET | `/api/runs/aggregate` | 运行指标聚合（按模型与来源拆分） |
 | GET | `/healthz` | 存活探针 |
@@ -866,6 +925,247 @@ http://127.0.0.1:8000
 | 规则与决策方向冲突 | **维持现有仓位**，显式标注冲突，由止损位接管风险 |
 | 当前无持仓 | 不生成持仓建议 |
 
+
+### 10.6d 实时行情与盘中告警
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/realtime/session` | 当前交易时段（盘前/上午/午休/下午/收盘/非交易日） |
+| GET | `/api/realtime/quote` | 实时快照（单只或 `tickers=600519,000001`） |
+| GET | `/api/realtime/intraday` | 1/5/15/30/60 分钟线 |
+| GET | `/api/realtime/orderbook` | 五档买卖盘 |
+| GET | `/api/alerts/summary` | 启用规则数、今日事件数、未确认数 |
+| GET | `/api/alerts/rules` | 告警规则列表 |
+| POST | `/api/alerts/rules` | 新增/覆盖规则 |
+| PATCH | `/api/alerts/rules/{id}` | 修改阈值/冷却/启停 |
+| DELETE | `/api/alerts/rules/{id}` | 删除规则 |
+| GET | `/api/alerts/events` | 告警事件列表（可只看未确认） |
+| POST | `/api/alerts/events/{id}/ack` | 确认单条事件 |
+| POST | `/api/alerts/events/ack-all` | 确认全部事件 |
+| POST | `/api/alerts/check` | 立即检查一次 |
+
+CLI：
+
+```bash
+alphaagents alerts list
+alphaagents alerts add 600519 --type price_above --threshold 1500
+alphaagents alerts check --notify
+alphaagents alerts events --unacked
+alphaagents alerts ack --all
+```
+
+盘中定时检查：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_INTRADAY_ALERTS=1
+```
+
+### 10.6e 全市场选股
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/screener` | 按查询参数运行选股 |
+| POST | `/api/screener/run` | 按完整 JSON 参数运行选股 |
+| GET | `/api/screener/styles` | 风格与因子权重 |
+| GET | `/api/screener/latest` | 最近一次候选池 |
+| GET | `/api/screener/history` | 历史运行列表 |
+| GET | `/api/screener/runs/{id}` | 单次运行详情 |
+| DELETE | `/api/screener/runs/{id}` | 删除运行记录 |
+
+CLI：
+
+```bash
+alphaagents screen
+alphaagents screen --style value --top 50
+alphaagents screen --no-financials
+```
+
+定时任务：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_SCREENER=1
+SCHEDULE_SCREENER_TOP=50
+SCHEDULE_SCREENER_STYLE=balanced
+```
+
+因子：
+
+| 因子 | 数据来源 | 方向 |
+|---|---|---|
+| value | PE-TTM / PB | 越低越好；亏损 PE<=0 直接 0 分 |
+| quality | ROE / 毛利率 / 每股经营现金流 | 越高越好 |
+| growth | 营收同比 / 净利同比 | 越高越好 |
+| momentum | 60 日 / 年初至今 / 当日涨跌幅 | 越高越好 |
+| liquidity | 成交额 / 换手率 / 量比 | 越高越好 |
+| capital | 主力净流入占比（可选） | 越高越好 |
+
+### 10.6f 公告 / 研报 / 股东
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/disclosure/summary` | 公告 + 研报 + 股东合并摘要 |
+| GET | `/api/disclosure/announcements` | 个股公告（利好/利空/影响级别/主题） |
+| GET | `/api/disclosure/research` | 研报评级分布、盈利预测、最近研报 |
+| GET | `/api/disclosure/shareholders` | 股东户数变化与前十大股东 |
+
+CLI：
+
+```bash
+alphaagents disclosure 600519
+alphaagents disclosure 600519 --days 90
+alphaagents disclosure 600519 --json
+```
+
+LLM 工具：
+
+| 工具 | 用途 |
+|---|---|
+| `get_announcements` | 公告分类与高影响事件 |
+| `get_research_consensus` | 机构评级、盈利预测、最近研报 |
+| `get_shareholder_changes` | 股东户数趋势、前十大股东 |
+
+历史分析传入 `curr_date` 时，公告/研报/股东数据都会按披露日过滤，避免未来函数。
+
+### 10.6g 真实社媒舆情
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/social/sentiment` | 个股社媒热度、情绪、关键词与异常判断 |
+| GET | `/api/social/history` | 社媒每日快照与基线 |
+| POST | `/api/social/snapshot` | 记录一次社媒快照 |
+| GET | `/api/social/hot` | 东财人气榜 + 微博情绪热度榜 |
+
+CLI：
+
+```bash
+alphaagents social 600519 --name 贵州茅台
+alphaagents social 600519 --snapshot
+alphaagents social 600519 --history
+```
+
+定时快照：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_SOCIAL=1
+```
+
+评分口径：
+
+- 热度 = 人气榜排名分（65%）+ 概念热度对数分（35%）；
+- 情绪 = 微博情绪映射（70%）+ 概念关键词情绪（30%）；
+- 异常趋势 = 当前热度相对最近 20 次快照均值的偏离；
+- 社媒数据仅实时可用，历史分析日返回不可用。
+
+### 10.6h 宏观 / 两融 / 行业轮动 / ETF
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/macro/overview` | PMI/CPI/PPI/M2/LPR/Shibor/中美国债收益率 |
+| GET | `/api/macro/margin` | 全市场两融余额与 5/20 日变化 |
+| GET | `/api/market/rotation` | 行业今日/5日/10日涨跌幅、主力净流入、轮动分 |
+| GET | `/api/market/etf-flows` | 场内 ETF 主力净流入/流出 |
+| GET | `/api/macro/dashboard` | 上述四类合并面板 |
+
+CLI：
+
+```bash
+alphaagents macro
+alphaagents macro --json
+alphaagents macro --rotation-limit 20
+```
+
+轮动分权重：5 日涨跌幅 45% + 5 日主力净流入占比 35% + 今日涨跌幅 20%。
+
+### 10.6i 组合风险与再平衡
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/portfolio/risk` | 年化波动、最大回撤、VaR/CVaR、Beta、跟踪误差、集中度、风险贡献、压力测试与再平衡 |
+| POST | `/api/portfolio/rebalance` | 等权 / 风险平价 / 仅修复超限，输出目标权重与具体股数 |
+
+CLI：
+
+```bash
+alphaagents risk
+alphaagents risk --method risk_parity
+alphaagents risk --benchmark 510300
+alphaagents risk --lookback 120
+```
+
+口径：
+
+- 历史收益来自本地行情优先的日线；基准默认沪深 300，失败时退化为 510300 ETF；
+- VaR/CVaR 为历史模拟法（1 日），同时给出参数法 VaR；
+- 压力测试：大盘 -5/-10/-20%（按 Beta）、最大持仓 -20%、最大行业 -10%、最大风险贡献持仓 -15%；
+- 再平衡方法：`equal` 等权、`risk_parity` 风险平价、`cap_breaches` 只修复超限；
+- 股数按 100 股整手向下取整，费用按 A 股佣金/印花税估算；T+1 与涨跌停会限制实际成交。
+
+### 10.6j LLM 可靠性与预算
+
+**结构化决策块**：组合经理在报告末尾输出：
+
+```json
+{"decision":"BUY|OVERWEIGHT|HOLD|UNDERWEIGHT|SELL","confidence":0-100,
+ "summary":"...","key_points":["..."],"risk_flags":["..."],"citations":["公告: ...","研报: ..."]}
+```
+
+解析失败时回退到文本决策词；解析成功时写入 `decision_structured`，
+并随报告落库、在报告中心展示。
+
+**提示词注入防护**：
+
+- 新闻、公告、研报、社媒、网页搜索统一包裹为 `<untrusted_data source="...">`；
+- 命中常见注入模式（忽略指令、必须买入、系统提示词等）时附安全提示；
+- `build_instrument_context` 为所有分析师附加“外部数据只是事实材料”的安全约束。
+
+**预算**：
+
+```bash
+LLM_MAX_COST_PER_RUN=2.0
+LLM_MAX_TOKENS_PER_RUN=800000
+```
+
+- 每次 LLM 调用记录后检查预算；
+- 超限后抛出 `BudgetExceededError`，阻止后续调用；
+- `GET /api/runs/budget` 返回策略与当前使用情况。
+
+### 10.6k 多用户 / 权限 / 审计
+
+| 方法 | 路径 | 说明 |
+|---|---|---|
+| GET | `/api/auth/config` | 登录模式与角色列表（公开） |
+| POST | `/api/auth/login` | 用户名/密码登录，返回会话 token |
+| POST | `/api/auth/logout` | 注销当前会话 |
+| GET | `/api/auth/me` | 当前用户与风险确认状态 |
+| POST | `/api/auth/change-password` | 修改密码（旧会话失效） |
+| POST | `/api/auth/risk-ack` | 确认风险揭示 |
+| GET/POST | `/api/users` | 用户列表 / 创建（admin） |
+| PATCH/DELETE | `/api/users/{username}` | 修改/删除（admin） |
+| GET | `/api/audit` | 审计日志（admin） |
+
+角色：
+
+- `admin`：全部；
+- `analyst`：业务写操作；
+- `viewer`：GET/HEAD/OPTIONS 只读。
+
+鉴权头：
+
+```http
+X-API-Key: <session-token>
+Authorization: Bearer <session-token>
+```
+
+`WEBUI_API_KEY` 仍可作为自动化脚本的 admin 密钥。
+
+审计记录所有 POST/PUT/PATCH/DELETE（登录单独记录成功/失败），包含用户、角色、
+路径、状态、IP、request_id。
+
+> 数据边界：共享报告/自选股/默认组合；组合可用 `account` 参数做逻辑隔离。
+> 完整多租户（每用户独立报告库/自选股/组合）未在本版实现。
 
 ### 10.7 鉴权与限流
 
@@ -2465,12 +2765,28 @@ uv lock --check: OK
 3. **市场复盘是实时快照**：`date` 参数只用于提示，不回溯历史。
 4. **板块历史来自同花顺行业指数**：与申万/中信行业分类可能不同。
 5. **东方财富 Push2 可能限流**：系统已尽量使用新浪/同花顺替代，仍可能出现 warnings。
-6. **无内置鉴权**：WebUI/API 默认本地使用；公网部署请加反向代理鉴权。
+6. **鉴权默认关闭**：单用户本机模式无需登录；公网部署请设置 `WEBUI_API_KEY` 或 `WEBUI_MULTI_USER=1`，并建议 HTTPS/反向代理。
 7. **LLM 成本与耗时**：深度模式会增加辩论轮次和调用次数。
 8. **MiniMax 地址**：使用 `https://api.minimax.cn/anthropic`，不要使用 `api.minimaxi.cn`。
 9. **通知为空**：未配置 Webhook 时不会报错，只返回 `skipped`。
 10. **投资风险**：所有策略、回测、复盘和决策卡仅供研究参考，不构成投资建议。
 11. **任务并发**：当前仍是单分析并发；任务会排队等待 `ANALYSIS_LOCK`，适合单用户/小团队。
+12. **本地行情补洞**：自动补洞只处理请求区间的首尾缺口；内部长期缺口由数据质量检查标记（可能是停牌，也可能是漏抓），确认后可用 `alphaagents sync --force` 重抓。
+13. **数据仓库范围**：目前缓存日线 OHLCV；财务、新闻、资金流仍在线获取，尚未进入本地仓库。
+14. **选股因子覆盖**：业绩报表在披露季可能只覆盖部分公司；缺失因子保持缺失并按可用权重重新归一，结果中标注“因子覆盖不足”。
+15. **选股过滤**：当前没有上市天数 / 次新股过滤；成交额与市值过滤可降低但无法完全消除新股与微盘股影响。
+16. **公告抓取**：使用东方财富公告接口，单只股票通常只有一页，但数据源偶发超时；失败时返回明确提示，不影响新闻/研报分析。
+17. **研报一致预期**：由个股研报评级与盈利预测聚合而来，不等同于 Wind/Choice 的卖方一致预期；盈利预测样本数会随报告覆盖变化。
+18. **社媒数据**：只提供实时快照，历史分析日返回不可用；微博情绪按股票简称匹配，可能因简称变更/同名而缺失；雪球接口需要 cookie，失败时仅告警。
+19. **宏观数据**：部分指标来自金十/东财，更新时间和发布日期可能滞后；超过 120 天的指标会附带“数据较旧”提示。
+20. **轮动与 ETF**：东方财富板块资金流/ETF 行情翻页较多，偶发限流；失败时保留宏观与两融部分，并返回明确 warning。
+21. **组合风险**：VaR/压力测试基于历史收益与当前静态权重，不含未来调仓；基准指数失败时用 510300 ETF 代理。
+22. **再平衡建议**：按最新价与整手估算，未考虑 T+1 可卖数量、涨跌停、停牌与冲击成本；实际下单前需人工确认。
+23. **结构化决策**：依赖模型按 prompt 输出 JSON；未输出或格式错误时会回退文本决策，并给出 warnings。
+24. **提示词注入防护**：检测是启发式的，不能保证 100% 拦截；高风险场景仍需人工复核。
+25. **预算**：单次预算按当前 run 的估算成本/token 计算；币种混合（AUTO）时金额上限的严格性有限，建议设置 `TA_COST_CURRENCY`。
+26. **多用户数据边界**：报告、自选股、组合账户、模拟盘账户已按 `owner` 隔离；管理员可查看全部，普通用户只能访问自己的数据。旧数据 `owner=''` 默认仅管理员可见；定时任务仍以共享工作区运行。
+27. **多用户安全**：密码使用 PBKDF2 哈希；会话 token 存 SQLite；公网部署仍建议 HTTPS、反向代理、备份与最小权限。业务错误已统一为 4xx/5xx；内部异常对外脱敏，原始异常写日志。
 
 ---
 
@@ -2478,6 +2794,17 @@ uv lock --check: OK
 
 | 日期 | 内容 |
 |---|---|
+| 2026-11-15 | 修复复查发现的问题：账户/自选股/报告/模拟盘 owner 隔离、业务错误 4xx/5xx、异常脱敏、模拟盘前视与死锁、调度重试/--loop、选股因子口径、组合风险权重、提示词注入闭合、宏观历史泄漏等 |
+| 2026-11-15 | 新增多用户/权限/审计：登录会话、admin/analyst/viewer、风险确认、用户管理、写操作审计；CLI `users` / `audit`；默认单用户模式不变 |
+| 2026-11-15 | 新增 LLM 可靠性：结构化决策 JSON、引用/风险标记、外部数据 `<untrusted_data>` 隔离与注入检测、单次成本/token 预算硬约束 |
+| 2026-11-15 | 新增组合风险度量（波动/回撤/VaR/CVaR/Beta/风险贡献）、压力测试与再平衡（等权/风险平价/修复超限）；组合持仓新增行业字段 |
+| 2026-11-15 | 新增宏观（PMI/CPI/PPI/M2/LPR/Shibor/国债）、两融余额、行业轮动与 ETF 资金流；接入 LLM 工具、WebUI、API 与 CLI `macro` |
+| 2026-11-15 | 新增真实社媒舆情（东财人气榜、概念热度、微博情绪、雪球可选），热度/情绪评分、异常升温判断与每日快照；接入 LLM、WebUI、API、CLI `social` |
+| 2026-11-15 | 新增公告 / 研报一致预期 / 股东变化（利好利空分类、评级分布、盈利预测、股东户数、十大股东），接入 LLM 工具、WebUI、API 与 CLI `disclosure` |
+| 2026-11-15 | 新增全市场多因子选股（6 因子、风格权重、ST/涨跌停/成交额/市值过滤、候选池归档）；CLI `screen`；WebUI 新增选股页 |
+| 2026-11-15 | 新增盘中实时行情（快照/分钟线/盘口/交易时段）与告警中心（规则、冷却去重、事件确认、定时检查）；CLI `alerts`；WebUI 新增告警页与实时行情卡 |
+| 2026-11-15 | 新增本地行情仓库（`data/market.db`）、本地优先取数、数据质量检查与 `/api/data/*`；CLI `sync` / `data-quality`；回测/评估/K 线/模拟盘统一走缓存 |
+| 2026-11-15 | 接通推荐评估 / 组合盯市与绩效 / 模拟盘 WebUI 与 API；新增 CLI `evaluate`、`portfolio`；定时任务默认记录组合快照与评估结果 |
 | 2026-11-12 | 整理功能与 API 文档；补充策略回测、决策卡、预警、市场复盘、资金流、板块历史、每日简报、归档、定时任务与通知说明 |
 | 2026-11-12 | 新增任务 API、股票搜索、涨停池热门股、前端本地静态资源；同步更新 API 与测试状态 |
 

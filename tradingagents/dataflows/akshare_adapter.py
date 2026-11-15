@@ -1326,6 +1326,61 @@ def _find_code_column(df) -> str:
     return None
 
 
+def get_akshare_spot_snapshot():
+    """返回全市场实时快照 DataFrame（带 5 分钟进程内缓存）。
+
+    对外暴露给实时行情 / 告警模块；底层与估值、搜索共用同一份缓存，
+    避免每个功能各打一次 ``stock_zh_a_spot_em``。
+    """
+    return _get_spot_snapshot()
+
+
+def get_akshare_spot_prices(tickers: list[str] | tuple[str, ...]) -> dict[str, float]:
+    """从全市场快照批量读取最新价。
+
+    组合盯市、持仓建议和止损止盈提醒都需要"当前价"，但逐只调用
+    ``stock_bid_ask_em`` 会触发限流。``stock_zh_a_spot_em`` 一次返回全市场，
+    且已有 5 分钟进程内缓存，适合批量刷新。
+
+    返回 ``{六位代码: 最新价}``；找不到的标的不出现在结果里。
+    """
+    wanted = {
+        normalize_code(str(ticker))
+        for ticker in (tickers or [])
+        if str(ticker or "").strip()
+    }
+    wanted.discard("")
+    if not wanted:
+        return {}
+    df = _get_spot_snapshot()
+    if df is None or getattr(df, "empty", True):
+        return {}
+    code_col = _find_code_column(df)
+    if not code_col:
+        return {}
+    price_col = next(
+        (col for col in ("最新价", "现价", "price") if col in df.columns),
+        None,
+    )
+    if not price_col:
+        return {}
+    prices: dict[str, float] = {}
+    for _, row in df.iterrows():
+        raw_code = row.get(code_col)
+        if isinstance(raw_code, float) and raw_code.is_integer():
+            raw_code = int(raw_code)
+        code = normalize_code(str(raw_code or ""))
+        if code not in wanted:
+            continue
+        try:
+            value = float(row.get(price_col))
+        except (TypeError, ValueError):
+            continue
+        if value > 0:
+            prices[code] = value
+    return prices
+
+
 def _format_amount(value):
     """把金额格式化为亿元/万元，便于 LLM 理解。"""
     if value is None:

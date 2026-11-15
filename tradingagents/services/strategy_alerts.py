@@ -36,7 +36,7 @@ def build_strategy_alerts(
     from tradingagents.strategies.scanner import scan_watchlist
 
     if tickers is None:
-        watch_items = list_watchlist()
+        watch_items = list_watchlist(None)
     else:
         watch_items = [{"ticker": ticker, "name": ""} for ticker in tickers if ticker]
 

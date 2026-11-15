@@ -33,8 +33,10 @@ def _env_aliases(provider: str, base_url: str | None = None) -> list[str]:
 def _is_local_url(base_url: str | None) -> bool:
     if not base_url:
         return False
-    lowered = base_url.lower()
-    return "localhost" in lowered or "127.0.0.1" in lowered or "0.0.0.0" in lowered
+    from urllib.parse import urlparse
+
+    host = (urlparse(str(base_url)).hostname or "").lower()
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
 
 
 def resolve_api_key(

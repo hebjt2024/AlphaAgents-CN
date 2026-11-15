@@ -49,12 +49,14 @@ __all__ = [
     "AuthError",
     "BadRequestError",
     "ConflictError",
+    "ForbiddenError",
     "NotFoundError",
     "RateLimitError",
     "ServiceUnavailableError",
     "build_error_body",
     "error_payload",
     "error_response",
+    "safe_exception_message",
     "register_exception_handlers",
 ]
 
@@ -62,6 +64,7 @@ __all__ = [
 ERROR_CODES: tuple[str, ...] = (
     "bad_request",
     "unauthorized",
+    "forbidden",
     "not_found",
     "conflict",
     "validation_error",
@@ -166,6 +169,13 @@ class AuthError(ApiError):
     status_code = 401
 
 
+class ForbiddenError(ApiError):
+    """403 已认证但权限不足。"""
+
+    code = "forbidden"
+    status_code = 403
+
+
 class ServiceUnavailableError(ApiError):
     """503 依赖（数据库 / 调度器 / 上游服务）不可用。"""
 
@@ -204,6 +214,21 @@ def error_payload(
 
         request_id = current_request_id()
     return build_error_body(code, message, details, request_id)
+
+
+def safe_exception_message(exc: Exception, default: str = "服务暂时不可用，请稍后重试") -> str:
+    """对外错误信息：只透传可控的业务异常，内部异常写日志后返回稳定文案。
+
+    RuntimeError / ValueError 通常来自业务校验或数据源，可保留原文；
+    sqlite3 / OSError / AttributeError / KeyError 等可能包含路径、表名、
+    内部 URL，统一隐藏，避免信息泄露。
+    """
+    if isinstance(exc, (ValueError, RuntimeError, TimeoutError, ConnectionError)):
+        text = str(exc).strip()
+        if text:
+            return text[:300]
+    logger.warning("API 内部异常（已脱敏返回）：%s", type(exc).__name__, exc_info=exc)
+    return default
 
 
 def _request_id(request: Request | None) -> str | None:

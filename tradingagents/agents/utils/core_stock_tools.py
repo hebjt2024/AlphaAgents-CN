@@ -365,4 +365,25 @@ def get_stock_data(
     #
     # 这个字符串会被 ToolNode 包装成 ToolMessage 返回给 LLM，
     # LLM 基于这些数据来计算技术指标或生成分析报告。
-    return route_to_vendor("get_stock_data", symbol, start_date, end_date)
+    #
+    # P0-1：优先读本地行情仓库，缺失区间才走 route_to_vendor。
+    # WHY：分析师与回测必须使用同一份历史数据，否则"回测赚钱、实盘分析
+    # 却是另一组价格"会非常隐蔽；同时避免同一标的在每次分析里重复下载。
+    from tradingagents.services.market_data import load_prices
+
+    frame = load_prices(
+        symbol,
+        start_date,
+        end_date,
+        fetch=lambda code, start, end: route_to_vendor(
+            "get_stock_data", code, start, end
+        ),
+    )
+    header = (
+        f"# Stock data for {symbol} from {start_date} to {end_date}\n"
+        "# Unit: CNY. Source: local cache first, then online vendor.\n"
+    )
+    warnings = frame.attrs.get("warnings") or []
+    if warnings:
+        header += "# Warnings: " + "；".join(str(item) for item in warnings) + "\n"
+    return header + frame.to_csv(index=False)

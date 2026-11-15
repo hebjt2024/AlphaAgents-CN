@@ -34,6 +34,26 @@ _ANALYSIS_KEY: ContextVar[str | None] = ContextVar(
     "tradingagents_analysis_key", default=None
 )
 
+#: 当前分析日期（YYYY-MM-DD）。工具据此过滤“未来数据”，
+#: 例如公告/研报按披露日、宏观数据按发布日。
+_CURRENT_TRADE_DATE: ContextVar[str | None] = ContextVar(
+    "tradingagents_trade_date", default=None
+)
+
+
+def set_current_trade_date(trade_date: str | None) -> str | None:
+    previous = _CURRENT_TRADE_DATE.get()
+    _CURRENT_TRADE_DATE.set(str(trade_date)[:10] if trade_date else None)
+    return previous
+
+
+def get_current_trade_date() -> str | None:
+    return _CURRENT_TRADE_DATE.get()
+
+
+def clear_current_trade_date() -> None:
+    _CURRENT_TRADE_DATE.set(None)
+
 
 class AnalysisLock:
     """按配置键细分的可重入分析锁。

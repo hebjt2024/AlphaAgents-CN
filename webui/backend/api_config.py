@@ -94,11 +94,13 @@ class ApiConfig:
     port: int = DEFAULT_PORT
     max_tracked_clients: int = DEFAULT_MAX_TRACKED_CLIENTS
     trust_proxy_headers: bool = False
+    multi_user: bool = False
+    session_days: int = 7
 
     @property
     def auth_enabled(self) -> bool:
-        """是否启用了 API 密钥鉴权。"""
-        return bool(self.api_key)
+        """是否启用了鉴权（API Key 或多用户会话）。"""
+        return bool(self.api_key) or bool(self.multi_user)
 
     @property
     def cors_enabled(self) -> bool:
@@ -141,6 +143,8 @@ def load_config() -> ApiConfig:
         port=_env_int("WEBUI_PORT", DEFAULT_PORT),
         max_tracked_clients=max_clients,
         trust_proxy_headers=_env_bool("WEBUI_TRUST_PROXY_HEADERS", False),
+        multi_user=_env_bool("WEBUI_MULTI_USER", False),
+        session_days=max(1, _env_int("WEBUI_SESSION_DAYS", 7)),
     )
 
 

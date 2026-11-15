@@ -403,6 +403,18 @@ def observe_llm_call(
             error="",
             tokens_estimated=estimated,
         )
+        # 单次预算：本次调用已记入 metrics，若超过上限则阻止后续 LLM 调用。
+        # 这里放在记录之后、返回之前，调用方会收到明确的
+        # BudgetExceededError（而不是继续烧钱）。
+        module = _observability_module()
+        if module is not None:
+            try:
+                module.enforce_budget()
+            except Exception as exc:
+                if type(exc).__name__ == "BudgetExceededError":
+                    raise
+                # 度量模块内部错误绝不影响业务
+                pass
 
 
 def normalize_content(response):

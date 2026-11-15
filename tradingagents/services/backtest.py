@@ -16,7 +16,6 @@ WHY：撮合逻辑全部下沉到 ``services/backtest_engine.py``，本模块只
 from __future__ import annotations
 
 import logging
-from io import StringIO
 from typing import Any
 
 import pandas as pd
@@ -39,46 +38,22 @@ SUPPORTED_STRATEGIES: tuple[str, ...] = ("ma_cross", "buy_hold")
 
 
 def _load_prices(ticker: str, start_date: str, end_date: str) -> pd.DataFrame:
-    text = route_to_vendor("get_stock_data", ticker, start_date, end_date)
-    if not isinstance(text, str) or not text.strip():
-        raise ValueError("未获取到行情数据")
+    """读行情：本地缓存优先，缺失区间再走 dataflows 在线取数。
 
-    frame = pd.read_csv(StringIO(text), comment="#")
-    # 兼容中文列名（A 股数据源）与 Date 被当作索引的情况
-    frame = frame.rename(
-        columns={
-            "日期": "Date",
-            "开盘": "Open",
-            "最高": "High",
-            "最低": "Low",
-            "收盘": "Close",
-            "成交量": "Volume",
-        }
+    WHY 保留这个函数名：回测、评估、K 线、模拟盘都通过它取数。把缓存
+    接在这里，所有下游自动获得"同一份历史只下载一次 + 离线可复现"，
+    不需要各自改一套。
+    """
+    from tradingagents.services.market_data import load_prices
+
+    return load_prices(
+        ticker,
+        start_date,
+        end_date,
+        fetch=lambda code, start, end: route_to_vendor(
+            "get_stock_data", code, start, end
+        ),
     )
-    if "Date" not in frame.columns and frame.index.name in ("Date", "日期"):
-        frame = frame.reset_index()
-        if "日期" in frame.columns:
-            frame = frame.rename(columns={"日期": "Date"})
-
-    if "Date" not in frame.columns or "Close" not in frame.columns:
-        raise ValueError("行情数据格式不符合预期")
-
-    frame["Date"] = pd.to_datetime(frame["Date"], errors="coerce")
-    for column in ("Open", "High", "Low", "Close", "Volume"):
-        if column in frame.columns:
-            frame[column] = pd.to_numeric(frame[column], errors="coerce")
-
-    # 丢弃无效行、按日期升序、去重，避免停牌/重复行污染回测
-    frame = frame.dropna(subset=["Date", "Close"])
-    frame = frame[frame["Close"] > 0]
-    frame = (
-        frame.sort_values("Date")
-        .drop_duplicates(subset=["Date"], keep="last")
-        .reset_index(drop=True)
-    )
-    if frame.empty:
-        raise ValueError("行情数据为空")
-    return frame
 
 
 def _max_drawdown(equity: pd.Series) -> float:
@@ -256,6 +231,7 @@ def run_backtest(
         },
         "cost_model": cost_model.to_dict(),
         "execution_rules": rules.to_dict(),
+        "warnings": list(frame.attrs.get("warnings") or []),
     }
 
 

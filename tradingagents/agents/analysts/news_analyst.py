@@ -87,6 +87,8 @@ from tradingagents.agents.utils.agent_utils import (
     search_stock_news,
     search_web,
 )
+from tradingagents.agents.utils.disclosure_tools import get_announcements
+from tradingagents.agents.utils.macro_tools import get_macro_overview
 
 # get_config：获取全局配置
 
@@ -182,6 +184,10 @@ def create_news_analyst(llm):
             get_global_news,
             # A 股宏观资金面（北向资金）。非 A 股场景调用会返回无数据提示。
             get_northbound_flow,
+            # 正式公告（比新闻更权威）：减持/回购/中标/诉讼/监管等
+            get_announcements,
+            # 宏观环境：PMI/CPI/PPI/M2/LPR/国债收益率
+            get_macro_overview,
             # 配置 TAVILY_API_KEY 后，可联网补充新闻/公告
             search_web,
             search_stock_news,
@@ -228,6 +234,9 @@ def create_news_analyst(llm):
             "使用 get_news(ticker, start_date, end_date) 进行公司特定或定向的新闻搜索（ticker 传入股票代码，例如 600519），"
             "使用 get_global_news(curr_date, look_back_days, limit) 获取更广泛的宏观经济新闻。"
             "对于 A 股标的，可调用 get_northbound_flow(curr_date, look_back_days) 了解北向资金动向。"
+            "宏观环境请调用 get_macro_overview 查看 PMI/CPI/PPI/M2/LPR 与国债收益率。"
+            "正式公告请优先调用 get_announcements(ticker, curr_date, days)，"
+            "它会把公告按利好/利空与影响级别分类；新闻只作为补充。"
             "如需补充最新新闻/公告，可调用 search_web(query, max_results, days) 或 search_stock_news(ticker, curr_date)。"
             "请提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"
             + """ 请务必在报告末尾附带一个 Markdown 表格，将报告中的关键点整理归纳，便于阅读。"""

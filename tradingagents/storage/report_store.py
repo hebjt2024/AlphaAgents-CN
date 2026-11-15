@@ -51,10 +51,16 @@ def init_db() -> None:
                 reports_json TEXT NOT NULL,
                 meta_json TEXT,
                 source TEXT DEFAULT 'unknown',
+                owner TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL
             )
             """
         )
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(reports)")}
+        if "owner" not in columns:
+            conn.execute(
+                "ALTER TABLE reports ADD COLUMN owner TEXT NOT NULL DEFAULT ''"
+            )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_reports_ticker_date "
             "ON reports(ticker, trade_date DESC)"
@@ -81,6 +87,7 @@ def _row_to_dict(row: sqlite3.Row) -> dict[str, Any]:
         "reports": reports,
         "meta": meta,
         "source": row["source"],
+        "owner": row["owner"] if "owner" in row.keys() else "",
         "created_at": row["created_at"],
     }
 
@@ -93,6 +100,7 @@ def save_report(
     reports: dict[str, Any],
     source: str = "unknown",
     meta: dict[str, Any] | None = None,
+    owner: str = "",
 ) -> int:
     init_db()
     now = datetime.now().isoformat(timespec="seconds")
@@ -101,8 +109,8 @@ def save_report(
             """
             INSERT INTO reports
                 (ticker, trade_date, decision, decision_text, reports_json,
-                 meta_json, source, created_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                 meta_json, source, owner, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 ticker,
@@ -112,6 +120,7 @@ def save_report(
                 json.dumps(reports, ensure_ascii=False),
                 json.dumps(meta or {}, ensure_ascii=False),
                 source,
+                str(owner or ""),
                 now,
             ),
         )
@@ -119,16 +128,25 @@ def save_report(
 
 
 def list_reports(
-    ticker: str | None = None, limit: int = 50, offset: int = 0
+    ticker: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    owner: str | None = None,
 ) -> list[dict[str, Any]]:
     init_db()
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
-    sql = "SELECT * FROM reports"
+    clauses = []
     params: list[Any] = []
     if ticker:
-        sql += " WHERE ticker = ?"
+        clauses.append("ticker = ?")
         params.append(ticker)
+    if owner is not None:
+        clauses.append("owner = ?")
+        params.append(str(owner))
+    sql = "SELECT * FROM reports"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?"
     params.extend([limit, offset])
     with _connect() as conn:
@@ -136,19 +154,33 @@ def list_reports(
     return [_row_to_dict(row) for row in rows]
 
 
-def get_report(report_id: int) -> dict[str, Any] | None:
+def get_report(
+    report_id: int, owner: str | None = None
+) -> dict[str, Any] | None:
     init_db()
     with _connect() as conn:
-        row = conn.execute(
-            "SELECT * FROM reports WHERE id = ?", (int(report_id),)
-        ).fetchone()
+        if owner is None:
+            row = conn.execute(
+                "SELECT * FROM reports WHERE id = ?", (int(report_id),)
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT * FROM reports WHERE id = ? AND owner = ?",
+                (int(report_id), str(owner)),
+            ).fetchone()
     return _row_to_dict(row) if row else None
 
 
-def delete_report(report_id: int) -> bool:
+def delete_report(report_id: int, owner: str | None = None) -> bool:
     init_db()
     with _connect() as conn:
-        cursor = conn.execute(
-            "DELETE FROM reports WHERE id = ?", (int(report_id),)
-        )
+        if owner is None:
+            cursor = conn.execute(
+                "DELETE FROM reports WHERE id = ?", (int(report_id),)
+            )
+        else:
+            cursor = conn.execute(
+                "DELETE FROM reports WHERE id = ? AND owner = ?",
+                (int(report_id), str(owner)),
+            )
         return cursor.rowcount > 0

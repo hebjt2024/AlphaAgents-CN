@@ -268,6 +268,18 @@ class PortfolioServiceTests(unittest.TestCase):
         # 卖出 110*100 - 10 = 10990
         self.assertAlmostEqual(snapshot["cash"], 100000 - 10005 + 10990, places=2)
 
+    def test_sell_without_position_is_rejected(self):
+        with self.assertRaises(ValueError):
+            record_fill(
+                "组合测试-无持仓", "600519", "SELL", 100, 110.0, fee=10.0
+            )
+
+    def test_sell_quantity_cannot_exceed_position(self):
+        account = "组合测试-超卖"
+        record_fill(account, "600519", "BUY", 100, 100.0, fee=5.0)
+        with self.assertRaises(ValueError):
+            record_fill(account, "600519", "SELL", 200, 110.0, fee=10.0)
+
     def test_evaluate_plan_for_account_respects_existing_weight(self):
         account = "组合测试-B"
         record_fill(

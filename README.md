@@ -21,6 +21,8 @@
 
 | 能力 | 说明 |
 |---|---|
+| **本地行情仓库** | 日线 OHLCV 落到独立 SQLite（`data/market.db`），回测/评估/K 线/模拟盘本地优先，只补缺失区间；同一份历史只下载一次 |
+| **数据质量检查** | 覆盖范围、新鲜度、OHLC 不自洽、异常涨跌幅、长期缺口；支持 API / CLI / WebUI 查看 |
 | **三源容错** | AkShare → BaoStock → 本地缓存，逐级降级，网络不可用仍能出报告 |
 | **智能限流** | 信号量并发控制 + 指数退避重试 + 请求超时保护 |
 | **代码归一** | `600519` / `600519.SH` / `sh.600519` / `SH600519` / `920xxx` 全部识别为同一标的 |
@@ -46,13 +48,23 @@
 | **策略回测** | 统一回测引擎：涨跌停不可成交、T+1、停牌跳空、100 股整手、滑点、最低佣金、ATR 止损；样本内/样本外切分 + 有效样本量门槛 + 显著性检验 + 多重检验校正 |
 | **结构化决策** | 综合评分、置信度、参考价、止损、目标价、风险收益比、建议仓位 |
 | **决策分歧可见** | 规则初判与组合经理结论的差异随结果返回，方向冲突时显式标注并暂停给出仓位 |
-| **组合管理** | 账户、持仓账本、成交流水、组合快照（权重 / 浮盈 / 行业暴露） |
+| **组合管理** | 账户、持仓账本、成交流水、组合快照（权重 / 浮盈 / 行业暴露）；WebUI 组合页支持盯市、绩效曲线与交易流水 |
 | **组合级风控** | 单票 / 行业 / 总仓位上限、单笔风险预算、日内亏损与回撤熔断 —— 全部**代码强制**，不再只是提示词里的一句话 |
-| **模拟盘** | T+1 批次锁定、涨跌停不可成交、整手约束、现金冻结；决策卡可直接转成委托单 |
-| **评估闭环** | 决策与 5/10/20 日前瞻收益自动对齐、命中率汇总；分析结束写入角色记忆并落库，下次分析可检索历史经验 |
-| **可观测性** | 每次运行的 token 用量、成本估算、逐阶段耗时落库并可在 `/api/runs` 查询 |
+| **模拟盘** | T+1 批次锁定、涨跌停不可成交、整手约束、现金冻结；WebUI 可直接提交委托、撤单、盯市与按历史行情推进撮合；决策卡可转成委托单 |
+| **评估闭环** | 决策与 5/10/20 日前瞻收益自动对齐、命中率与有效样本量；WebUI 评估页、CLI `evaluate`、每日自动评估并写回角色记忆 |
+| **组合绩效** | 每日快照、累计/年化收益、最大回撤、波动率、夏普、行业暴露与风险体检；CLI `portfolio` 可查看或刷新 |
+| **可观测性** | 每次运行的 token 用量、成本估算、逐阶段耗时落库；`/api/runs` 查询，WebUI 设置页展示聚合指标 |
 | **访问鉴权** | 可选 API Key（`WEBUI_API_KEY`）、按 IP 限流、请求 ID 贯穿日志 |
 | **任务队列** | 有界 worker 队列、原子认领、可取消、僵尸任务回收、优雅退出；调度器可脱离 WebUI 用 cron 独立运行 |
+| **盘中实时行情** | 全市场快照、1/5/15/30/60 分钟线、五档盘口；自动判断交易时段 | WebUI / API |
+| **盘中告警** | 价格上穿/下穿、涨跌幅、量比、换手率、成交额，以及持仓止损/止盈；冷却去重、可确认、可推送 | WebUI / API / CLI / Scheduler |
+| **全市场选股** | 全 A 快照 + 最新业绩报表 + 可选资金流；价值/质量/成长/动量/流动性/资金流多因子打分，风格权重可切换，候选池每日归档 | WebUI / API / CLI / Scheduler |
+| **公告 / 研报 / 股东** | 公告按利好利空与影响级别分类；研报评级分布、盈利预测、最近研报；股东户数趋势与前十大股东；全部可作为 LLM 工具 | WebUI / API / CLI / LLM |
+| **真实社媒舆情** | 东财人气榜、概念热度、微博情绪、雪球热度（可选）；综合热度/情绪评分与异常升温/降温；每日快照形成时间序列 | WebUI / API / CLI / LLM / Scheduler |
+| **宏观 / 轮动 / 两融 / ETF** | PMI、CPI、PPI、M2、LPR、Shibor、中美国债收益率；两融余额变化；行业今日/5日/10日轮动；ETF 主力资金流 | WebUI / API / CLI / LLM |
+| **组合风险与再平衡** | 年化波动、最大回撤、VaR/CVaR、Beta、跟踪误差、集中度、风险贡献；大盘/行业/个股压力测试；等权/风险平价/修复超限的调仓股数 | WebUI / API / CLI |
+| **LLM 可靠性** | 结构化决策 JSON（置信度/论点/引用/风险标记）、外部数据不可信隔离与注入检测、单次成本/token 预算硬约束 | 图编排 / API / 运行指标 |
+| **多用户与权限** | 登录会话、admin / analyst / viewer 角色、风险揭示确认、写操作审计日志；默认单用户模式不受影响 | WebUI / API / CLI |
 | **自选股预警** | 只保留触发策略的标的，支持手动/定时推送到企业微信 / 飞书 / 通用 Webhook |
 | **市场复盘** | 指数、涨跌家数、涨跌停、行业/概念热度、行业资金流、涨停行业分布与 Markdown 复盘 |
 | **板块历史** | 同花顺行业 1/5/20 日涨跌幅、成交额与 60 日走势图 |
@@ -150,6 +162,9 @@ python webui/run_webui.py --port 8000
 
 访问 http://localhost:8000
 
+> 默认只监听 `127.0.0.1`。需要局域网访问时显式使用 `--host 0.0.0.0`，
+> 并强烈建议同时设置 `WEBUI_API_KEY` 或开启多用户模式（Docker 镜像内已显式绑定 0.0.0.0）。
+
 ### 方式三：命令行（pip）
 
 ```bash
@@ -172,6 +187,11 @@ alphaagents backtest 600519 --start 2023-01-01 --end 2024-12-31
 alphaagents strategies 600519
 alphaagents strategies 600519 --strategies bull_trend,volume_breakout
 alphaagents strategies 600519 --all
+
+# 全市场选股 / 盘中告警
+alphaagents screen --top 30
+alphaagents alerts add 600519 --type price_above --threshold 1500
+alphaagents alerts check
 
 # 自选股管理
 alphaagents watch add 600519 --name 贵州茅台
@@ -351,10 +371,41 @@ SCHEDULE_TIME=18:00
 ### 组合、风控与运行指标
 
 - `GET /api/portfolio` 账户持仓、组合权重与风险体检
+- `GET /api/portfolio/performance` 每日快照绩效：累计/年化收益、最大回撤、波动率、夏普
+- `POST /api/portfolio/refresh` 用全市场快照刷新持仓最新价
+- `POST /api/portfolio/snapshot` 记录当日组合快照
+- `GET /api/portfolio/transactions` 成交流水
 - `POST /api/portfolio/evaluate` 把决策卡放到组合语境下重新评估，给出真正可执行的仓位
 - `GET /api/portfolio/alerts` 持仓止损 / 止盈 / 深亏 / 未设止损提醒
 - `GET /api/position/advice?ticker=600519` 结合持仓给出加仓 / 减仓 / 清仓的具体股数
+- `GET /api/portfolio/risk` 年化波动、最大回撤、VaR/CVaR、Beta、集中度、压力测试与再平衡
+- `POST /api/portfolio/rebalance` 等权 / 风险平价 / 仅修复超限，输出具体调仓股数
 - `GET /api/runs` / `GET /api/runs/aggregate` 最近运行的 token / 成本 / 耗时
+
+```bash
+uv run alphaagents risk
+uv run alphaagents risk --method risk_parity
+uv run alphaagents risk --benchmark 510300
+```
+
+模拟盘：
+
+- `GET /api/paper` 模拟账户、持仓、委托与净值曲线
+- `POST /api/paper/reset` 新建/重置模拟盘
+- `POST /api/paper/order` 提交模拟委托；`POST /api/paper/cancel` 撤单
+- `POST /api/paper/from-plan` 把决策卡转成模拟委托
+- `POST /api/paper/mark` 按最新价盯市；`POST /api/paper/advance` 按历史日线逐日撮合
+
+推荐评估：
+
+- `GET /api/evaluation` 历史推荐的 5/10/20 日前瞻收益、命中率与有效样本量
+- `POST /api/evaluation/run` 手动评估并可选写回角色记忆
+- `GET /api/evaluation/report/{id}` 单条报告的后续结果
+
+CLI：
+
+- `alphaagents evaluate --ticker 600519 --limit 20`
+- `alphaagents portfolio --refresh --snapshot`
 
 ### A 股研判（估值 / 事件 / 排雷 / 情绪）
 
@@ -368,6 +419,239 @@ SCHEDULE_TIME=18:00
 这五项也会作为 LLM 工具（`get_valuation_percentile` / `get_earnings_forecast` /
 `get_financial_red_flags` / `get_lockup_expiry` / `get_event_calendar`）
 提供给基本面与市场分析师，分析报告里会直接引用。
+
+### 盘中实时行情与告警
+
+WebUI 工作台“实时行情 / 分时”可查看当前标的快照与分钟线；导航新增“告警”页：
+
+- 规则类型：价格上穿/下穿、涨幅/跌幅超过、量比超过、换手率超过、成交额超过；
+- 自动附加持仓止损/止盈提醒；
+- 每条规则有独立冷却时间，避免同一条件反复刷屏；
+- 事件可逐条或全部确认；
+- 定时器开启盘中告警后，交易时段每 30 秒检查一次。
+
+```bash
+uv run alphaagents alerts list
+uv run alphaagents alerts add 600519 --type price_above --threshold 1500
+uv run alphaagents alerts check --notify
+uv run alphaagents alerts events --unacked
+uv run alphaagents alerts ack --all
+```
+
+API：
+
+- `GET /api/realtime/session` 当前交易时段
+- `GET /api/realtime/quote?ticker=600519` 实时快照
+- `GET /api/realtime/intraday?ticker=600519&period=5&days=3` 分钟线
+- `GET /api/realtime/orderbook?ticker=600519` 五档盘口
+- `GET /api/alerts/summary` 规则/事件概览
+- `GET/POST /api/alerts/rules` 规则列表与新增
+- `PATCH/DELETE /api/alerts/rules/{id}` 启停/删除规则
+- `GET /api/alerts/events` 事件列表
+- `POST /api/alerts/events/{id}/ack` / `POST /api/alerts/events/ack-all` 确认
+- `POST /api/alerts/check` 立即检查
+
+盘中定时检查需要显式开启：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_INTRADAY_ALERTS=1
+```
+
+### 全市场选股
+
+WebUI 导航“选股”页：
+
+- 风格：均衡 / 价值 / 成长 / 动量 / 质量；
+- 过滤：ST、涨跌停、最小成交额、最小总市值；
+- 可合并最新业绩报表（ROE / 毛利率 / 营收与净利同比 / 行业）；
+- 可选合并主力资金流排行（默认关闭，接口翻页较多）；
+- 可选“行业中性”：按行业均值中心化综合分，避免整条赛道一起高分；
+- 结果按综合评分排序，展示各因子分、入选理由与风险标记；
+- 每天的结果自动归档，可回看“昨天选了什么”。
+
+```bash
+# 默认均衡风格，Top 30，成交额≥1 亿，市值≥30 亿
+uv run alphaagents screen
+
+# 价值风格，Top 50
+uv run alphaagents screen --style value --top 50
+
+# 不合并业绩（更快，但质量/成长因子为中性）
+uv run alphaagents screen --no-financials
+```
+
+API：
+
+- `GET /api/screener` / `POST /api/screener/run` 运行选股
+- `GET /api/screener/styles` 风格与权重
+- `GET /api/screener/latest` 最近一次候选池
+- `GET /api/screener/history` 历史运行
+- `GET /api/screener/runs/{id}` 单次详情
+- `DELETE /api/screener/runs/{id}` 删除归档
+
+每日盘后自动选股（默认关闭）：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_SCREENER=1
+SCHEDULE_SCREENER_TOP=50
+SCHEDULE_SCREENER_STYLE=balanced
+```
+
+### 宏观 / 行业轮动 / 两融 / ETF
+
+WebUI 工作台快捷工具“宏观 / 轮动 / 两融”：
+
+- 宏观指标：PMI、CPI、PPI、M2、LPR、Shibor、中美国债收益率与利差；
+- 两融余额：全市场余额、5/20 日变化与趋势图；
+- 行业轮动：今日 / 5 日 / 10 日涨跌幅、主力净流入、轮动分；
+- ETF 资金流：场内 ETF 主力净流入/流出。
+
+```bash
+uv run alphaagents macro
+uv run alphaagents macro --json
+uv run alphaagents macro --rotation-limit 20
+```
+
+API：
+
+- `GET /api/macro/overview`
+- `GET /api/macro/margin`
+- `GET /api/market/rotation`
+- `GET /api/market/etf-flows`
+- `GET /api/macro/dashboard`
+
+> 东方财富板块资金流 / ETF 行情偶尔会被限流；系统会保留宏观与两融部分并给出提示。
+
+### 真实社媒舆情
+
+WebUI 工作台快捷工具“社媒舆情”：
+
+- 东方财富人气榜排名（前 100）；
+- 同花顺/东财概念热度（白酒、电商、茅指数等）；
+- 金十微博舆情：按股票简称匹配情绪分（约 -5 ~ +5）；
+- 可选雪球关注/讨论热度（接口需要 cookie，常失败）；
+- 综合热度、情绪评分、冰点/偏热/过热判定；
+- 与最近 20 次快照比较，标记“异常升温 / 异常降温”；
+- 每日快照形成趋势图。
+
+```bash
+uv run alphaagents social 600519 --name 贵州茅台
+uv run alphaagents social 600519 --snapshot
+uv run alphaagents social 600519 --history
+```
+
+API：
+
+- `GET /api/social/sentiment?ticker=600519&name=贵州茅台`
+- `GET /api/social/history?ticker=600519&days=60`
+- `POST /api/social/snapshot`
+- `GET /api/social/hot?limit=30`
+
+每日快照（默认关闭）：
+
+```bash
+SCHEDULE_ENABLED=1
+SCHEDULE_SOCIAL=1
+```
+
+> 社媒接口只提供实时数据；历史分析日会明确返回“不可用”，避免未来函数。
+
+### 公告 / 研报 / 股东
+
+WebUI 工作台快捷工具“公告 / 研报 / 股东”：
+
+- 公告按利好/利空、影响级别、主题分类；
+- 研报评级分布、买入+增持占比、盈利预测、最近研报 PDF；
+- 股东户数变化（筹码集中/分散）与最新前十大股东；
+- 基本面分析师与新闻分析师可直接调用 `get_announcements`、
+  `get_research_consensus`、`get_shareholder_changes`。
+
+```bash
+uv run alphaagents disclosure 600519
+uv run alphaagents disclosure 600519 --days 90
+uv run alphaagents disclosure 600519 --json
+```
+
+API：
+
+- `GET /api/disclosure/summary?ticker=600519&days=30`
+- `GET /api/disclosure/announcements?ticker=600519&days=30`
+- `GET /api/disclosure/research?ticker=600519&days=180`
+- `GET /api/disclosure/shareholders?ticker=600519`
+
+### LLM 可靠性与预算
+
+- **结构化决策块**：组合经理 prompt 要求在末尾输出 JSON，包含
+  `decision / confidence / summary / key_points / risk_flags / citations`；
+  解析结果随报告落库，并在报告中心展示。
+- **引用要求**：关键结论需标注 `[公告]`、`[研报]`、`[行情]`、`[资金流]`、`[社媒]`。
+- **提示词注入防护**：
+  - 新闻、公告、研报、社媒、网页搜索统一包裹为 `<untrusted_data>`；
+  - 命中“忽略以上指令 / 必须买入 / 系统提示词”等模式时加显式安全提示；
+  - 所有分析师上下文附加安全约束，只把外部内容当事实材料。
+- **单次预算**：
+
+```bash
+LLM_MAX_COST_PER_RUN=2.0
+LLM_MAX_TOKENS_PER_RUN=800000
+```
+
+超限后在**下一次** LLM 调用前抛出 `BudgetExceededError`，停止继续烧钱。
+运行指标页会显示当前预算策略。
+
+- `GET /api/runs/budget` 查询预算策略与当前运行使用情况。
+
+### 多用户 / 权限 / 审计
+
+默认仍是单用户、无需登录。开启多用户：
+
+```bash
+WEBUI_MULTI_USER=1
+WEBUI_SESSION_DAYS=7
+# 可选；不填密码会生成随机密码写入 data/initial_admin_password.txt
+WEBUI_ADMIN_USER=admin
+WEBUI_ADMIN_PASSWORD=你的初始密码
+```
+
+角色：
+
+- `admin`：全部权限，含用户管理与审计查询；
+- `analyst`：可运行分析、修改自选股/组合/告警/选股等业务数据；
+- `viewer`：只读，不能触发分析或写操作。
+
+功能：
+
+- 登录 / 退出 / 修改密码；
+- 首次登录风险揭示确认；
+- 管理员创建/禁用/删除用户；
+- 所有写操作与登录事件写入审计日志；
+- WebUI 登录弹窗、用户角色显示、退出按钮。
+
+```bash
+uv run alphaagents users list
+uv run alphaagents users create alice --role analyst
+uv run alphaagents users passwd alice
+uv run alphaagents users delete alice
+uv run alphaagents audit --limit 50
+```
+
+API：
+
+- `GET /api/auth/config`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/auth/me`
+- `POST /api/auth/change-password`
+- `POST /api/auth/risk-ack`
+- `GET/POST /api/users`（管理员）
+- `PATCH/DELETE /api/users/{username}`（管理员）
+- `GET /api/audit`（管理员）
+
+> 多用户模式下已做基础数据归属：报告、自选股、组合账户、模拟盘账户按
+> `owner` 隔离；管理员可查看全部，普通用户只能访问自己的数据。旧数据
+> `owner=''` 默认仅管理员可见；定时任务仍以共享工作区运行。
 
 ### 鉴权与可观测性端点
 
@@ -415,6 +699,31 @@ AkShare  →  BaoStock
 
 `akshare_adapter.py` 实现了限流、退避、超时与列名归一，`baostock_adapter.py`
 提供历史数据兜底。
+
+#### 本地行情仓库
+
+日线行情默认缓存到 `data/market.db`（可通过 `TA_MARKET_DB` 修改）：
+
+- 回测 / 评估 / K 线 / 模拟盘统一走 `services/market_data.py`，**本地优先**；
+- 只对缺失的首尾区间请求数据源，周末/节假日自动跳过；
+- 在线失败但本地有数据时降级返回本地，并附带 warning；
+- 设置 `TA_MARKET_CACHE=0` 可恢复"每次都联网"的旧行为。
+
+```bash
+# 显式同步（默认最近三年）
+uv run alphaagents sync 600519
+uv run alphaagents sync 600519 --start 2015-01-01
+
+# 检查本地数据质量
+uv run alphaagents data-quality 600519
+```
+
+API：
+
+- `GET /api/data/status`：仓库概览（标的数 / K 线数 / 覆盖范围）
+- `GET /api/data/symbols`：已缓存标的列表
+- `POST /api/data/sync`：同步指定标的
+- `GET /api/data/quality?ticker=600519`：数据质量检查
 
 ### 启动行为
 

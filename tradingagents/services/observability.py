@@ -63,6 +63,10 @@ from typing import Any
 
 __all__ = [
     "AUTO_CURRENCY",
+    "BudgetExceededError",
+    "budget_policy",
+    "budget_status",
+    "enforce_budget",
     "CostEstimate",
     "RunMetrics",
     "DEFAULT_PRICING_CNY",
@@ -607,6 +611,89 @@ def get_current_metrics() -> RunMetrics | None:
         if len(_thread_metrics) == 1:
             return next(iter(_thread_metrics.values()))
     return None
+
+
+class BudgetExceededError(RuntimeError):
+    """单次分析超出成本 / token 预算。"""
+
+    def __init__(self, status: dict[str, Any]):
+        self.status = status
+        reasons = "；".join(status.get("reasons") or ["超出预算"])
+        super().__init__(f"LLM 预算超限：{reasons}")
+
+
+def budget_policy() -> dict[str, float | int | None]:
+    """读取单次运行预算（环境变量）。
+
+    - ``LLM_MAX_COST_PER_RUN``：单次分析成本上限（与 cost 同币种）
+    - ``LLM_MAX_TOKENS_PER_RUN``：单次分析 token 上限
+    两者都不设置时表示不限制。
+    """
+
+    def _float(name: str) -> float | None:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return None
+        try:
+            value = float(raw)
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    def _int(name: str) -> int | None:
+        raw = os.getenv(name, "").strip()
+        if not raw:
+            return None
+        try:
+            value = int(float(raw))
+        except ValueError:
+            return None
+        return value if value > 0 else None
+
+    return {
+        "max_cost_per_run": _float("LLM_MAX_COST_PER_RUN"),
+        "max_tokens_per_run": _int("LLM_MAX_TOKENS_PER_RUN"),
+    }
+
+
+def budget_status(metrics: RunMetrics | None = None) -> dict[str, Any]:
+    """返回当前 run 的预算使用情况与是否超限。"""
+    metrics = metrics or get_current_metrics()
+    policy = budget_policy()
+    if metrics is None:
+        return {
+            **policy,
+            "cost": 0.0,
+            "tokens": 0,
+            "currency": DEFAULT_CURRENCY,
+            "exceeded": False,
+            "reasons": [],
+        }
+    totals = metrics.totals or {}
+    cost = float(totals.get("estimated_cost", 0.0))
+    tokens = int(totals.get("total_tokens", 0))
+    reasons: list[str] = []
+    max_cost = policy["max_cost_per_run"]
+    max_tokens = policy["max_tokens_per_run"]
+    if max_cost is not None and cost > float(max_cost):
+        reasons.append(f"成本 {cost:.4f} 超过上限 {float(max_cost):.4f}")
+    if max_tokens is not None and tokens > int(max_tokens):
+        reasons.append(f"token {tokens} 超过上限 {int(max_tokens)}")
+    return {
+        **policy,
+        "cost": round(cost, 8),
+        "tokens": tokens,
+        "currency": metrics.currency,
+        "exceeded": bool(reasons),
+        "reasons": reasons,
+    }
+
+
+def enforce_budget(metrics: RunMetrics | None = None) -> None:
+    """超限时抛出 :class:`BudgetExceededError`；未配置预算时 no-op。"""
+    status = budget_status(metrics)
+    if status.get("exceeded"):
+        raise BudgetExceededError(status)
 
 
 def set_current_metrics(metrics: RunMetrics | None) -> RunMetrics | None:

@@ -296,6 +296,7 @@ def advise_position(
     limits: RiskLimits | None = None,
     lot_size: int = 100,
     today: str | None = None,
+    owner: str = "",
 ) -> dict:
     """把决策卡换算成针对当前持仓的可执行动作。
 
@@ -314,7 +315,7 @@ def advise_position(
     if account is not None:
         from .portfolio import ensure_account, load_positions
 
-        account_row = ensure_account(account)
+        account_row = ensure_account(account, owner=owner)
         loaded = load_positions(account)
         if current is None:
             current = next(
@@ -619,6 +620,7 @@ def advice_for_analysis(
     ticker: str,
     plan: dict | None,
     account: str | None = None,
+    owner: str = "",
 ) -> dict | None:
     """分析结束后调用：仅当账户持有该标的时返回建议，否则返回 ``None``。
 
@@ -649,7 +651,11 @@ def advice_for_analysis(
         return None
 
     advice = advise_position(
-        ticker, plan, account or DEFAULT_ACCOUNT, position=current
+        ticker,
+        plan,
+        account or DEFAULT_ACCOUNT,
+        position=current,
+        owner=owner,
     )
     if not advice.get("success"):
         return None

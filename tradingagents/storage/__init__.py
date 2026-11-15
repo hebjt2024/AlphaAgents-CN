@@ -1,5 +1,19 @@
 """AlphaAgents-CN 本地持久化层。"""
 
+from .alert_store import (
+    ack_alert_event,
+    ack_all_alert_events,
+    add_alert_rule,
+    alert_summary,
+    delete_alert_rule,
+    get_alert_rule,
+    last_event_at,
+    list_alert_events,
+    list_alert_rules,
+    mark_alert_notified,
+    record_alert_event,
+    update_alert_rule,
+)
 from .briefing_store import (
     delete_briefing,
     get_briefing,
@@ -32,15 +46,25 @@ from .memory_store import (
     load_all_memories,
     save_memory,
 )
+from .paper_store import (
+    delete_paper_state,
+    get_paper_owner,
+    list_paper_accounts,
+    load_paper_state,
+    save_paper_state,
+)
 from .portfolio_store import (
     add_transaction,
     create_account,
     delete_position,
     get_account,
     list_accounts,
+    list_portfolio_snapshots,
     list_positions,
     list_transactions,
+    save_portfolio_snapshot,
     update_account_cash,
+    update_position_prices,
     upsert_position,
 )
 from .report_store import (
@@ -64,6 +88,19 @@ from .scheduled_store import (
     list_scheduled_jobs,
     mark_scheduled_run,
     update_scheduled_job,
+)
+from .screener_store import (
+    delete_screener_run,
+    get_latest_screener_run,
+    get_screener_run,
+    list_screener_runs,
+    save_screener_run,
+)
+from .social_store import (
+    get_latest_social_snapshot,
+    list_social_snapshots,
+    save_social_snapshot,
+    social_baseline,
 )
 from .watchlist_store import (
     add_watch,
@@ -126,4 +163,33 @@ __all__ = [
     "delete_position",
     "add_transaction",
     "list_transactions",
+    "update_position_prices",
+    "save_portfolio_snapshot",
+    "list_portfolio_snapshots",
+    "load_paper_state",
+    "save_paper_state",
+    "delete_paper_state",
+    "get_paper_owner",
+    "list_paper_accounts",
+    "add_alert_rule",
+    "list_alert_rules",
+    "get_alert_rule",
+    "update_alert_rule",
+    "delete_alert_rule",
+    "record_alert_event",
+    "list_alert_events",
+    "ack_alert_event",
+    "ack_all_alert_events",
+    "mark_alert_notified",
+    "last_event_at",
+    "alert_summary",
+    "save_screener_run",
+    "list_screener_runs",
+    "get_screener_run",
+    "get_latest_screener_run",
+    "delete_screener_run",
+    "save_social_snapshot",
+    "list_social_snapshots",
+    "get_latest_social_snapshot",
+    "social_baseline",
 ]

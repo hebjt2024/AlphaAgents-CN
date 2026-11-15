@@ -20,7 +20,7 @@ services:
       - ./eval_results:/app/eval_results
       - ./logs:/app/logs
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=3)"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -576,7 +576,8 @@
     .main-panel { padding: 14px; }
     .brand { min-width: 0; }
     .brand-sub { display: none; }
-    .nav button { padding: 7px 10px; }
+    .nav { overflow-x: auto; max-width: 100%; }
+    .nav button { padding: 7px 10px; white-space: nowrap; }
     .topbar { gap: 10px; padding: 0 12px; }
     .page { padding: 14px; }
     .stats, .provider-grid { grid-template-columns: 1fr; }
@@ -601,12 +602,18 @@
     </div>
     <nav class="nav">
       <button class="active" data-view="workbench" onclick="switchView('workbench')">工作台</button>
+      <button data-view="portfolio" onclick="switchView('portfolio')">组合</button>
+      <button data-view="screener" onclick="switchView('screener')">选股</button>
+      <button data-view="evaluation" onclick="switchView('evaluation')">评估</button>
+      <button data-view="alerts" onclick="switchView('alerts')">告警</button>
       <button data-view="reports" onclick="switchView('reports')">报告中心</button>
       <button data-view="settings" onclick="switchView('settings')">设置</button>
     </nav>
     <div class="topbar-spacer"></div>
     <button class="icon-btn" id="themeBtn" onclick="toggleTheme()">🌙 深色</button>
     <button class="icon-btn" id="configToggle" onclick="toggleConfigPanel()">⚙ 分析设置</button>
+    <span id="userChip" class="muted" style="display:none;"></span>
+    <button class="icon-btn" id="logoutBtn" style="display:none;" onclick="logoutUser()">退出</button>
     <div class="conn"><span class="dot" id="connDot" role="status" aria-hidden="true"></span><span id="connText" aria-live="polite">连接中…</span></div>
   </header>
 
@@ -761,9 +768,11 @@
                 <button class="btn btn-ghost btn-sm" onclick="runBacktestQuick()">回测 MA5/20</button>
                 <button class="btn btn-ghost btn-sm" onclick="loadCapitalFlow()">主力资金流</button>
               </div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadRealtime()">实时行情 / 分时</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadStrategies()">策略扫描（当前选择）</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadStrategyBacktest()">策略回测（当前选择）</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadMarketReview()">市场复盘</button>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadNorthbound()">北向资金</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadDailyBriefing()">每日盘后简报</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadHotStocks()">热门股 / 涨停池</button>
             </div>
@@ -777,6 +786,10 @@
                 <button class="btn btn-ghost btn-sm" onclick="loadEventCalendar()">事件日历</button>
                 <button class="btn btn-ghost btn-sm" onclick="loadPositionAdvice()">持仓建议</button>
               </div>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadEarnings()">业绩预告 / 快报</button>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadDisclosure()">公告 / 研报 / 股东</button>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadSocial()">社媒舆情</button>
+              <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadMacro()">宏观 / 轮动 / 两融</button>
               <button class="btn btn-ghost btn-sm" style="margin-top:8px;" onclick="loadSentimentHistory()">市场情绪趋势</button>
             </div>
           </details>
@@ -838,8 +851,30 @@
             <div class="hint" style="padding:0 16px 10px;">滚轮缩放 · 拖动平移 · 下方滑块可快速定位区间</div>
           </div>
 
-          <!-- 工具卡：资金流 / 回测 -->
+          <!-- 工具卡：实时 / 资金流 / 回测 -->
           <div class="tools-grid">
+            <div class="card tool-card" id="realtimeCard" style="grid-column: 1 / -1;">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">实时行情 / 分时</div>
+                  <div class="chart-sub" id="realtimeSub">盘中快照 · 5 分钟线</div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+                  <select class="input" id="realtimePeriod" style="max-width:90px;padding:5px 8px;" onchange="loadRealtime()">
+                    <option value="1">1 分钟</option>
+                    <option value="5" selected>5 分钟</option>
+                    <option value="15">15 分钟</option>
+                    <option value="30">30 分钟</option>
+                    <option value="60">60 分钟</option>
+                  </select>
+                  <button class="icon-btn" onclick="loadRealtime()">刷新</button>
+                  <button class="icon-btn" onclick="document.getElementById('realtimeCard').classList.remove('show')">关闭</button>
+                </div>
+              </div>
+              <div class="tool-stats" id="realtimeStats"></div>
+              <div class="chart-wrap" id="realtimeChart" style="height:260px;"></div>
+              <div class="hint" style="padding:0 16px 12px;" id="realtimeSession"></div>
+            </div>
             <div class="card tool-card" id="flowCard">
               <div class="chart-head">
                 <div><div class="chart-title">主力资金流向</div><div class="chart-sub" id="flowSub">净流入为正，净流出为负</div></div>
@@ -912,6 +947,78 @@
                 <div class="tool-stats" id="sectorHistoryStats" style="padding:8px 0 0;"></div>
                 <div class="chart-wrap" id="sectorHistoryChart" style="height:220px;"></div>
               </div>
+            </div>
+            <div class="card tool-card" id="northboundCard" style="grid-column: 1 / -1;">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">北向资金</div>
+                  <div class="chart-sub" id="northboundSub">沪深股通近 10 个交易日净流入</div>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button class="icon-btn" onclick="loadNorthbound()">刷新</button>
+                  <button class="icon-btn" onclick="document.getElementById('northboundCard').classList.remove('show')">关闭</button>
+                </div>
+              </div>
+              <div class="chart-wrap" id="northboundChart" style="height:240px;"></div>
+            </div>
+            <div class="card tool-card" id="earningsCard" style="grid-column: 1 / -1;">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">业绩预告 / 快报</div>
+                  <div class="chart-sub" id="earningsSub">A 股强制披露的业绩催化</div>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button class="icon-btn" onclick="loadEarnings()">刷新</button>
+                  <button class="icon-btn" onclick="document.getElementById('earningsCard').classList.remove('show')">关闭</button>
+                </div>
+              </div>
+              <div class="tool-stats" id="earningsStats"></div>
+              <div id="earningsBody" style="padding:0 16px 16px;"></div>
+            </div>
+            <div class="card tool-card" id="disclosureCard" style="grid-column: 1 / -1;">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">公告 / 研报 / 股东</div>
+                  <div class="chart-sub" id="disclosureSub">高影响公告 · 机构评级与盈利预测 · 股东户数</div>
+                </div>
+                <div style="display:flex;gap:8px;">
+                  <button class="icon-btn" onclick="loadDisclosure()">刷新</button>
+                  <button class="icon-btn" onclick="document.getElementById('disclosureCard').classList.remove('show')">关闭</button>
+                </div>
+              </div>
+              <div class="tool-stats" id="disclosureStats"></div>
+              <div id="disclosureBody" style="padding:0 16px 16px;"></div>
+            </div>
+            <div class="card tool-card" id="macroCard" style="grid-column: 1 / -1;">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">宏观 / 行业轮动 / 两融 / ETF</div>
+                  <div class="chart-sub" id="macroSub">PMI · CPI · PPI · M2 · LPR · 两融 · 行业轮动 · ETF 资金流</div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+                  <button class="icon-btn" onclick="loadMacro()">刷新</button>
+                  <button class="icon-btn" onclick="document.getElementById('macroCard').classList.remove('show')">关闭</button>
+                </div>
+              </div>
+              <div class="tool-stats" id="macroStats"></div>
+              <div id="macroBody" style="padding:0 16px 16px;"></div>
+              <div class="chart-wrap" id="marginChart" style="height:220px;"></div>
+            </div>
+            <div class="card tool-card" id="socialCard" style="grid-column: 1 / -1;">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">社媒舆情</div>
+                  <div class="chart-sub" id="socialSub">东财人气榜 · 概念热度 · 微博情绪 · 异常热度</div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end;">
+                  <button class="icon-btn" onclick="loadSocial()">刷新</button>
+                  <button class="icon-btn" onclick="snapshotSocial()">记录快照</button>
+                  <button class="icon-btn" onclick="document.getElementById('socialCard').classList.remove('show')">关闭</button>
+                </div>
+              </div>
+              <div class="tool-stats" id="socialStats"></div>
+              <div id="socialBody" style="padding:0 16px 8px;"></div>
+              <div class="chart-wrap" id="socialHistoryChart" style="height:220px;"></div>
             </div>
             <div class="card tool-card" id="valuationCard" style="grid-column: 1 / -1;">
               <div class="chart-head">
@@ -1087,6 +1194,340 @@
       </div>
     </section>
 
+    <!-- ================= 组合 / 模拟盘 ================= -->
+    <section class="view" id="view-portfolio">
+      <div class="page">
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h2>组合与模拟盘</h2>
+              <p>持仓盯市、组合绩效、交易流水与模拟委托</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-ghost btn-sm" onclick="refreshPortfolio()">刷新行情</button>
+              <button class="btn btn-ghost btn-sm" onclick="snapshotPortfolio()">记录快照</button>
+              <button class="btn btn-ghost btn-sm" onclick="loadPortfolioRisk()">风险分析</button>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="k">组合权益</div><div class="v" id="pfEquity">--</div><div class="s">现金 + 持仓市值</div></div>
+            <div class="stat"><div class="k">可用现金</div><div class="v" id="pfCash">--</div><div class="s">账户可用资金</div></div>
+            <div class="stat"><div class="k">累计收益</div><div class="v" id="pfReturn">--</div><div class="s">基于每日快照</div></div>
+            <div class="stat"><div class="k">最大回撤</div><div class="v down" id="pfDrawdown">--</div><div class="s">历史峰值回落</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="chart-head">
+              <div>
+                <div class="chart-title">持仓明细</div>
+                <div class="chart-sub">现价由“刷新行情”更新；数量与成本可在工作台持仓卡中维护</div>
+              </div>
+            </div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data">
+                <thead><tr><th>代码</th><th>名称</th><th style="text-align:right;">数量</th><th style="text-align:right;">成本</th><th style="text-align:right;">现价</th><th style="text-align:right;">市值</th><th style="text-align:right;">浮盈</th><th>止损 / 目标</th></tr></thead>
+                <tbody id="pfPositionsTable"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div style="display:grid;grid-template-columns:1.5fr 1fr;gap:16px;">
+            <div class="card card-pad">
+              <div class="chart-head">
+                <div>
+                  <div class="chart-title">组合绩效曲线</div>
+                  <div class="chart-sub" id="pfPerfSub">每日快照权益</div>
+                </div>
+              </div>
+              <div id="pfPerfChart" style="height:300px;margin-top:8px;"></div>
+            </div>
+            <div class="card card-pad">
+              <div class="section-title">风险体检</div>
+              <div id="pfRisk" class="muted">加载中…</div>
+            </div>
+          </div>
+
+          <div class="card card-pad" id="portfolioRiskCard">
+            <div class="chart-head" style="padding:0 0 10px;border-bottom:none;">
+              <div>
+                <div class="chart-title">风险与再平衡</div>
+                <div class="chart-sub">年化波动 · VaR/CVaR · Beta · 压力测试 · 具体调仓股数</div>
+              </div>
+              <div style="display:flex;gap:8px;align-items:center;">
+                <select class="input" id="rebalanceMethod" style="width:130px;padding:5px 8px;">
+                  <option value="equal">等权再平衡</option>
+                  <option value="risk_parity">风险平价</option>
+                  <option value="cap_breaches">只修复超限</option>
+                </select>
+                <button class="icon-btn" onclick="loadPortfolioRisk()">计算风险</button>
+              </div>
+            </div>
+            <div id="portfolioRiskBody" class="muted">点击“计算风险”生成风险指标、压力测试与再平衡建议。</div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="chart-head">
+              <div>
+                <div class="chart-title">交易流水</div>
+                <div class="chart-sub">通过“记录成交”或手工录入产生</div>
+              </div>
+            </div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data">
+                <thead><tr><th>日期</th><th>代码</th><th>方向</th><th style="text-align:right;">数量</th><th style="text-align:right;">价格</th><th style="text-align:right;">费用</th><th style="text-align:right;">已实现盈亏</th></tr></thead>
+                <tbody id="pfTransactionsTable"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="chart-head">
+              <div>
+                <div class="chart-title">模拟盘</div>
+                <div class="chart-sub">T+1、涨跌停、整手、费用与组合权重上限全部由撮合器强制；提交后需“推进撮合/盯市”才会成交</div>
+              </div>
+              <div style="display:flex;gap:8px;flex-wrap:wrap;">
+                <button class="icon-btn" onclick="markPaper()">按最新价盯市</button>
+                <button class="icon-btn" onclick="resetPaper()">重置模拟盘</button>
+              </div>
+            </div>
+            <div class="row-3" style="margin-top:10px;">
+              <input class="input" id="paperTicker" placeholder="代码，如 600519">
+              <select class="select" id="paperSide"><option value="buy">买入</option><option value="sell">卖出</option></select>
+              <input class="input" id="paperQty" type="number" min="100" step="100" value="100" placeholder="数量">
+              <select class="select" id="paperType"><option value="market">市价</option><option value="limit">限价</option></select>
+              <input class="input" id="paperPrice" type="number" step="0.01" placeholder="限价（可选）">
+              <button class="btn btn-ghost btn-sm" onclick="submitPaperOrder()">提交模拟委托</button>
+            </div>
+            <div id="paperSummary" class="hint" style="margin-top:10px;">加载中…</div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data">
+                <thead><tr><th>代码</th><th>数量</th><th>可卖</th><th style="text-align:right;">成本</th><th style="text-align:right;">现价</th><th style="text-align:right;">市值</th><th style="text-align:right;">浮盈</th></tr></thead>
+                <tbody id="paperPositionsTable"><tr><td colspan="7" class="muted">暂无模拟持仓</td></tr></tbody>
+              </table>
+            </div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data">
+                <thead><tr><th>委托号</th><th>代码</th><th>方向</th><th style="text-align:right;">数量</th><th>类型</th><th>状态</th><th>说明</th><th style="width:70px;">操作</th></tr></thead>
+                <tbody id="paperOrdersTable"><tr><td colspan="8" class="muted">暂无委托</td></tr></tbody>
+              </table>
+            </div>
+            <div class="hint" style="margin-top:8px;">模拟盘成交需要历史行情推进：可使用下方“推进一日”按最近交易日撮合。</div>
+            <div class="row-3" style="margin-top:6px;">
+              <input class="input" id="paperStart" type="date">
+              <input class="input" id="paperEnd" type="date">
+              <button class="btn btn-ghost btn-sm" onclick="advancePaper()">推进撮合</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 全市场选股 ================= -->
+    <section class="view" id="view-screener">
+      <div class="page">
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h2>全市场选股</h2>
+              <p>价值 / 质量 / 成长 / 动量 / 流动性 / 资金流多因子打分，生成每日候选池</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+              <select class="input" id="screenerStyle" style="width:110px;">
+                <option value="balanced">均衡</option>
+                <option value="value">价值</option>
+                <option value="growth">成长</option>
+                <option value="momentum">动量</option>
+                <option value="quality">质量</option>
+              </select>
+              <input class="input" id="screenerTop" type="number" min="5" max="200" value="30" style="width:90px;" title="候选池数量">
+              <button class="btn btn-ghost btn-sm" onclick="runScreener()">运行选股</button>
+              <button class="btn btn-ghost btn-sm" onclick="loadLatestScreener()">最近一次</button>
+            </div>
+          </div>
+
+          <div class="stats">
+            <div class="stat"><div class="k">全市场</div><div class="v" id="screenerUniverse">--</div><div class="s">快照标的数</div></div>
+            <div class="stat"><div class="k">过滤后</div><div class="v" id="screenerFiltered">--</div><div class="s">进入打分</div></div>
+            <div class="stat"><div class="k">因子覆盖</div><div class="v" id="screenerCoverage">--</div><div class="s">业绩/资金流是否可用</div></div>
+            <div class="stat"><div class="k">运行日期</div><div class="v" id="screenerDate">--</div><div class="s">候选池归档</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="row-3">
+              <div class="form-group">
+                <label class="label">最小成交额（亿）</label>
+                <input class="input" id="screenerMinAmount" type="number" step="0.1" value="1">
+              </div>
+              <div class="form-group">
+                <label class="label">最小总市值（亿）</label>
+                <input class="input" id="screenerMinCap" type="number" step="1" value="30">
+              </div>
+              <div class="form-group">
+                <label class="label">过滤条件</label>
+                <div style="display:flex;gap:12px;flex-wrap:wrap;padding-top:8px;">
+                  <label class="hint"><input type="checkbox" id="screenerExcludeSt" checked> 排除 ST</label>
+                  <label class="hint"><input type="checkbox" id="screenerExcludeLimit" checked> 排除涨跌停</label>
+                  <label class="hint"><input type="checkbox" id="screenerFinancials" checked> 合并业绩</label>
+                  <label class="hint"><input type="checkbox" id="screenerFundFlow"> 合并资金流</label>
+                  <label class="hint"><input type="checkbox" id="screenerIndustryNeutral"> 行业中性</label>
+                </div>
+              </div>
+            </div>
+            <div class="hint" style="margin-top:8px;">首次运行可能需要十几秒（全市场快照 + 最新业绩报表）。资金流排行需要翻多页，默认关闭以降低限流风险。</div>
+          </div>
+
+          <div class="note" id="screenerWarnings" style="display:none;"></div>
+
+          <div class="card card-pad">
+            <div class="chart-head" style="padding:0 0 10px;border-bottom:none;">
+              <div>
+                <div class="chart-title">每日候选池</div>
+                <div class="chart-sub" id="screenerSub">按综合评分排序，不构成投资建议</div>
+              </div>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr>
+                  <th>#</th><th>代码 / 名称</th><th>行业</th>
+                  <th style="text-align:right;">现价</th><th style="text-align:right;">涨跌</th>
+                  <th style="text-align:right;">评分</th>
+                  <th style="text-align:right;">价值</th><th style="text-align:right;">质量</th>
+                  <th style="text-align:right;">成长</th><th style="text-align:right;">动量</th>
+                  <th>理由 / 风险</th><th style="width:140px;">操作</th>
+                </tr></thead>
+                <tbody id="screenerTable"><tr><td colspan="12" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 推荐评估 ================= -->
+    <section class="view" id="view-evaluation">
+      <div class="page">
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h2>推荐评估</h2>
+              <p>把历史报告与 5/10/20 个交易日后的真实行情对齐，回答“准不准”</p>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+              <input class="input" id="evalTicker" placeholder="代码（可选）" style="width:150px;">
+              <label class="hint" style="display:flex;align-items:center;gap:6px;">
+                <input type="checkbox" id="evalWriteMemory"> 写回记忆
+              </label>
+              <button class="btn btn-ghost btn-sm" onclick="loadEvaluation()">刷新评估</button>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="k">样本数</div><div class="v" id="evalSamples">--</div><div class="s">历史推荐条数</div></div>
+            <div class="stat"><div class="k">命中率</div><div class="v" id="evalHitRate">--</div><div class="s">多数可用周期认可</div></div>
+            <div class="stat"><div class="k">平均前瞻收益</div><div class="v" id="evalAvgReturn">--</div><div class="s">所有可用周期均值</div></div>
+            <div class="stat"><div class="k">有效样本量</div><div class="v" id="evalEffective">--</div><div class="s">互不重叠的独立区间</div></div>
+          </div>
+          <div class="note" id="evalWarning" style="display:none;"></div>
+          <div class="card card-pad">
+            <div class="section-title">分周期表现</div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>周期</th><th style="text-align:right;">样本</th><th style="text-align:right;">命中率</th><th style="text-align:right;">平均收益</th><th style="text-align:right;">有效样本</th><th>结论</th></tr></thead>
+                <tbody id="evalHorizonTable"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card card-pad">
+            <div class="section-title">决策分布</div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>决策</th><th style="text-align:right;">样本</th><th style="text-align:right;">命中率</th><th style="text-align:right;">平均收益</th></tr></thead>
+                <tbody id="evalDecisionTable"><tr><td colspan="4" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card card-pad">
+            <div class="section-title">评估明细</div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>代码</th><th>决策日</th><th>决策</th><th>5日</th><th>10日</th><th>20日</th><th>结果</th><th style="width:80px;">报告</th></tr></thead>
+                <tbody id="evalRowsTable"><tr><td colspan="8" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ================= 告警中心 ================= -->
+    <section class="view" id="view-alerts">
+      <div class="page">
+        <div class="page-inner">
+          <div class="page-head">
+            <div>
+              <h2>盘中告警</h2>
+              <p>价格 / 涨跌幅 / 量比 / 换手率 / 成交额 / 持仓止损止盈</p>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="btn btn-ghost btn-sm" onclick="checkAlertsNow()">立即检查</button>
+              <button class="btn btn-ghost btn-sm" onclick="ackAllAlerts()">全部确认</button>
+              <button class="btn btn-ghost btn-sm" onclick="loadAlerts()">刷新</button>
+            </div>
+          </div>
+          <div class="stats">
+            <div class="stat"><div class="k">启用规则</div><div class="v" id="alertRulesCount">--</div><div class="s">价格 / 量能条件</div></div>
+            <div class="stat"><div class="k">今日触发</div><div class="v" id="alertTodayCount">--</div><div class="s">当天事件数</div></div>
+            <div class="stat"><div class="k">未确认</div><div class="v down" id="alertUnackedCount">--</div><div class="s">待处理告警</div></div>
+            <div class="stat"><div class="k">交易时段</div><div class="v" id="alertSession">--</div><div class="s">盘中检查依赖此状态</div></div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="section-title">新增告警规则</div>
+            <div class="row-3">
+              <input class="input" id="alertTicker" placeholder="代码，如 600519">
+              <select class="select" id="alertType">
+                <option value="price_above">价格上穿</option>
+                <option value="price_below">价格下穿</option>
+                <option value="change_pct_above">涨幅超过</option>
+                <option value="change_pct_below">跌幅超过（填负数）</option>
+                <option value="volume_ratio_above">量比超过</option>
+                <option value="turnover_above">换手率超过</option>
+                <option value="amount_above">成交额超过</option>
+              </select>
+              <input class="input" id="alertThreshold" type="number" step="0.01" placeholder="阈值">
+              <input class="input" id="alertCooldown" type="number" min="1" step="1" value="30" placeholder="冷却分钟">
+              <button class="btn btn-ghost btn-sm" onclick="addAlertRule()">添加规则</button>
+            </div>
+            <div class="hint" style="margin-top:8px;">单位：价格=元；涨跌幅/换手率=%；量比=倍；成交额=亿元。同一标的同一类型同一阈值重复添加会覆盖冷却与开关。</div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data">
+                <thead><tr><th>代码</th><th>规则</th><th style="text-align:right;">阈值</th><th style="text-align:right;">冷却</th><th>状态</th><th>最近触发</th><th style="width:130px;">操作</th></tr></thead>
+                <tbody id="alertRulesTable"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="card card-pad">
+            <div class="chart-head" style="padding:0 0 10px;border-bottom:none;">
+              <div>
+                <div class="chart-title">告警事件</div>
+                <div class="chart-sub">默认显示最近 100 条；可逐条确认</div>
+              </div>
+              <label class="hint" style="display:flex;align-items:center;gap:6px;">
+                <input type="checkbox" id="alertUnackedOnly" onchange="loadAlerts()"> 只看未确认
+              </label>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>时间</th><th>代码</th><th>类型</th><th>等级</th><th>说明</th><th>价格</th><th style="width:80px;">操作</th></tr></thead>
+                <tbody id="alertEventsTable"><tr><td colspan="7" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- ================= 报告中心 ================= -->
     <section class="view" id="view-reports">
       <div class="page">
@@ -1165,6 +1606,38 @@
             <div id="modelDefaults" class="muted">加载中…</div>
           </div>
           <div class="card card-pad">
+            <div class="chart-head" style="padding:0 0 10px;border-bottom:none;">
+              <div>
+                <div class="chart-title">运行指标</div>
+                <div class="chart-sub">token 用量、成本估算与最近运行</div>
+              </div>
+              <button class="icon-btn" onclick="loadRuns()">刷新</button>
+            </div>
+            <div id="runsSummary" class="muted">加载中…</div>
+            <div class="table-wrap" style="margin-top:10px;">
+              <table class="data">
+                <thead><tr><th>时间</th><th>标的</th><th>模型</th><th style="text-align:right;">token</th><th style="text-align:right;">成本</th><th style="text-align:right;">耗时</th></tr></thead>
+                <tbody id="runsTable"><tr><td colspan="6" class="muted">暂无运行记录</td></tr></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card card-pad">
+            <div class="chart-head" style="padding:0 0 10px;border-bottom:none;">
+              <div>
+                <div class="chart-title">本地数据仓库</div>
+                <div class="chart-sub">日线行情只下载一次；回测/评估/K 线优先读本地，缺哪段补哪段</div>
+              </div>
+              <button class="icon-btn" onclick="loadDataStatus()">刷新</button>
+            </div>
+            <div id="dataStatus" class="muted">加载中…</div>
+            <div class="row-3" style="margin-top:10px;">
+              <input class="input" id="dataSyncTicker" placeholder="代码，如 600519">
+              <button class="btn btn-ghost btn-sm" onclick="syncData()">同步当前标的</button>
+              <button class="btn btn-ghost btn-sm" onclick="checkDataQuality()">检查数据质量</button>
+            </div>
+            <div id="dataQuality" class="hint" style="margin-top:8px;"></div>
+          </div>
+          <div class="card card-pad">
             <div class="section-title">定时任务</div>
             <div id="schedulerInfo" class="muted">加载中…</div>
             <div class="row-3" style="margin-top:10px;">
@@ -1175,6 +1648,38 @@
             <div class="hint">需要 SCHEDULE_ENABLED=1；每个交易日到点执行。</div>
             <div id="scheduledList" style="margin-top:10px;overflow-x:auto;"></div>
           </div>
+          <div class="card card-pad" id="adminCard" style="display:none;">
+            <div class="chart-head" style="padding:0 0 10px;border-bottom:none;">
+              <div>
+                <div class="chart-title">用户与审计（管理员）</div>
+                <div class="chart-sub">创建用户、调整角色/状态、查看写操作审计</div>
+              </div>
+              <button class="icon-btn" onclick="loadAdminPanel()">刷新</button>
+            </div>
+            <div class="row-3" style="margin-bottom:10px;">
+              <input class="input" id="newUsername" placeholder="用户名">
+              <input class="input" id="newUserPassword" type="password" placeholder="密码（≥8 位）">
+              <select class="select" id="newUserRole">
+                <option value="analyst">analyst</option>
+                <option value="viewer">viewer</option>
+                <option value="admin">admin</option>
+              </select>
+              <button class="btn btn-ghost btn-sm" onclick="createAdminUser()">创建用户</button>
+            </div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>用户名</th><th>角色</th><th>状态</th><th>风险确认</th><th>最近登录</th><th style="width:130px;">操作</th></tr></thead>
+                <tbody id="adminUsersTable"><tr><td colspan="6" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+            <div class="chart-title" style="font-size:13px;margin:14px 0 6px;">最近审计</div>
+            <div class="table-wrap">
+              <table class="data">
+                <thead><tr><th>时间</th><th>用户</th><th>角色</th><th>动作</th><th style="text-align:right;">状态</th></tr></thead>
+                <tbody id="adminAuditTable"><tr><td colspan="5" class="muted">加载中…</td></tr></tbody>
+              </table>
+            </div>
+          </div>
           <div class="card card-pad">
             <div class="section-title">常用环境变量</div>
             <div class="md" id="envHelp"></div>
@@ -1182,6 +1687,35 @@
         </div>
       </div>
     </section>
+  </div>
+</div>
+
+<div class="modal" id="authModal">
+  <div class="modal-box" role="dialog" aria-modal="true" aria-labelledby="authTitle">
+    <div class="modal-head"><strong id="authTitle">登录</strong></div>
+    <div style="padding:18px;">
+      <div id="authLoginPane">
+        <div class="form-group">
+          <label class="label">用户名</label>
+          <input class="input" id="authUsername" autocomplete="username" placeholder="用户名">
+        </div>
+        <div class="form-group" style="margin-top:10px;">
+          <label class="label">密码</label>
+          <input class="input" id="authPassword" type="password" autocomplete="current-password" placeholder="密码">
+        </div>
+        <div id="authError" class="hint down" style="display:none;margin-top:8px;"></div>
+        <button class="btn btn-primary" style="margin-top:14px;width:100%;" onclick="loginUser()">登录</button>
+        <div class="hint" style="margin-top:10px;">多用户模式由 <code>WEBUI_MULTI_USER=1</code> 开启；首次启动的管理员密码见 <code>data/initial_admin_password.txt</code>。</div>
+      </div>
+      <div id="authRiskPane" style="display:none;">
+        <div class="md" id="authRiskText">
+          <p><b>风险揭示与适当性确认</b></p>
+          <p>本系统输出基于公开数据与大模型推理，仅供研究参考，<b>不构成任何投资建议</b>。证券市场有风险，历史回测与策略信号不代表未来收益。</p>
+          <p>继续使用即表示你已理解：数据可能延迟或缺失，模型可能产生错误，任何交易决策及后果由你自行承担。</p>
+        </div>
+        <button class="btn btn-primary" style="margin-top:14px;width:100%;" onclick="ackRisk()">我已阅读并同意</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1236,6 +1770,17 @@ const state = {
   activeTab: 'progress',
   unreadLogs: 0,
   lastDecision: '',
+  portfolioChart: null,
+  paperReport: null,
+  evaluation: null,
+  northboundChart: null,
+  realtimeChart: null,
+  alertRules: [],
+  screenerRun: null,
+  socialChart: null,
+  macroChart: null,
+  user: null,
+  multiUser: false,
 };
 
 const ANALYST_LABELS = {
@@ -1312,6 +1857,86 @@ function decisionLabel(decision) {
   })[d] || '⚖️ 持有 HOLD';
 }
 
+/* ================= 登录 / 风险确认 ================= */
+async function initAuth() {
+  try {
+    const config = await apiFetch('/api/auth/config');
+    state.multiUser = !!config.multi_user;
+    if (!state.multiUser) return;
+    const token = window.Core.getApiKey();
+    if (!token) { showLogin(); return; }
+    try {
+      const me = await apiFetch('/api/auth/me');
+      if (me.success && me.user) {
+        state.user = me.user;
+        renderUserChip();
+        if (!me.user.risk_ack_at) showRiskAck();
+        else $('authModal').classList.remove('show');
+      } else {
+        showLogin();
+      }
+    } catch (e) {
+      window.Core.setApiKey('');
+      showLogin();
+    }
+  } catch (e) {
+    /* 单用户模式或接口不可用时不影响使用 */
+  }
+}
+function showLogin() {
+  $('authLoginPane').style.display = 'block';
+  $('authRiskPane').style.display = 'none';
+  $('authError').style.display = 'none';
+  $('authModal').classList.add('show');
+}
+function showRiskAck() {
+  $('authLoginPane').style.display = 'none';
+  $('authRiskPane').style.display = 'block';
+  $('authModal').classList.add('show');
+}
+function renderUserChip() {
+  if (!state.user) return;
+  const chip = $('userChip');
+  chip.style.display = 'inline';
+  chip.textContent = `${state.user.display_name || state.user.username} · ${state.user.role}`;
+  $('logoutBtn').style.display = 'inline-block';
+}
+async function loginUser() {
+  const username = ($('authUsername').value || '').trim();
+  const password = $('authPassword').value || '';
+  if (!username || !password) { showAuthError('请输入用户名和密码'); return; }
+  try {
+    const data = await apiFetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password }),
+    });
+    if (!data.success || !data.token) throw new Error(data.message || '登录失败');
+    window.Core.setApiKey(data.token);
+    location.reload();
+  } catch (e) {
+    showAuthError('登录失败: ' + e);
+  }
+}
+function showAuthError(message) {
+  $('authError').textContent = message;
+  $('authError').style.display = 'block';
+}
+async function ackRisk() {
+  try {
+    const data = await apiFetch('/api/auth/risk-ack', { method: 'POST' });
+    if (!data.success) throw new Error(data.message || '确认失败');
+    location.reload();
+  } catch (e) {
+    showAuthError('确认失败: ' + e);
+  }
+}
+async function logoutUser() {
+  try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+  window.Core.setApiKey('');
+  location.reload();
+}
+
 /* ================= 视图切换 ================= */
 function switchView(view) {
   document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
@@ -1319,8 +1944,15 @@ function switchView(view) {
   document.querySelectorAll('.nav button').forEach(b => b.classList.toggle('active', b.dataset.view === view));
   if (view === 'reports') loadReports();
   if (view === 'settings') loadSettings();
+  if (view === 'portfolio') loadPortfolio();
+  if (view === 'screener') loadLatestScreener();
+  if (view === 'evaluation') loadEvaluation();
+  if (view === 'alerts') loadAlerts();
   if (view === 'workbench' && state.klineChartInstance) {
     setTimeout(() => state.klineChartInstance.resize(), 60);
+  }
+  if (view === 'portfolio' && state.portfolioChart) {
+    setTimeout(() => state.portfolioChart.resize(), 60);
   }
 }
 
@@ -2452,6 +3084,255 @@ function flowSvg(items) {
 }
 
 /* ================= 市场复盘 ================= */
+async function loadNorthbound() {
+  $('northboundCard').classList.add('show');
+  $('northboundSub').textContent = '加载中…';
+  try {
+    const data = await apiFetch('/api/market/northbound?days=10');
+    if (!data.success) throw new Error(data.message || '北向资金加载失败');
+    const items = data.items || [];
+    $('northboundSub').textContent = items.length
+      ? `近 ${items.length} 个交易日 · 正值净流入 / 负值净流出（亿元）`
+      : '暂无数据';
+    if (!state.northboundChart) state.northboundChart = echarts.init($('northboundChart'));
+    state.northboundChart.setOption({
+      backgroundColor: 'transparent',
+      grid: { left: 64, right: 20, top: 20, bottom: 30 },
+      tooltip: { trigger: 'axis', valueFormatter: v => Number(v).toFixed(2) + ' 亿' },
+      xAxis: { type: 'category', data: items.map(x => x.date), axisLabel: { color: '#8a9ab4', fontSize: 10 } },
+      yAxis: { type: 'value', axisLabel: { color: '#8a9ab4', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(148,163,184,.12)' } } },
+      series: [{
+        type: 'bar',
+        data: items.map(x => ({
+          value: x.net,
+          itemStyle: { color: Number(x.net) >= 0 ? '#ef4444' : '#22c55e' },
+        })),
+        barMaxWidth: 24,
+      }],
+    });
+    setTimeout(() => state.northboundChart.resize(), 30);
+  } catch (e) {
+    $('northboundSub').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+
+async function loadEarnings() {
+  const ticker = requireTicker();
+  if (!ticker) return;
+  $('earningsCard').classList.add('show');
+  $('earningsStats').innerHTML = '<span class="muted">加载中…</span>';
+  $('earningsBody').innerHTML = '';
+  try {
+    const data = await apiFetch('/api/earnings/forecast?ticker=' + encodeURIComponent(ticker));
+    const forecast = data.forecast || {};
+    $('earningsStats').innerHTML = `<span>${escapeHtml(forecast.summary || data.message || '')}</span>`;
+    const items = forecast.items || [];
+    if (!items.length) {
+      $('earningsBody').innerHTML = '<div class="hint">暂无业绩预告/快报记录。</div>';
+      return;
+    }
+    $('earningsBody').innerHTML = `<div class="table-wrap"><table class="data">
+      <thead><tr><th>报告期</th><th>类型</th><th>指标</th><th style="text-align:right;">变动幅度</th><th>预告值</th><th>公告日</th><th>摘要</th></tr></thead>
+      <tbody>${items.map(item => `<tr>
+        <td>${escapeHtml(item.report_period || '')}</td>
+        <td>${escapeHtml(item.kind || '')}</td>
+        <td>${escapeHtml(item.indicator || '')}</td>
+        <td style="text-align:right;" class="${Number(item.change_pct || 0) >= 0 ? 'up' : 'down'}">${item.change_pct === null || item.change_pct === undefined ? '—' : Number(item.change_pct).toFixed(2) + '%'}</td>
+        <td>${escapeHtml(item.forecast_value || '')}</td>
+        <td>${escapeHtml(item.announce_date || '')}</td>
+        <td class="muted">${escapeHtml(item.summary || '')}</td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    $('earningsStats').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+
+async function loadDisclosure() {
+  const ticker = requireTicker();
+  if (!ticker) return;
+  $('disclosureCard').classList.add('show');
+  $('disclosureStats').innerHTML = '<span class="muted">加载中…</span>';
+  $('disclosureBody').innerHTML = '';
+  try {
+    const data = await apiFetch('/api/disclosure/summary?ticker=' + encodeURIComponent(ticker) + '&days=30');
+    const ann = data.announcements || {};
+    const research = data.research || {};
+    const holders = data.shareholders || {};
+    const counts = ann.counts || {};
+    $('disclosureStats').innerHTML = `
+      <span>公告 <b>${counts.total || 0}</b> 条</span>
+      <span class="down">利空 <b>${counts.negative || 0}</b></span>
+      <span class="up">利好 <b>${counts.positive || 0}</b></span>
+      <span>研报 <b>${(research.reports || []).length}</b> 篇</span>
+      <span>机构判断 <b>${escapeHtml(research.consensus || '--')}</b></span>
+      <span>股东 <b>${escapeHtml(holders.trend || '--')}</b></span>`;
+    $('disclosureSub').textContent = `${escapeHtml(data.as_of || '')} · ${ann.summary || ''}`;
+
+    const high = ann.high_impact || [];
+    const announcements = (ann.items || []).slice(0, 6);
+    const ratings = research.ratings || {};
+    const forecasts = research.forecasts || {};
+    const reports = (research.reports || []).slice(0, 6);
+    const top10 = (holders.top10 || []).slice(0, 6);
+
+    $('disclosureBody').innerHTML = `
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div class="chart-title" style="font-size:13px;margin-bottom:6px;">高影响公告</div>
+          ${high.length ? `<ul style="list-style:none;padding:0;">${high.map(item => `<li style="margin:4px 0;"><span class="pill ${item.impact === 'positive' ? 'buy' : item.impact === 'negative' ? 'sell' : 'hold'}">${escapeHtml(item.impact_label)}</span> ${escapeHtml(item.date)} ${escapeHtml(item.title)}</li>`).join('')}</ul>` : '<div class="hint">近期无高影响公告</div>'}
+          <div class="chart-title" style="font-size:13px;margin:10px 0 6px;">最近公告</div>
+          ${announcements.length ? `<ul style="list-style:none;padding:0;">${announcements.map(item => `<li style="margin:3px 0;">${escapeHtml(item.date)} ${item.url ? `<a href="${escapeHtml(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)} <span class="muted">${escapeHtml(item.type || '')}</span></li>`).join('')}</ul>` : '<div class="hint">暂无公告</div>'}
+        </div>
+        <div>
+          <div class="chart-title" style="font-size:13px;margin-bottom:6px;">研报一致预期</div>
+          <div class="hint">${escapeHtml(research.summary || '暂无研报')}</div>
+          ${Object.keys(ratings).length ? `<div style="margin:6px 0;">${Object.entries(ratings).map(([k, v]) => `<span class="hero-chip">${escapeHtml(k)} ${v}</span>`).join(' ')}</div>` : ''}
+          ${Object.keys(forecasts).length ? `<div class="table-wrap" style="margin:6px 0;"><table class="data"><thead><tr><th>年度</th><th style="text-align:right;">EPS</th><th style="text-align:right;">PE</th><th style="text-align:right;">样本</th></tr></thead><tbody>${Object.entries(forecasts).map(([year, item]) => `<tr><td>${escapeHtml(year)}</td><td style="text-align:right;">${item.eps ?? '--'}</td><td style="text-align:right;">${item.pe ?? '--'}</td><td style="text-align:right;">${item.count || 0}</td></tr>`).join('')}</tbody></table></div>` : ''}
+          ${reports.length ? `<div class="hint" style="margin-top:6px;">最近研报</div><ul style="list-style:none;padding:0;">${reports.map(item => `<li style="margin:3px 0;">${escapeHtml(item.date)} ${escapeHtml(item.institution)} [${escapeHtml(item.rating)}] ${item.pdf ? `<a href="${escapeHtml(item.pdf)}" target="_blank" rel="noopener noreferrer">${escapeHtml(item.title)}</a>` : escapeHtml(item.title)}</li>`).join('')}</ul>` : ''}
+          <div class="chart-title" style="font-size:13px;margin:10px 0 6px;">股东变化</div>
+          <div class="hint">${escapeHtml(holders.summary || '暂无股东数据')}</div>
+          ${top10.length ? `<ul style="list-style:none;padding:0;">${top10.map(item => `<li style="margin:3px 0;">${escapeHtml(item.rank)}. ${escapeHtml(item.name)} ${item.ratio ?? '--'}%</li>`).join('')}</ul>` : ''}
+        </div>
+      </div>
+      ${(data.warnings || []).length ? `<div class="hint down">${data.warnings.map(escapeHtml).join('；')}</div>` : ''}`;
+  } catch (e) {
+    $('disclosureStats').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+
+async function loadMacro() {
+  $('macroCard').classList.add('show');
+  $('macroStats').innerHTML = '<span class="muted">加载中…</span>';
+  $('macroBody').innerHTML = '';
+  try {
+    const data = await apiFetch('/api/macro/dashboard');
+    const macro = data.macro || {};
+    const margin = data.margin || {};
+    const rotation = data.rotation || {};
+    const etf = data.etf || {};
+    const items = macro.items || [];
+    const pick = key => items.find(item => item.key === key) || {};
+    $('macroStats').innerHTML = `
+      <span>PMI <b>${pick('制造业 PMI').value ?? '--'}</b></span>
+      <span>CPI <b>${pick('CPI 同比').value ?? '--'}%</b></span>
+      <span>M2 <b>${pick('M2 同比').value ?? '--'}%</b></span>
+      <span>两融 <b>${margin.balance_wanyi ?? '--'} 万亿</b></span>
+      <span>5日变化 <b class="${Number(margin.change_5d || 0) >= 0 ? 'up' : 'down'}">${margin.change_5d === null || margin.change_5d === undefined ? '--' : Number(margin.change_5d).toFixed(2) + '%'}</b></span>
+      <span>中国 10Y <b>${pick('中国 10Y 国债').value ?? '--'}%</b></span>`;
+    $('macroSub').textContent = data.summary || '';
+    $('macroBody').innerHTML = `
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;">
+        ${items.map(item => `<span class="hero-chip">${escapeHtml(item.label || '')} ${escapeHtml(String(item.value ?? '--'))}${escapeHtml(item.unit || '')}</span>`).join('')}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div class="chart-title" style="font-size:13px;margin-bottom:6px;">行业轮动（5日）</div>
+          <div class="table-wrap"><table class="data"><thead><tr><th>行业</th><th style="text-align:right;">5日</th><th style="text-align:right;">10日</th><th style="text-align:right;">主力净流入(亿)</th><th style="text-align:right;">轮动分</th></tr></thead><tbody>
+            ${(rotation.items || []).slice(0, 10).map(item => `<tr><td>${escapeHtml(item.name || '')}</td><td style="text-align:right;" class="${Number(item.change_5d || 0) >= 0 ? 'up' : 'down'}">${Number(item.change_5d || 0).toFixed(2)}%</td><td style="text-align:right;">${Number(item.change_10d || 0).toFixed(2)}%</td><td style="text-align:right;">${Number(item.main_net_5d_yi || 0).toFixed(2)}</td><td style="text-align:right;">${Number(item.rotation_score || 0).toFixed(1)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">暂无数据</td></tr>'}
+          </tbody></table></div>
+        </div>
+        <div>
+          <div class="chart-title" style="font-size:13px;margin-bottom:6px;">ETF 主力净流入</div>
+          <div class="table-wrap"><table class="data"><thead><tr><th>代码</th><th>名称</th><th style="text-align:right;">涨跌</th><th style="text-align:right;">净流入(亿)</th></tr></thead><tbody>
+            ${(etf.items || []).slice(0, 10).map(item => `<tr><td>${escapeHtml(item.code || '')}</td><td>${escapeHtml(item.name || '')}</td><td style="text-align:right;" class="${Number(item.change_pct || 0) >= 0 ? 'up' : 'down'}">${Number(item.change_pct || 0).toFixed(2)}%</td><td style="text-align:right;">${Number(item.main_net_yi || 0).toFixed(2)}</td></tr>`).join('') || '<tr><td colspan="4" class="muted">暂无数据</td></tr>'}
+          </tbody></table></div>
+        </div>
+      </div>
+      ${(data.warnings || []).length ? `<div class="hint down" style="margin-top:8px;">${data.warnings.map(escapeHtml).join('；')}</div>` : ''}`;
+    renderMarginChart((margin.series || []));
+  } catch (e) {
+    $('macroStats').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+function renderMarginChart(series) {
+  if (!state.macroChart) state.macroChart = echarts.init($('marginChart'));
+  if (!series.length) {
+    state.macroChart.clear();
+    return;
+  }
+  state.macroChart.setOption({
+    backgroundColor: 'transparent',
+    grid: { left: 62, right: 18, top: 18, bottom: 28 },
+    tooltip: { trigger: 'axis', valueFormatter: v => Number(v).toFixed(0) + ' 亿' },
+    xAxis: { type: 'category', data: series.map(x => x.date), axisLabel: { color: '#8a9ab4', fontSize: 10 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#8a9ab4', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(148,163,184,.12)' } } },
+    series: [{ name: '两融余额', type: 'line', smooth: true, symbol: 'none', data: series.map(x => x.balance_yi), lineStyle: { width: 2, color: '#8b5cf6' }, areaStyle: { color: 'rgba(139,92,246,.12)' } }],
+  }, true);
+  setTimeout(() => state.macroChart.resize(), 30);
+}
+
+async function loadSocial() {
+  const ticker = requireTicker();
+  if (!ticker) return;
+  $('socialCard').classList.add('show');
+  $('socialStats').innerHTML = '<span class="muted">加载中…</span>';
+  $('socialBody').innerHTML = '';
+  try {
+    const [sentiment, history] = await Promise.all([
+      apiFetch('/api/social/sentiment?ticker=' + encodeURIComponent(ticker)),
+      apiFetch('/api/social/history?ticker=' + encodeURIComponent(ticker) + '&days=60'),
+    ]);
+    if (!sentiment.success) {
+      $('socialStats').innerHTML = `<span class="muted">${escapeHtml(sentiment.message || '社媒数据不可用')}</span>`;
+      return;
+    }
+    $('socialStats').innerHTML = `
+      <span>综合热度 <b class="${Number(sentiment.heat_score || 0) >= 65 ? 'up' : ''}">${Number(sentiment.heat_score || 0).toFixed(0)}</b>（${escapeHtml(sentiment.attention || '--')}）</span>
+      <span>情绪 <b class="${Number(sentiment.sentiment_score || 0) >= 58 ? 'up' : Number(sentiment.sentiment_score || 0) < 42 ? 'down' : ''}">${Number(sentiment.sentiment_score || 0).toFixed(0)}</b>（${escapeHtml(sentiment.sentiment || '--')}）</span>
+      <span>人气榜 <b>${sentiment.guba_rank ? '第 ' + sentiment.guba_rank : '未上榜'}</b></span>
+      <span>微博 <b>${sentiment.weibo_rate === null || sentiment.weibo_rate === undefined ? '--' : Number(sentiment.weibo_rate).toFixed(2)}</b></span>
+      <span>趋势 <b>${escapeHtml(sentiment.abnormal || '--')}</b></span>`;
+    $('socialSub').textContent = `${sentiment.name || ticker} · ${sentiment.as_of || ''}`;
+    const keywords = sentiment.keywords || [];
+    const baseline = sentiment.baseline || {};
+    $('socialBody').innerHTML = `
+      <div class="hint" style="margin-bottom:8px;">${escapeHtml(sentiment.summary || '')}</div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;">${keywords.length ? keywords.map(item => `<span class="hero-chip">${escapeHtml(item.name || '')} ${Number(item.heat || 0).toFixed(0)}</span>`).join('') : '<span class="muted">暂无概念热度</span>'}</div>
+      <div class="hint" style="margin-top:8px;">历史基线：${baseline.count ? `${baseline.count} 次快照 · 热度均值 ${baseline.heat_avg}` : '暂无快照，点击“记录快照”开始积累'}</div>`;
+    renderSocialHistory(history.items || []);
+  } catch (e) {
+    $('socialStats').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+function renderSocialHistory(items) {
+  if (!state.socialChart) state.socialChart = echarts.init($('socialHistoryChart'));
+  if (!items.length) {
+    state.socialChart.clear();
+    return;
+  }
+  state.socialChart.setOption({
+    backgroundColor: 'transparent',
+    grid: { left: 48, right: 48, top: 18, bottom: 28 },
+    tooltip: { trigger: 'axis' },
+    legend: { data: ['热度', '情绪'], textStyle: { color: '#8a9ab4', fontSize: 10 } },
+    xAxis: { type: 'category', data: items.map(x => x.snapshot_date), axisLabel: { color: '#8a9ab4', fontSize: 10 } },
+    yAxis: [
+      { type: 'value', min: 0, max: 100, axisLabel: { color: '#8a9ab4', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(148,163,184,.12)' } } },
+      { type: 'value', min: 0, max: 100, show: false },
+    ],
+    series: [
+      { name: '热度', type: 'line', smooth: true, symbol: 'circle', data: items.map(x => x.heat_score), lineStyle: { color: '#f59e0b' } },
+      { name: '情绪', type: 'line', smooth: true, symbol: 'none', yAxisIndex: 1, data: items.map(x => x.sentiment_score), lineStyle: { color: '#4f8cff' } },
+    ],
+  }, true);
+  setTimeout(() => state.socialChart.resize(), 30);
+}
+async function snapshotSocial() {
+  const ticker = requireTicker();
+  if (!ticker) return;
+  try {
+    const data = await apiFetch('/api/social/snapshot', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    if (!data.success) throw new Error(data.message || '快照失败');
+    showToast('社媒快照已记录', 'ok');
+    loadSocial();
+  } catch (e) { showToast('快照失败: ' + e, 'err'); }
+}
+
 async function loadMarketReview() {
   const card = $('marketReviewCard');
   card.classList.add('show');
@@ -3538,9 +4419,9 @@ async function loadWatchlist() {
     const items = data.items || [];
     if (!items.length) { box.innerHTML = '<span class="muted">暂无自选股</span>'; return; }
     box.innerHTML = items.map(item => `
-      <span class="watch-chip" onclick="pickWatch('${escapeHtml(item.ticker)}')">
+      <span class="watch-chip" data-ticker="${escapeHtml(item.ticker)}" onclick="pickWatch(this.dataset.ticker)">
         ${escapeHtml(item.ticker)} ${escapeHtml(item.name || '')}
-        <span class="x" onclick="event.stopPropagation();removeWatch('${escapeHtml(item.ticker)}')">×</span>
+        <span class="x" data-ticker="${escapeHtml(item.ticker)}" onclick="event.stopPropagation();removeWatch(this.dataset.ticker)">×</span>
       </span>`).join('');
   } catch (e) { box.innerHTML = '<span class="muted">自选股加载失败</span>'; }
 }
@@ -3646,7 +4527,8 @@ async function openReport(id) {
     const r = data.report;
     $('modalTitle').textContent = `${r.ticker} · ${r.trade_date}`;
     const sections = [
-      ['final_trade_decision', '最终决策'], ['decision_plan', '结构化决策'],
+      ['final_trade_decision', '最终决策'], ['decision_structured', '结构化决策块'],
+      ['decision_plan', '决策卡'],
       ['market_report', '市场分析'], ['strategy_report', '策略信号'],
       ['sentiment_report', '舆情分析'],
       ['news_report', '新闻分析'],
@@ -3685,6 +4567,836 @@ function clearApiKey() {
   showToast('访问密钥已清除', 'ok');
   if (state.ws) { try { state.ws.close(); } catch (e) { /* ignore */ } }
   connectWS();
+}
+
+/* ================= 全市场选股 ================= */
+async function loadLatestScreener() {
+  try {
+    const data = await apiFetch('/api/screener/latest');
+    if (data.success && data.run) {
+      state.screenerRun = data.run;
+      renderScreener(data.run);
+    } else {
+      $('screenerTable').innerHTML = '<tr><td colspan="12" class="muted">暂无选股记录，点击“运行选股”生成候选池</td></tr>';
+    }
+  } catch (e) {
+    $('screenerTable').innerHTML = `<tr><td colspan="12" class="muted">加载失败: ${escapeHtml(String(e))}</td></tr>`;
+  }
+}
+async function runScreener() {
+  const style = $('screenerStyle').value;
+  const top = Number($('screenerTop').value || 30);
+  const minAmount = Number($('screenerMinAmount').value || 0);
+  const minCap = Number($('screenerMinCap').value || 0);
+  $('screenerTable').innerHTML = '<tr><td colspan="12" class="muted">全市场扫描中，首次可能需要十几秒…</td></tr>';
+  $('screenerWarnings').style.display = 'none';
+  try {
+    const data = await apiFetch('/api/screener/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        top,
+        style,
+        min_amount_yi: minAmount,
+        min_market_cap_yi: minCap,
+        exclude_st: $('screenerExcludeSt').checked,
+        exclude_limit: $('screenerExcludeLimit').checked,
+        include_financials: $('screenerFinancials').checked,
+        include_fund_flow: $('screenerFundFlow').checked,
+        industry_neutral: $('screenerIndustryNeutral').checked,
+        save: true,
+      }),
+    });
+    if (!data.success) throw new Error(data.message || '选股失败');
+    state.screenerRun = data;
+    renderScreener(data);
+    showToast(`选股完成：${(data.items || []).length} 只候选`, 'ok');
+  } catch (e) {
+    $('screenerTable').innerHTML = `<tr><td colspan="12" class="muted">选股失败: ${escapeHtml(String(e))}</td></tr>`;
+  }
+}
+function factorCell(value) {
+  return value === null || value === undefined ? '<span class="muted">--</span>' : Number(value).toFixed(0);
+}
+function renderScreener(run) {
+  const summary = run.summary || {};
+  const items = run.items || [];
+  $('screenerUniverse').textContent = summary.universe || 0;
+  $('screenerFiltered').textContent = summary.after_filters || 0;
+  $('screenerCoverage').textContent = pct(summary.average_coverage || 0, 0);
+  $('screenerDate').textContent = run.run_date || '--';
+  $('screenerSub').textContent = `${summary.style_label || summary.style || ''} · 因子权重 ${JSON.stringify(summary.weights || {})}`;
+  const warnings = summary.warnings || [];
+  $('screenerWarnings').style.display = warnings.length ? 'block' : 'none';
+  $('screenerWarnings').innerHTML = warnings.map(item => '• ' + escapeHtml(item)).join('<br>');
+  if (!items.length) {
+    $('screenerTable').innerHTML = '<tr><td colspan="12" class="muted">没有符合条件的标的，尝试放宽成交额/市值或关闭过滤</td></tr>';
+    return;
+  }
+  $('screenerTable').innerHTML = items.map(item => {
+    const factors = item.factor_scores || {};
+    const flags = item.flags || [];
+    const reasons = item.reasons || [];
+    const factorText = Object.entries(factors).map(([key, value]) => `${key}=${Number(value || 0).toFixed(0)}`).join(' ');
+    return `<tr title="${escapeHtml(factorText)}">
+      <td class="muted">${item.rank}</td>
+      <td><b>${escapeHtml(item.ticker || '')}</b><br><span class="muted">${escapeHtml(item.name || '')}</span></td>
+      <td>${escapeHtml(item.industry || '')}</td>
+      <td style="text-align:right;">${Number(item.price || 0).toFixed(2)}</td>
+      <td style="text-align:right;" class="${Number(item.change_pct || 0) >= 0 ? 'up' : 'down'}">${Number(item.change_pct || 0).toFixed(2)}%</td>
+      <td style="text-align:right;"><b class="${Number(item.score || 0) >= 70 ? 'up' : ''}">${Number(item.score || 0).toFixed(1)}</b></td>
+      <td style="text-align:right;">${factorCell(factors.value)}</td>
+      <td style="text-align:right;">${factorCell(factors.quality)}</td>
+      <td style="text-align:right;">${factorCell(factors.growth)}</td>
+      <td style="text-align:right;">${factorCell(factors.momentum)}</td>
+      <td><span class="muted">${reasons.map(escapeHtml).join('；') || '—'}</span>${flags.length ? `<br><span class="down">${flags.map(escapeHtml).join('、')}</span>` : ''}</td>
+      <td>
+        <button class="icon-btn" data-ticker="${escapeHtml(item.ticker)}" onclick="addScreenerWatch(this.dataset.ticker)">加自选</button>
+        <button class="icon-btn" data-ticker="${escapeHtml(item.ticker)}" onclick="analyzeScreener(this.dataset.ticker)">分析</button>
+      </td>
+    </tr>`;
+  }).join('');
+}
+async function addScreenerWatch(ticker) {
+  try {
+    const data = await apiFetch('/api/watchlist', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    if (!data.success) throw new Error(data.message || '添加失败');
+    showToast(`${ticker} 已加入自选`, 'ok');
+  } catch (e) { showToast('加入自选失败: ' + e, 'err'); }
+}
+function analyzeScreener(ticker) {
+  $('company').value = ticker;
+  switchView('workbench');
+  updateHeroIdentity();
+  loadKline();
+  showToast(`已填入 ${ticker}，点击“开始分析”运行多智能体研判`, 'ok');
+}
+
+/* ================= 实时行情 / 盘中告警 ================= */
+const ALERT_RULE_LABELS = {
+  price_above: '价格上穿',
+  price_below: '价格下穿',
+  change_pct_above: '涨幅超过',
+  change_pct_below: '跌幅超过',
+  volume_ratio_above: '量比超过',
+  turnover_above: '换手率超过',
+  amount_above: '成交额超过',
+  stop_loss: '触及止损',
+  take_profit: '触及止盈',
+};
+
+async function loadRealtime() {
+  const ticker = requireTicker();
+  if (!ticker) return;
+  $('realtimeCard').classList.add('show');
+  $('realtimeStats').innerHTML = '<span class="muted">加载中…</span>';
+  $('realtimeSub').textContent = '盘中快照 · 分时';
+  const period = $('realtimePeriod').value || '5';
+  try {
+    const [quoteData, intradayData, session] = await Promise.all([
+      apiFetch('/api/realtime/quote?ticker=' + encodeURIComponent(ticker)),
+      apiFetch(`/api/realtime/intraday?ticker=${encodeURIComponent(ticker)}&period=${period}&days=3`),
+      apiFetch('/api/realtime/session'),
+    ]);
+    const quote = Object.values(quoteData.items || {})[0] || {};
+    renderRealtimeQuote(ticker, quote);
+    renderIntraday(intradayData.items || [], period);
+    $('realtimeSession').textContent = `${session.label || ''} · ${session.date || ''} ${session.time || ''}${session.is_open ? ' · 盘中检查可用' : ' · 当前非连续竞价时段'}`;
+  } catch (e) {
+    $('realtimeStats').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+function renderRealtimeQuote(ticker, q) {
+  if (!q || !q.price) {
+    $('realtimeStats').innerHTML = `<span class="muted">${escapeHtml(ticker)} 暂无实时行情（可能停牌或不在快照中）</span>`;
+    return;
+  }
+  const change = Number(q.change_pct || 0);
+  const amountYi = Number(q.amount || 0) / 1e8;
+  $('realtimeStats').innerHTML = `
+    <span class="hero-price ${change >= 0 ? 'up' : 'down'}">${Number(q.price).toFixed(2)} <small>${change >= 0 ? '+' : ''}${change.toFixed(2)}%</small></span>
+    <span>今开 <b>${Number(q.open || 0).toFixed(2)}</b></span>
+    <span>昨收 <b>${Number(q.prev_close || 0).toFixed(2)}</b></span>
+    <span>最高 <b class="up">${Number(q.high || 0).toFixed(2)}</b></span>
+    <span>最低 <b class="down">${Number(q.low || 0).toFixed(2)}</b></span>
+    <span>量比 <b>${Number(q.volume_ratio || 0).toFixed(2)}</b></span>
+    <span>换手 <b>${Number(q.turnover || 0).toFixed(2)}%</b></span>
+    <span>成交额 <b>${amountYi.toFixed(2)} 亿</b></span>`;
+  $('realtimeSub').textContent = `${q.name || ticker} · 快照时间 ${q.as_of || ''}`;
+}
+function renderIntraday(items, period) {
+  if (!state.realtimeChart) state.realtimeChart = echarts.init($('realtimeChart'));
+  if (!items.length) {
+    state.realtimeChart.clear();
+    return;
+  }
+  const dates = items.map(x => x.datetime.slice(5));
+  const closes = items.map(x => x.close);
+  state.realtimeChart.setOption({
+    backgroundColor: 'transparent',
+    grid: { left: 58, right: 18, top: 18, bottom: 30 },
+    tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', data: dates, axisLabel: { color: '#8a9ab4', fontSize: 10 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#8a9ab4', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(148,163,184,.12)' } } },
+    series: [{
+      name: `${period} 分钟收盘`,
+      type: 'line', smooth: true, symbol: 'none',
+      data: closes,
+      lineStyle: { width: 2, color: '#22d3ee' },
+      areaStyle: { color: 'rgba(34,211,238,.10)' },
+    }],
+  }, true);
+  setTimeout(() => state.realtimeChart.resize(), 30);
+}
+
+async function loadAlerts() {
+  $('alertRulesTable').innerHTML = '<tr><td colspan="7" class="muted">加载中…</td></tr>';
+  $('alertEventsTable').innerHTML = '<tr><td colspan="7" class="muted">加载中…</td></tr>';
+  try {
+    const unacked = $('alertUnackedOnly') && $('alertUnackedOnly').checked ? '&unacked_only=true' : '';
+    const [summary, rules, events, session] = await Promise.all([
+      apiFetch('/api/alerts/summary'),
+      apiFetch('/api/alerts/rules'),
+      apiFetch('/api/alerts/events?limit=100' + unacked),
+      apiFetch('/api/realtime/session'),
+    ]);
+    state.alertRules = rules.items || [];
+    $('alertRulesCount').textContent = summary.enabled_rules || 0;
+    $('alertTodayCount').textContent = summary.today_events || 0;
+    $('alertUnackedCount').textContent = summary.unacknowledged || 0;
+    $('alertSession').textContent = session.label || '--';
+    renderAlertRules(state.alertRules);
+    renderAlertEvents(events.items || []);
+  } catch (e) {
+    $('alertRulesTable').innerHTML = `<tr><td colspan="7" class="muted">加载失败: ${escapeHtml(String(e))}</td></tr>`;
+    $('alertEventsTable').innerHTML = `<tr><td colspan="7" class="muted">加载失败: ${escapeHtml(String(e))}</td></tr>`;
+  }
+}
+function alertRuleUnit(type) {
+  if (type === 'amount_above') return '亿元';
+  if (type === 'volume_ratio_above') return '倍';
+  if (type === 'price_above' || type === 'price_below') return '元';
+  return '%';
+}
+function renderAlertRules(rules) {
+  if (!rules.length) {
+    $('alertRulesTable').innerHTML = '<tr><td colspan="7" class="muted">暂无规则，先添加一条价格或量能条件</td></tr>';
+    return;
+  }
+  $('alertRulesTable').innerHTML = rules.map(rule => `<tr>
+    <td><b>${escapeHtml(rule.ticker || '')}</b></td>
+    <td>${escapeHtml(ALERT_RULE_LABELS[rule.rule_type] || rule.rule_type || '')}</td>
+    <td style="text-align:right;">${Number(rule.threshold || 0).toFixed(2)} ${escapeHtml(alertRuleUnit(rule.rule_type))}</td>
+    <td style="text-align:right;">${rule.cooldown_minutes || 30} 分钟</td>
+    <td><span class="pill ${rule.enabled ? 'buy' : 'hold'}">${rule.enabled ? '启用' : '暂停'}</span></td>
+    <td class="muted">${escapeHtml(rule.last_triggered_at || '--')}</td>
+    <td>
+      <button class="icon-btn" onclick="toggleAlertRule(${rule.id}, ${!rule.enabled})">${rule.enabled ? '暂停' : '启用'}</button>
+      <button class="icon-btn" onclick="deleteAlertRule(${rule.id})">删除</button>
+    </td>
+  </tr>`).join('');
+}
+function renderAlertEvents(events) {
+  if (!events.length) {
+    $('alertEventsTable').innerHTML = '<tr><td colspan="7" class="muted">暂无告警事件</td></tr>';
+    return;
+  }
+  $('alertEventsTable').innerHTML = events.map(item => {
+    const cls = item.level === 'danger' ? 'sell' : item.level === 'warn' ? 'hold' : 'buy';
+    return `<tr>
+      <td class="muted">${escapeHtml(item.triggered_at || '')}</td>
+      <td><b>${escapeHtml(item.ticker || '')}</b></td>
+      <td>${escapeHtml(ALERT_RULE_LABELS[item.rule_type] || item.rule_type || '')}</td>
+      <td><span class="pill ${cls}">${escapeHtml(item.level || '')}</span></td>
+      <td>${escapeHtml(item.message || '')}</td>
+      <td style="text-align:right;">${Number(item.price || 0).toFixed(2)}</td>
+      <td>${item.acknowledged ? '<span class="muted">已确认</span>' : `<button class="icon-btn" onclick="ackAlert(${item.id})">确认</button>`}</td>
+    </tr>`;
+  }).join('');
+}
+async function addAlertRule() {
+  const ticker = ($('alertTicker').value || currentTicker() || '').trim();
+  const threshold = Number($('alertThreshold').value);
+  if (!ticker) { showToast('请填写代码', 'err'); return; }
+  if (!Number.isFinite(threshold)) { showToast('请填写阈值', 'err'); return; }
+  try {
+    const data = await apiFetch('/api/alerts/rules', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        ticker,
+        rule_type: $('alertType').value,
+        threshold,
+        cooldown_minutes: Number($('alertCooldown').value || 30),
+      }),
+    });
+    if (!data.success) throw new Error(data.message || '添加失败');
+    $('alertTicker').value = '';
+    $('alertThreshold').value = '';
+    showToast('告警规则已保存', 'ok');
+    loadAlerts();
+  } catch (e) { showToast('添加失败: ' + e, 'err'); }
+}
+async function toggleAlertRule(id, enabled) {
+  try {
+    const data = await apiFetch(`/api/alerts/rules/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    if (!data.success) throw new Error(data.message || '更新失败');
+    loadAlerts();
+  } catch (e) { showToast('更新失败: ' + e, 'err'); }
+}
+async function deleteAlertRule(id) {
+  if (!confirm('确定删除这条告警规则？')) return;
+  try {
+    const data = await apiFetch(`/api/alerts/rules/${id}`, { method: 'DELETE' });
+    if (!data.success) throw new Error(data.message || '删除失败');
+    loadAlerts();
+  } catch (e) { showToast('删除失败: ' + e, 'err'); }
+}
+async function checkAlertsNow() {
+  try {
+    const data = await apiFetch('/api/alerts/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notify: false, include_portfolio: true }),
+    });
+    if (!data.success) throw new Error(data.message || '检查失败');
+    showToast(`检查完成：触发 ${data.triggered || 0} 条`, data.triggered ? 'warn' : 'ok');
+    loadAlerts();
+  } catch (e) { showToast('检查失败: ' + e, 'err'); }
+}
+async function ackAlert(id) {
+  try {
+    await apiFetch(`/api/alerts/events/${id}/ack`, { method: 'POST' });
+    loadAlerts();
+  } catch (e) { showToast('确认失败: ' + e, 'err'); }
+}
+async function ackAllAlerts() {
+  try {
+    const data = await apiFetch('/api/alerts/events/ack-all', { method: 'POST' });
+    showToast(`已确认 ${data.acknowledged || 0} 条`, 'ok');
+    loadAlerts();
+  } catch (e) { showToast('确认失败: ' + e, 'err'); }
+}
+
+/* ================= 组合 / 模拟盘 ================= */
+function money(value, digits = 2) {
+  const number = Number(value || 0);
+  return number.toLocaleString('zh-CN', { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+function pct(value, digits = 2) {
+  return (Number(value || 0) * 100).toFixed(digits) + '%';
+}
+function ensurePortfolioChart() {
+  if (!state.portfolioChart) {
+    const el = $('pfPerfChart');
+    if (!el) return null;
+    state.portfolioChart = echarts.init(el);
+  }
+  return state.portfolioChart;
+}
+async function loadPortfolio() {
+  $('pfPositionsTable').innerHTML = '<tr><td colspan="8" class="muted">加载中…</td></tr>';
+  try {
+    const [portfolio, performance] = await Promise.all([
+      apiFetch('/api/portfolio'),
+      apiFetch('/api/portfolio/performance'),
+    ]);
+    if (!portfolio.success) throw new Error(portfolio.message || '组合加载失败');
+    renderPortfolio(portfolio.portfolio || {});
+    renderPortfolioPerformance(performance || {});
+  } catch (e) {
+    $('pfPositionsTable').innerHTML = `<tr><td colspan="8" class="muted">加载失败: ${escapeHtml(String(e))}</td></tr>`;
+    $('pfRisk').innerHTML = `<span class="down">加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+  loadPaper();
+}
+function renderPortfolio(portfolio) {
+  const positions = portfolio.positions || [];
+  $('pfEquity').textContent = money(portfolio.equity);
+  $('pfCash').textContent = money(portfolio.cash);
+  if (!positions.length) {
+    $('pfPositionsTable').innerHTML = '<tr><td colspan="8" class="muted">暂无持仓。可在工作台“持仓建议”卡中录入，或通过成交接口记录买入。</td></tr>';
+  } else {
+    $('pfPositionsTable').innerHTML = positions.map(p => {
+      const pnl = Number(p.unrealised_pnl || 0);
+      return `<tr>
+        <td><b>${escapeHtml(p.ticker || '')}</b></td>
+        <td>${escapeHtml(p.name || '')}</td>
+        <td style="text-align:right;">${Number(p.quantity || 0).toLocaleString('zh-CN')}</td>
+        <td style="text-align:right;">${Number(p.avg_cost || 0).toFixed(3)}</td>
+        <td style="text-align:right;">${Number(p.last_price || 0).toFixed(3)}</td>
+        <td style="text-align:right;">${money(p.market_value)}</td>
+        <td style="text-align:right;" class="${pnl >= 0 ? 'up' : 'down'}">${pnl >= 0 ? '+' : ''}${money(pnl)} (${pct(p.unrealised_pnl_pct)})</td>
+        <td class="muted">${p.stop_loss || '--'} / ${p.take_profit || '--'}</td>
+      </tr>`;
+    }).join('');
+  }
+  const health = portfolio.health || {};
+  const breaches = health.breaches || [];
+  const sectors = Object.entries(health.sector_weights || {})
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, weight]) => `<span class="hero-chip">${escapeHtml(name)} ${pct(weight, 1)}</span>`)
+    .join(' ');
+  $('pfRisk').innerHTML = `
+    <div class="hint">总仓位 <b>${pct(health.total_weight, 1)}</b> · 现金 <b>${pct(health.cash_weight, 1)}</b> · 浮盈 <b class="${Number(health.unrealised_pnl || 0) >= 0 ? 'up' : 'down'}">${money(health.unrealised_pnl)}</b></div>
+    <div style="margin:8px 0;display:flex;gap:6px;flex-wrap:wrap;">${sectors || '<span class="muted">暂无行业暴露</span>'}</div>
+    ${breaches.length
+      ? `<div class="down" style="font-size:12px;">${breaches.map(x => '• ' + escapeHtml(x)).join('<br>')}</div>`
+      : '<div class="up" style="font-size:12px;">✓ 未触发单票 / 行业 / 总仓位上限</div>'}
+    <div class="hint" style="margin-top:8px;">单票 ${pct((health.limits || {}).max_single_weight, 0)} · 行业 ${pct((health.limits || {}).max_sector_weight, 0)} · 总仓位 ${pct((health.limits || {}).max_total_weight, 0)}</div>`;
+}
+function renderPortfolioPerformance(data) {
+  const perf = data.performance || {};
+  const total = Number(perf.total_return || 0);
+  $('pfReturn').textContent = pct(total);
+  $('pfReturn').className = 'v ' + (total >= 0 ? 'up' : 'down');
+  $('pfDrawdown').textContent = pct(perf.max_drawdown);
+  const curve = perf.equity_curve || [];
+  $('pfPerfSub').textContent = curve.length
+    ? `${perf.start_date} ~ ${perf.end_date} · ${perf.points} 个快照 · 年化 ${pct(perf.annualized_return)} · 夏普 ${Number(perf.sharpe || 0).toFixed(2)}`
+    : '暂无快照，点击“记录快照”开始积累';
+  const chart = ensurePortfolioChart();
+  if (!chart) return;
+  if (!curve.length) {
+    chart.clear();
+    return;
+  }
+  chart.setOption({
+    backgroundColor: 'transparent',
+    grid: { left: 54, right: 18, top: 18, bottom: 28 },
+    tooltip: { trigger: 'axis', valueFormatter: v => money(v) },
+    xAxis: { type: 'category', data: curve.map(x => x.date), axisLabel: { color: '#8a9ab4', fontSize: 10 } },
+    yAxis: { type: 'value', scale: true, axisLabel: { color: '#8a9ab4', fontSize: 10 }, splitLine: { lineStyle: { color: 'rgba(148,163,184,.12)' } } },
+    series: [{
+      type: 'line', smooth: true, symbol: 'none',
+      data: curve.map(x => x.equity),
+      lineStyle: { width: 2, color: '#4f8cff' },
+      areaStyle: { color: 'rgba(79,140,255,.14)' },
+    }],
+  });
+  setTimeout(() => chart.resize(), 30);
+}
+async function refreshPortfolio() {
+  try {
+    const data = await apiFetch('/api/portfolio/refresh', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!data.success) throw new Error(data.message || '刷新失败');
+    const count = Object.keys(data.prices || {}).length;
+    showToast(`已刷新 ${count} 只持仓最新价`, 'ok');
+    await loadPortfolio();
+  } catch (e) { showToast('刷新失败: ' + e, 'err'); }
+}
+async function snapshotPortfolio() {
+  try {
+    const data = await apiFetch('/api/portfolio/snapshot', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!data.success) throw new Error(data.message || '快照失败');
+    showToast('组合快照已记录', 'ok');
+    await loadPortfolio();
+  } catch (e) { showToast('快照失败: ' + e, 'err'); }
+}
+
+async function loadPortfolioRisk() {
+  $('portfolioRiskBody').innerHTML = '<span class="muted">计算中，首次需要读取持仓历史行情…</span>';
+  try {
+    const method = $('rebalanceMethod').value || 'equal';
+    const data = await apiFetch(`/api/portfolio/risk?lookback=252&rebalance_method=${encodeURIComponent(method)}`);
+    if (!data.success) {
+      $('portfolioRiskBody').innerHTML = `<span class="muted">${escapeHtml(data.message || '暂无持仓')}</span>`;
+      return;
+    }
+    const m = data.metrics || {};
+    const stress = data.stress || [];
+    const rebalance = data.rebalance || {};
+    const rebalanceItems = rebalance.items || [];
+    $('portfolioRiskBody').innerHTML = `
+      <div class="tool-stats" style="padding:0 0 10px;">
+        <span>年化收益 <b class="${Number(m.annual_return || 0) >= 0 ? 'up' : 'down'}">${pct(m.annual_return)}</b></span>
+        <span>年化波动 <b>${pct(m.annual_volatility)}</b></span>
+        <span>最大回撤 <b class="down">${pct(m.max_drawdown)}</b></span>
+        <span>1日 VaR95 <b class="down">${pct(m.var_95_1d)}</b>（约 ${money(m.var_95_amount, 0)}）</span>
+        <span>CVaR95 <b class="down">${pct(m.cvar_95_1d)}</b></span>
+        <span>Beta <b>${m.beta === null || m.beta === undefined ? '--' : Number(m.beta).toFixed(2)}</b></span>
+        <span>有效持仓 <b>${Number(m.effective_positions || 0).toFixed(1)}</b></span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">
+        <div>
+          <div class="chart-title" style="font-size:13px;margin-bottom:6px;">压力测试</div>
+          <div class="table-wrap"><table class="data"><thead><tr><th>情景</th><th style="text-align:right;">估算亏损</th><th style="text-align:right;">比例</th></tr></thead><tbody>
+            ${stress.map(item => `<tr><td>${escapeHtml(item.scenario || '')}<br><span class="muted">${escapeHtml(item.note || '')}</span></td><td style="text-align:right;" class="down">${money(item.loss_amount, 0)}</td><td style="text-align:right;">${Number(item.loss_pct || 0).toFixed(2)}%</td></tr>`).join('') || '<tr><td colspan="3" class="muted">暂无数据</td></tr>'}
+          </tbody></table></div>
+        </div>
+        <div>
+          <div class="chart-title" style="font-size:13px;margin-bottom:6px;">再平衡建议（${escapeHtml(rebalance.method || method)}）</div>
+          <div class="table-wrap"><table class="data"><thead><tr><th>代码</th><th>动作</th><th style="text-align:right;">当前→目标</th><th style="text-align:right;">股数</th><th style="text-align:right;">金额</th></tr></thead><tbody>
+            ${rebalanceItems.map(item => `<tr><td>${escapeHtml(item.ticker || '')}</td><td>${escapeHtml(item.action || '')}</td><td style="text-align:right;">${pct(item.current_weight, 1)}→${pct(item.target_weight, 1)}</td><td style="text-align:right;" class="${Number(item.delta_quantity || 0) > 0 ? 'up' : Number(item.delta_quantity || 0) < 0 ? 'down' : ''}">${Number(item.delta_quantity || 0) > 0 ? '+' : ''}${item.delta_quantity || 0}</td><td style="text-align:right;">${money(item.amount, 0)}</td></tr>`).join('') || '<tr><td colspan="5" class="muted">暂无建议</td></tr>'}
+          </tbody></table></div>
+          <div class="hint">再平衡按最新价估算；A 股 T+1 与涨跌停会限制实际成交。</div>
+        </div>
+      </div>
+      ${(data.warnings || []).length ? `<div class="hint down" style="margin-top:8px;">${data.warnings.map(escapeHtml).join('；')}</div>` : ''}`;
+  } catch (e) {
+    $('portfolioRiskBody').innerHTML = `<span class="down">计算失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+
+async function loadPaper() {
+  try {
+    const data = await apiFetch('/api/paper');
+    if (!data.success) throw new Error(data.message || '模拟盘加载失败');
+    state.paperReport = data;
+    renderPaper(data);
+  } catch (e) {
+    $('paperSummary').innerHTML = `<span class="down">模拟盘加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+function renderPaper(report) {
+  const account = report.account || {};
+  const positions = report.positions || [];
+  const orders = report.orders || [];
+  $('paperSummary').innerHTML = `
+    <span>模拟权益 <b>${money(account.equity)}</b></span>
+    <span>现金 <b>${money(account.cash)}</b></span>
+    <span>冻结 <b>${money(account.frozen_cash)}</b></span>
+    <span>累计费用 <b>${money(account.total_fees)}</b></span>
+    <span>胜率 <b>${pct(account.win_rate, 1)}</b></span>
+    <span>成交 <b>${account.trade_count || 0}</b> 笔</span>`;
+  $('paperPositionsTable').innerHTML = positions.length
+    ? positions.map(p => `<tr>
+        <td><b>${escapeHtml(p.ticker || '')}</b></td>
+        <td>${Number(p.quantity || 0).toLocaleString('zh-CN')}</td>
+        <td>${Number(p.sellable_qty || 0).toLocaleString('zh-CN')}</td>
+        <td style="text-align:right;">${Number(p.avg_cost || 0).toFixed(3)}</td>
+        <td style="text-align:right;">${Number(p.last_price || 0).toFixed(3)}</td>
+        <td style="text-align:right;">${money(p.market_value)}</td>
+        <td style="text-align:right;" class="${Number(p.unrealised_pnl || 0) >= 0 ? 'up' : 'down'}">${money(p.unrealised_pnl)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="muted">暂无模拟持仓</td></tr>';
+  $('paperOrdersTable').innerHTML = orders.length
+    ? orders.slice().reverse().map(o => `<tr>
+        <td class="muted">${escapeHtml(o.id || '')}</td>
+        <td><b>${escapeHtml(o.ticker || '')}</b></td>
+        <td>${o.side === 'buy' ? '买入' : '卖出'}</td>
+        <td style="text-align:right;">${Number(o.quantity || 0).toLocaleString('zh-CN')}</td>
+        <td>${o.order_type === 'limit' ? '限价 ' + Number(o.limit_price || 0).toFixed(2) : '市价'}</td>
+        <td><span class="pill ${o.status === 'filled' ? 'buy' : o.status === 'rejected' ? 'sell' : 'hold'}">${escapeHtml(o.status || '')}</span></td>
+        <td class="muted">${escapeHtml(o.note || o.reason || '')}</td>
+        <td>${o.status === 'pending' ? `<button class="icon-btn" data-order-id="${escapeHtml(o.id)}" onclick="cancelPaperOrder(this.dataset.orderId)">撤单</button>` : ''}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="muted">暂无委托</td></tr>';
+}
+async function submitPaperOrder() {
+  const ticker = ($('paperTicker').value || currentTicker() || '').trim();
+  const quantity = Number($('paperQty').value || 0);
+  if (!ticker) { showToast('请填写代码', 'err'); return; }
+  if (!(quantity > 0)) { showToast('数量需大于 0', 'err'); return; }
+  const payload = {
+    ticker,
+    side: $('paperSide').value,
+    quantity,
+    order_type: $('paperType').value,
+  };
+  const price = Number($('paperPrice').value);
+  if (payload.order_type === 'limit' && price > 0) payload.limit_price = price;
+  try {
+    const data = await apiFetch('/api/paper/order', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    if (!data.success) throw new Error(data.message || '委托失败');
+    const order = data.order || {};
+    showToast(order.status === 'rejected' ? `委托被拒：${order.note || order.reason}` : `委托已提交（${order.status}）`, order.status === 'rejected' ? 'err' : 'ok');
+    state.paperReport = data.report;
+    renderPaper(data.report);
+  } catch (e) { showToast('委托失败: ' + e, 'err'); }
+}
+async function cancelPaperOrder(orderId) {
+  try {
+    const data = await apiFetch('/api/paper/cancel?order_id=' + encodeURIComponent(orderId), { method: 'POST' });
+    showToast(data.success ? '已撤单' : (data.message || '撤单失败'), data.success ? 'ok' : 'err');
+    if (data.report) { state.paperReport = data.report; renderPaper(data.report); }
+  } catch (e) { showToast('撤单失败: ' + e, 'err'); }
+}
+async function markPaper() {
+  try {
+    const data = await apiFetch('/api/paper/mark', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    if (!data.success) throw new Error(data.message || '盯市失败');
+    showToast(data.error ? '盯市完成（部分行情缺失）' : '模拟盘已按最新价盯市', data.error ? 'warn' : 'ok');
+    state.paperReport = data.report;
+    renderPaper(data.report);
+  } catch (e) { showToast('盯市失败: ' + e, 'err'); }
+}
+async function advancePaper() {
+  const start = $('paperStart').value;
+  const end = $('paperEnd').value;
+  if (!start || !end) { showToast('请选择开始和结束日期', 'err'); return; }
+  try {
+    const data = await apiFetch('/api/paper/advance', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ start_date: start, end_date: end }) });
+    if (!data.success) throw new Error(data.message || '推进失败');
+    showToast(`已推进 ${data.tickers.length} 只标的的行情`, 'ok');
+    state.paperReport = data.report;
+    renderPaper(data.report);
+  } catch (e) { showToast('推进失败: ' + e, 'err'); }
+}
+async function resetPaper() {
+  if (!confirm('确定重置模拟盘？当前持仓、委托与净值曲线会清空。')) return;
+  try {
+    const data = await apiFetch('/api/paper/reset', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ initial_cash: 100000 }) });
+    if (!data.success) throw new Error(data.message || '重置失败');
+    state.paperReport = data;
+    renderPaper(data);
+    showToast('模拟盘已重置（初始资金 10 万）', 'ok');
+  } catch (e) { showToast('重置失败: ' + e, 'err'); }
+}
+
+/* ================= 推荐评估 ================= */
+async function loadEvaluation() {
+  const ticker = ($('evalTicker').value || '').trim();
+  const writeMemory = !!$('evalWriteMemory').checked;
+  $('evalRowsTable').innerHTML = '<tr><td colspan="8" class="muted">评估中，首次可能需要抓取行情…</td></tr>';
+  try {
+    let data;
+    if (writeMemory) {
+      data = await apiFetch('/api/evaluation/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticker: ticker || null, limit: 100, write_memory: true }),
+      });
+    } else {
+      const query = new URLSearchParams({ limit: '100' });
+      if (ticker) query.set('ticker', ticker);
+      data = await apiFetch('/api/evaluation?' + query.toString());
+    }
+    if (!data.success) throw new Error(data.message || '评估失败');
+    state.evaluation = data;
+    renderEvaluation(data);
+  } catch (e) {
+    $('evalRowsTable').innerHTML = `<tr><td colspan="8" class="muted">评估失败: ${escapeHtml(String(e))}</td></tr>`;
+    $('evalHorizonTable').innerHTML = `<tr><td colspan="6" class="muted">评估失败</td></tr>`;
+    $('evalWarning').style.display = 'none';
+  }
+}
+function renderEvaluation(data) {
+  const summary = data.summary || {};
+  const overall = summary.overall || {};
+  const hit = Number(overall.hit_rate || 0);
+  $('evalSamples').textContent = summary.raw_count || 0;
+  $('evalHitRate').textContent = pct(hit, 1);
+  $('evalHitRate').className = 'v ' + (hit >= 0.5 ? 'up' : 'down');
+  $('evalAvgReturn').textContent = pct(overall.avg_forward_return);
+  $('evalAvgReturn').className = 'v ' + (Number(overall.avg_forward_return || 0) >= 0 ? 'up' : 'down');
+  $('evalEffective').textContent = summary.effective_sample_size || 0;
+  const warning = summary.sample_insufficient
+    ? `有效样本量 ${summary.effective_sample_size} < ${summary.min_effective_sample || 8}，命中率仅作观察，不能当结论。`
+    : '';
+  $('evalWarning').style.display = warning ? 'block' : 'none';
+  $('evalWarning').textContent = warning;
+
+  const horizons = Object.entries(summary.by_horizon || {}).sort((a, b) => Number(a[0]) - Number(b[0]));
+  $('evalHorizonTable').innerHTML = horizons.length
+    ? horizons.map(([key, item]) => `<tr>
+        <td><b>${key} 日</b></td>
+        <td style="text-align:right;">${item.count || 0}</td>
+        <td style="text-align:right;">${pct(item.hit_rate, 1)}</td>
+        <td style="text-align:right;" class="${Number(item.avg_forward_return || 0) >= 0 ? 'up' : 'down'}">${pct(item.avg_forward_return)}</td>
+        <td style="text-align:right;">${item.effective_sample_size || 0}</td>
+        <td>${item.sample_insufficient ? '<span class="down">样本不足</span>' : '<span class="up">可用</span>'}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="muted">暂无可用周期</td></tr>';
+
+  const decisions = Object.entries(summary.by_decision || {});
+  $('evalDecisionTable').innerHTML = decisions.length
+    ? decisions.map(([key, item]) => `<tr>
+        <td><span class="pill ${decisionClass(key)}">${escapeHtml(key)}</span></td>
+        <td style="text-align:right;">${item.count || 0}</td>
+        <td style="text-align:right;">${pct(item.hit_rate, 1)}</td>
+        <td style="text-align:right;" class="${Number(item.avg_forward_return || 0) >= 0 ? 'up' : 'down'}">${pct(item.avg_forward_return)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="muted">暂无决策样本</td></tr>';
+
+  const rows = data.rows || [];
+  $('evalRowsTable').innerHTML = rows.length
+    ? rows.map(row => {
+        const cells = [5, 10, 20].map(horizon => {
+          const item = (row.horizons || {})[String(horizon)] || {};
+          const value = item.forward_return;
+          return value === null || value === undefined
+            ? '<td style="text-align:right;" class="muted">—</td>'
+            : `<td style="text-align:right;" class="${Number(value) >= 0 ? 'up' : 'down'}">${pct(value)}</td>`;
+        }).join('');
+        const correct = row.correct;
+        return `<tr>
+          <td><b>${escapeHtml(row.ticker || '')}</b></td>
+          <td>${escapeHtml(row.entry_date || '')}</td>
+          <td><span class="pill ${decisionClass(row.normalized_decision)}">${escapeHtml(row.normalized_decision || row.decision || '')}</span></td>
+          ${cells}
+          <td>${correct === true ? '✅' : correct === false ? '❌' : '—'}</td>
+          <td>${row.report_id ? `<button class="icon-btn" onclick="openReport(${row.report_id})">查看</button>` : ''}</td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="8" class="muted">暂无可评估记录</td></tr>';
+}
+
+/* ================= 运行指标 ================= */
+async function loadRuns() {
+  try {
+    const [aggregate, runs, budget] = await Promise.all([
+      apiFetch('/api/runs/aggregate'),
+      apiFetch('/api/runs?limit=20'),
+      apiFetch('/api/runs/budget'),
+    ]);
+    const totals = (aggregate && aggregate.aggregate && aggregate.aggregate.totals) || {};
+    const currency = (runs.runs && runs.runs[0] && runs.runs[0].currency) || 'USD';
+    const policy = budget.policy || {};
+    const budgetText = policy.max_cost_per_run === null && policy.max_tokens_per_run === null
+      ? '未设置'
+      : `成本≤${policy.max_cost_per_run ?? '不限'} / token≤${policy.max_tokens_per_run ?? '不限'}`;
+    $('runsSummary').innerHTML = `
+      <span>运行 <b>${totals.runs || 0}</b> 次</span>
+      <span>调用 <b>${totals.call_count || 0}</b> 次</span>
+      <span>token <b>${Number(totals.total_tokens || 0).toLocaleString('zh-CN')}</b></span>
+      <span>成本 <b>${money(totals.estimated_cost, 4)} ${escapeHtml(currency)}</b></span>
+      <span>平均耗时 <b>${(Number(totals.avg_duration_ms || 0) / 1000).toFixed(1)}s</b></span>
+      <span>单次预算 <b>${escapeHtml(budgetText)}</b></span>`;
+    const rows = (runs && runs.runs) || [];
+    $('runsTable').innerHTML = rows.length
+      ? rows.map(r => `<tr>
+          <td class="muted">${escapeHtml(r.started_at || '')}</td>
+          <td>${escapeHtml(r.ticker || '')}</td>
+          <td>${escapeHtml(r.model || '')}</td>
+          <td style="text-align:right;">${Number(r.total_tokens || 0).toLocaleString('zh-CN')}</td>
+          <td style="text-align:right;">${money(r.estimated_cost, 4)} ${escapeHtml(r.currency || '')}</td>
+          <td style="text-align:right;">${(Number(r.duration_ms || 0) / 1000).toFixed(1)}s</td>
+        </tr>`).join('')
+      : '<tr><td colspan="6" class="muted">暂无运行记录</td></tr>';
+  } catch (e) {
+    $('runsSummary').innerHTML = `<span class="down">运行指标加载失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+
+/* ================= 本地数据仓库 ================= */
+async function loadDataStatus() {
+  try {
+    const data = await apiFetch('/api/data/status');
+    const cache = data.cache || {};
+    $('dataStatus').innerHTML = `
+      <span>标的 <b>${cache.symbols || 0}</b></span>
+      <span>K 线 <b>${Number(cache.bars || 0).toLocaleString('zh-CN')}</b></span>
+      <span>覆盖 <b>${escapeHtml(cache.first_date || '--')} ~ ${escapeHtml(cache.last_date || '--')}</b></span>
+      <span>缓存 <b>${cache.enabled ? '开启' : '关闭'}</b></span>
+      <div class="hint" style="margin-top:6px;">${escapeHtml(cache.path || '')}</div>`;
+  } catch (e) {
+    $('dataStatus').innerHTML = `<span class="down">数据仓库状态读取失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+async function syncData() {
+  const ticker = ($('dataSyncTicker').value || currentTicker() || '').trim();
+  if (!ticker) { showToast('请填写股票代码', 'err'); return; }
+  $('dataQuality').innerHTML = `<span class="muted">同步 ${escapeHtml(ticker)} 中，首次可能需要几十秒…</span>`;
+  try {
+    const data = await apiFetch('/api/data/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ticker }),
+    });
+    const item = (data.items || [])[0] || {};
+    if (!data.success && !item.success) throw new Error(item.message || data.message || '同步失败');
+    const after = item.after || [];
+    $('dataQuality').innerHTML = `<span class="up">已同步 ${escapeHtml(ticker)}：${item.written || 0} 行</span> · 覆盖 ${escapeHtml(after[0] || '--')} ~ ${escapeHtml(after[1] || '--')}`;
+    loadDataStatus();
+  } catch (e) {
+    $('dataQuality').innerHTML = `<span class="down">同步失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+async function checkDataQuality() {
+  const ticker = ($('dataSyncTicker').value || currentTicker() || '').trim();
+  if (!ticker) { showToast('请填写股票代码', 'err'); return; }
+  $('dataQuality').innerHTML = '<span class="muted">检查中…</span>';
+  try {
+    const data = await apiFetch('/api/data/quality?ticker=' + encodeURIComponent(ticker));
+    if (!data.success) throw new Error(data.message || '检查失败');
+    const issues = data.issues || [];
+    const levelClass = { error: 'down', warn: 'warn', info: 'muted' };
+    $('dataQuality').innerHTML = `
+      <div>${escapeHtml(ticker)}：${data.rows || 0} 根 K 线 · ${escapeHtml(data.first_date || '--')} ~ ${escapeHtml(data.last_date || '--')} · <b class="${data.healthy ? 'up' : 'down'}">${data.healthy ? '健康' : '有问题'}</b></div>
+      ${issues.length ? `<ul style="margin:6px 0 0 16px;">${issues.map(item => `<li class="${levelClass[item.level] || 'muted'}">${escapeHtml(item.message)}</li>`).join('')}</ul>` : '<div class="hint">未发现异常</div>'}`;
+  } catch (e) {
+    $('dataQuality').innerHTML = `<span class="down">检查失败: ${escapeHtml(String(e))}</span>`;
+  }
+}
+
+/* ================= 用户与审计（管理员） ================= */
+async function loadAdminPanel() {
+  const card = $('adminCard');
+  if (!state.multiUser || !state.user || state.user.role !== 'admin') {
+    card.style.display = 'none';
+    return;
+  }
+  card.style.display = 'block';
+  try {
+    const [users, audit] = await Promise.all([
+      apiFetch('/api/users'),
+      apiFetch('/api/audit?limit=30'),
+    ]);
+    $('adminUsersTable').innerHTML = (users.items || []).map(item => `<tr>
+      <td><b>${escapeHtml(item.username)}</b></td>
+      <td>${escapeHtml(item.role)}</td>
+      <td><span class="pill ${item.enabled ? 'buy' : 'hold'}">${item.enabled ? '启用' : '禁用'}</span></td>
+      <td class="muted">${escapeHtml(item.risk_ack_at || '未确认')}</td>
+      <td class="muted">${escapeHtml(item.last_login_at || '--')}</td>
+      <td>
+        <button class="icon-btn" data-username="${escapeHtml(item.username)}" onclick="toggleAdminUser(this.dataset.username, ${!item.enabled})">${item.enabled ? '禁用' : '启用'}</button>
+        <button class="icon-btn" data-username="${escapeHtml(item.username)}" onclick="deleteAdminUser(this.dataset.username)">删除</button>
+      </td>
+    </tr>`).join('') || '<tr><td colspan="6" class="muted">暂无用户</td></tr>';
+    $('adminAuditTable').innerHTML = (audit.items || []).map(item => `<tr>
+      <td class="muted">${escapeHtml(item.created_at || '')}</td>
+      <td>${escapeHtml(item.username || '')}</td>
+      <td>${escapeHtml(item.role || '')}</td>
+      <td>${escapeHtml(item.action || '')}</td>
+      <td style="text-align:right;">${item.status || ''}</td>
+    </tr>`).join('') || '<tr><td colspan="5" class="muted">暂无审计</td></tr>';
+  } catch (e) {
+    $('adminUsersTable').innerHTML = `<tr><td colspan="6" class="down">加载失败: ${escapeHtml(String(e))}</td></tr>`;
+  }
+}
+async function createAdminUser() {
+  const username = ($('newUsername').value || '').trim();
+  const password = $('newUserPassword').value || '';
+  if (!username || password.length < 8) { showToast('用户名必填，密码至少 8 位', 'err'); return; }
+  try {
+    const data = await apiFetch('/api/users', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, role: $('newUserRole').value }),
+    });
+    if (!data.success) throw new Error(data.message || '创建失败');
+    $('newUsername').value = ''; $('newUserPassword').value = '';
+    showToast('用户已创建', 'ok');
+    loadAdminPanel();
+  } catch (e) { showToast('创建失败: ' + e, 'err'); }
+}
+async function toggleAdminUser(username, enabled) {
+  try {
+    const data = await apiFetch('/api/users/' + encodeURIComponent(username), {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ enabled: !!enabled }),
+    });
+    if (!data.success) throw new Error(data.message || '更新失败');
+    loadAdminPanel();
+  } catch (e) { showToast('更新失败: ' + e, 'err'); }
+}
+async function deleteAdminUser(username) {
+  if (!confirm('确定删除用户 ' + username + '？')) return;
+  try {
+    const data = await apiFetch('/api/users/' + encodeURIComponent(username), { method: 'DELETE' });
+    if (!data.success) throw new Error(data.message || '删除失败');
+    loadAdminPanel();
+  } catch (e) { showToast('删除失败: ' + e, 'err'); }
 }
 
 /* ================= 设置 ================= */
@@ -3738,11 +5450,15 @@ async function loadSettings() {
     $('schedulerInfo').textContent = '定时任务状态读取失败';
   }
   loadScheduledJobs();
+  loadRuns();
+  loadDataStatus();
+  loadAdminPanel();
   $('envHelp').innerHTML = renderMarkdown([
     '- `ANTHROPIC_API_KEY` / `MINIMAX_API_KEY`：MiniMax 或官方 Anthropic',
     '- `OPENAI_API_KEY`：OpenAI 及兼容端点',
     '- `GOOGLE_API_KEY`：Google Gemini',
     '- `TA_DB_PATH`：SQLite 报告库路径',
+    '- `TA_MARKET_DB` / `TA_MARKET_CACHE`：本地行情库路径与缓存开关',
     '- `TRADINGAGENTS_PARALLEL_ANALYSTS` / `_WORKERS`：分析师并行与并发度',
     '- `SCHEDULE_ENABLED` / `SCHEDULE_TIME` / `SCHEDULE_STOCKS`：每日定时分析',
   ].join('\n'));
@@ -3838,11 +5554,18 @@ function setupScrollListener() {
   try { savedTheme = localStorage.getItem('alphaagents.theme') || 'dark'; } catch (e) {}
   applyTheme(savedTheme);
   $('date').value = localDateStr();
+  if ($('paperEnd')) $('paperEnd').value = localDateStr();
+  if ($('paperStart')) $('paperStart').value = localDateStr(new Date(Date.now() - 14 * 86400000));
   $('company').addEventListener('input', updateHeroIdentity);
   $('date').addEventListener('change', updateHeroIdentity);
   window.addEventListener('resize', () => {
     if (state.klineChartInstance) state.klineChartInstance.resize();
     if (state.sectorHistoryChart) state.sectorHistoryChart.resize();
+    if (state.portfolioChart) state.portfolioChart.resize();
+    if (state.northboundChart) state.northboundChart.resize();
+    if (state.realtimeChart) state.realtimeChart.resize();
+    if (state.socialChart) state.socialChart.resize();
+    if (state.macroChart) state.macroChart.resize();
   });
   document.addEventListener('keydown', e => {
     if (e.key !== 'Escape') return;
@@ -3865,6 +5588,7 @@ function setupScrollListener() {
       e.preventDefault(); first.focus();
     }
   });
+  await initAuth();
   await loadPresets();
   await loadDefaults();
   await loadStrategyMeta();

@@ -30,7 +30,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from typing import Any
 
@@ -268,6 +268,9 @@ class PaperBroker:
         self._current_date = ""
         #: 已完成交易日数（用于避免"当日提交、当日成交"的前视偏差）。
         self._day_index = 0
+        #: 实时模拟盘为 True：禁止委托在提交日之前的历史 K 线上成交。
+        #: 回放/单元测试保持 False，以便用合成历史数据验证撮合逻辑。
+        self.enforce_submission_date = False
         #: 最后一个已完成交易日的日期。
         self._last_processed_date = ""
 
@@ -301,6 +304,11 @@ class PaperBroker:
         """逐日净值曲线：``[{"date", "equity", "cash", "position_value"}]``。"""
         return list(self._equity_curve)
 
+    @property
+    def last_processed_date(self) -> str:
+        """最后一个已完成撮合的交易日；未推进过返回空字符串。"""
+        return self._last_processed_date
+
     def report(self, last_orders: int = 20) -> dict[str, Any]:
         """输出完整模拟盘报告（账户 / 持仓 / 委托 / 台账 / 净值）。"""
         account = self.account()
@@ -329,6 +337,162 @@ class PaperBroker:
             "equity_curve": list(self._equity_curve),
             "notes": list(self._notes),
         }
+
+    # ------------------------------------------------------------------
+    # 状态序列化（WebUI 持久化用）
+    # ------------------------------------------------------------------
+    def to_state(self) -> dict[str, Any]:
+        """把 broker 完整状态导出为 JSON 可写的字典。
+
+        核心撮合逻辑仍然离线、无数据库依赖；持久化只消费这个快照。
+        """
+        return {
+            "version": 1,
+            "initial_cash": self.initial_cash,
+            "cost_model": self.cost_model.to_dict(),
+            "rules": self.rules.to_dict(),
+            "max_single_position_pct": self.max_single_position_pct,
+            "max_total_position_pct": self.max_total_position_pct,
+            "default_ticker": self.default_ticker,
+            "default_name": self.default_name,
+            "cash": self._cash,
+            "frozen_cash": self._frozen_cash,
+            "total_fees": self._total_fees,
+            "positions": {
+                ticker: {
+                    **{
+                        name: getattr(position, name)
+                        for name in (
+                            "ticker",
+                            "quantity",
+                            "avg_cost",
+                            "opened_at",
+                            "last_price",
+                            "unrealised_pnl",
+                            "unrealised_pnl_pct",
+                            "stop_loss",
+                            "take_profit",
+                            "name",
+                            "entry_fees",
+                            "pending_exit",
+                        )
+                    },
+                    "lots": [
+                        {
+                            "quantity": lot.quantity,
+                            "price": lot.price,
+                            "acquired_at": lot.acquired_at,
+                            "sellable": lot.sellable,
+                        }
+                        for lot in position.lots
+                    ],
+                }
+                for ticker, position in self._positions.items()
+            },
+            "orders": [order.to_dict() | {
+                "stop_loss": order.stop_loss,
+                "take_profit": order.take_profit,
+                "frozen_amount": order.frozen_amount,
+                "session_created": order.session_created,
+            } for order in self._orders],
+            "ledger": list(self._ledger),
+            "equity_curve": list(self._equity_curve),
+            "notes": list(self._notes),
+            "closed_trades": list(self._closed_trades),
+            "last_close": dict(self._last_close),
+            "last_close_date": dict(self._last_close_date),
+            "prev_close_hint": {
+                ticker: list(value)
+                for ticker, value in self._prev_close_hint.items()
+            },
+            "order_seq": self._order_seq,
+            "current_date": self._current_date,
+            "day_index": self._day_index,
+            "last_processed_date": self._last_processed_date,
+        }
+
+    @classmethod
+    def from_state(cls, state: dict[str, Any] | None) -> PaperBroker:
+        """从 :meth:`to_state` 的快照恢复；空状态返回默认 broker。"""
+        state = state or {}
+        cost_model = CostModel(**(state.get("cost_model") or {}))
+        rules = ExecutionRules(**(state.get("rules") or {}))
+        broker = cls(
+            initial_cash=float(state.get("initial_cash") or 100000.0),
+            cost_model=cost_model,
+            rules=rules,
+            max_single_position_pct=float(
+                state.get("max_single_position_pct") or 0.25
+            ),
+            max_total_position_pct=float(
+                state.get("max_total_position_pct") or 0.95
+            ),
+            ticker=str(state.get("default_ticker") or ""),
+            name=str(state.get("default_name") or ""),
+        )
+        cash = state.get("cash")
+        broker._cash = (
+            float(cash) if cash is not None else broker.initial_cash
+        )
+        broker._frozen_cash = float(state.get("frozen_cash") or 0.0)
+        broker._total_fees = float(state.get("total_fees") or 0.0)
+        broker._ledger = list(state.get("ledger") or [])
+        broker._equity_curve = list(state.get("equity_curve") or [])
+        broker._notes = list(state.get("notes") or [])
+        broker._closed_trades = [
+            float(item) for item in (state.get("closed_trades") or [])
+        ]
+        broker._last_close = {
+            str(key): float(value)
+            for key, value in (state.get("last_close") or {}).items()
+        }
+        broker._last_close_date = {
+            str(key): str(value)
+            for key, value in (state.get("last_close_date") or {}).items()
+        }
+        broker._prev_close_hint = {
+            str(key): (str(value[0]), float(value[1]))
+            for key, value in (state.get("prev_close_hint") or {}).items()
+            if isinstance(value, (list, tuple)) and len(value) == 2
+        }
+        broker._order_seq = int(state.get("order_seq") or 0)
+        broker._current_date = str(state.get("current_date") or "")
+        broker._day_index = int(state.get("day_index") or 0)
+        broker._last_processed_date = str(state.get("last_processed_date") or "")
+
+        position_fields = {
+            item.name for item in fields(Position) if item.name != "lots"
+        }
+        for ticker, raw in (state.get("positions") or {}).items():
+            if not isinstance(raw, dict):
+                continue
+            lots = [
+                Lot(
+                    quantity=int(lot.get("quantity") or 0),
+                    price=float(lot.get("price") or 0),
+                    acquired_at=str(lot.get("acquired_at") or ""),
+                    sellable=bool(lot.get("sellable")),
+                )
+                for lot in (raw.get("lots") or [])
+                if isinstance(lot, dict)
+            ]
+            values = {
+                key: raw[key]
+                for key in position_fields
+                if key in raw
+            }
+            values["ticker"] = str(values.get("ticker") or ticker)
+            values["quantity"] = int(values.get("quantity") or 0)
+            values["lots"] = lots
+            broker._positions[str(ticker)] = Position(**values)
+
+        order_fields = {item.name for item in fields(Order)}
+        for raw in state.get("orders") or []:
+            if not isinstance(raw, dict):
+                continue
+            values = {key: raw[key] for key in order_fields if key in raw}
+            broker._orders.append(Order(**values))
+        return broker
 
     # ------------------------------------------------------------------
     # 委托
@@ -546,6 +710,15 @@ class PaperBroker:
         for order in list(self._orders):
             if order.status != "pending":
                 continue
+            # 防前视偏差：委托不可能在提交日之前成交。
+            # 回放历史行情时，如果用户是今天下的单，14 天前的 K 线不能成交。
+            if (
+                self.enforce_submission_date
+                and order.submitted_at
+                and date_text < order.submitted_at[:10]
+            ):
+                order.note = f"委托提交于 {order.submitted_at[:10]}，回放日早于提交日，跳过"
+                continue
             # 防前视偏差：当日提交的委托当日不成交（最早次日开盘成交）
             if order.session_created >= day_index:
                 continue
@@ -570,6 +743,8 @@ class PaperBroker:
     def mark_to_market(self, date: Any, prices: Mapping[str, float]) -> None:
         """按给定价格盯市并记录一个净值点。"""
         date_text = _date_text(date)
+        # 只盯市不推进时也必须解禁 T+1 批次，否则重启后卖单永远等不到可卖量。
+        self._unlock_lots(date_text)
         for ticker, price in (prices or {}).items():
             if price is None:
                 continue
@@ -593,14 +768,18 @@ class PaperBroker:
 
         position_value = sum(pos.market_value for pos in self._positions.values())
         equity = self._cash + position_value
-        self._equity_curve.append(
-            {
-                "date": date_text,
-                "equity": round(equity, 2),
-                "cash": round(self._cash, 2),
-                "position_value": round(position_value, 2),
-            }
-        )
+        point = {
+            "date": date_text,
+            "equity": round(equity, 2),
+            "cash": round(self._cash, 2),
+            "position_value": round(position_value, 2),
+        }
+        # 同一个交易日重复盯市（例如用户手动刷新）时覆盖最后一个点，
+        # 而不是追加重复点，避免绩效曲线出现锯齿。
+        if self._equity_curve and self._equity_curve[-1].get("date") == date_text:
+            self._equity_curve[-1] = point
+        else:
+            self._equity_curve.append(point)
 
     # ------------------------------------------------------------------
     # 撮合细节

@@ -78,6 +78,7 @@ from tradingagents.agents.utils.agent_utils import (
     get_news,
     search_web,
 )
+from tradingagents.agents.utils.social_sentiment_tools import get_social_sentiment
 
 # get_config：获取全局配置
 
@@ -164,6 +165,8 @@ def create_social_media_analyst(llm):
         # ====================================================================
         tools = [
             get_news,
+            # 真实社媒热度：东财人气榜 / 概念热度 / 微博情绪 / 雪球（可选）
+            get_social_sentiment,
             # 配置 TAVILY_API_KEY 后，可联网补充最新舆情/事件
             search_web,
         ]
@@ -219,6 +222,8 @@ def create_social_media_analyst(llm):
             "详细描述你在查看社交媒体上关于该公司的舆论、分析公众每日对该公司的情绪数据、"
             "并审视近期公司新闻之后，得出的分析、洞察以及对交易员和投资者关于该公司当前状况的启示。"
             "请使用 get_news(ticker, start_date, end_date) 工具搜索公司专属新闻和社交媒体讨论（ticker 传入股票代码，例如 600519）。"
+            "同时务必调用 get_social_sentiment(ticker, name, curr_date) 查看东财人气榜、"
+            "概念热度、微博情绪与异常热度；如果分析日是历史日期，该工具会明确返回不可用。"
             "如需补充最新舆情或事件，可调用 search_web 进行联网搜索。"
             "尽可能涵盖从社交媒体到情绪数据再到新闻的所有来源。"
             "请提供有具体支撑证据、可操作的洞察，帮助交易员做出明智的决策。"

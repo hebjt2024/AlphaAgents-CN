@@ -94,6 +94,11 @@ from tradingagents.agents.utils.agent_utils import (
     get_income_statement,
     get_valuation_percentile,
 )
+from tradingagents.agents.utils.disclosure_tools import (
+    get_announcements,
+    get_research_consensus,
+    get_shareholder_changes,
+)
 
 # get_config：获取全局配置（如 API 密钥、模型参数等）
 
@@ -202,6 +207,11 @@ def create_fundamentals_analyst(llm):
             get_earnings_forecast,
             get_financial_red_flags,
             get_event_calendar,
+            # 公告 / 研报一致预期 / 股东变化：回答"最近发生了什么、
+            # 机构怎么看、筹码在集中还是分散"。
+            get_announcements,
+            get_research_consensus,
+            get_shareholder_changes,
         ]
 
         # ====================================================================
@@ -259,9 +269,12 @@ def create_fundamentals_analyst(llm):
             "`get_valuation_percentile` 判断当前估值处于历史什么分位（贵不贵），"
             "`get_earnings_forecast` 查看业绩预告/快报（是否超预期），"
             "`get_financial_red_flags` 做商誉/质押/应收账款/现金流四项排雷，"
-            "`get_event_calendar` 查看未来 30 天的解禁、财报披露、除权除息等事件。"
-            "如果估值分位处于极端区间、排雷出现 danger、或近期有大规模解禁，"
-            "必须在报告中明确提示风险。",
+            "`get_event_calendar` 查看未来 30 天的解禁、财报披露、除权除息等事件；"
+            "`get_announcements` 查看近期公告（减持/回购/中标/诉讼/监管等），"
+            "`get_research_consensus` 查看机构评级与盈利预测，"
+            "`get_shareholder_changes` 查看股东户数与前十大股东。"
+            "如果估值分位处于极端区间、排雷出现 danger、近期有大规模解禁，"
+            "或公告出现高影响利空/利好，必须在报告中明确提示。",
         )
         # [英文备份] system_message (en):
         # system_message = (

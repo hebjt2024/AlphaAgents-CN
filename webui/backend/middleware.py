@@ -9,6 +9,7 @@ Prometheus 文本格式导出。
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 import threading
@@ -28,6 +29,9 @@ from webui.backend.api_config import ApiConfig, load_config
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AuditMiddleware",
+    "ErrorStatusMiddleware",
+    "SecurityHeadersMiddleware",
     "MetricsRegistry",
     "RateLimitMiddleware",
     "RequestIdMiddleware",
@@ -506,3 +510,134 @@ class TimingMiddleware(BaseHTTPMiddleware):
                 logger.exception("记录请求指标失败")
             if response is not None:
                 response.headers["X-Response-Time-Ms"] = f"{duration * 1000:.2f}"
+
+
+class AuditMiddleware(BaseHTTPMiddleware):
+    """记录写操作审计日志（POST / PUT / PATCH / DELETE）。
+
+    * 依赖请求期 ``request.state.user``（由鉴权依赖写入）；
+    * 登录接口自己记录成功/失败，避免这里只记录 HTTP 200；
+    * 审计失败绝不影响业务响应。
+    """
+
+    _MUTATING = {"POST", "PUT", "PATCH", "DELETE"}
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        try:
+            config = load_config()
+            path = request.url.path
+            if (
+                request.method.upper() in self._MUTATING
+                and path.startswith(config.api_prefix)
+                and not path.endswith("/auth/login")
+            ):
+                from webui.backend.users import audit_log
+
+                user = getattr(request.state, "user", {}) or {}
+                audit_log(
+                    username=user.get("username") or "",
+                    role=user.get("role") or "",
+                    action=f"{request.method.upper()} {path}",
+                    method=request.method,
+                    path=path,
+                    status=response.status_code,
+                    ip=_client_identity(request, config),
+                    request_id=getattr(request.state, "request_id", "") or "",
+                )
+        except Exception:  # pragma: no cover - 审计不能影响响应
+            logger.exception("审计中间件记录失败")
+        return response
+
+
+class ErrorStatusMiddleware(BaseHTTPMiddleware):
+    """把 ``{"success": false, "code": ...}`` 的业务错误转成正确的 HTTP 状态码。
+
+    项目历史上大量接口用 HTTP 200 + ``success=false`` 返回业务失败，导致
+    审计、监控和前端 ``resp.ok`` 都无法区分成功/失败。这里只解析小体积
+    JSON 响应（错误体通常很小），大报告保持原样，避免额外拷贝开销。
+    """
+
+    _STATUS = {
+        "bad_request": 400,
+        "validation_error": 422,
+        "unauthorized": 401,
+        "forbidden": 403,
+        "not_found": 404,
+        "conflict": 409,
+        "rate_limited": 429,
+        "service_unavailable": 503,
+        "internal_error": 500,
+        "business_error": 400,
+    }
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        content_type = response.headers.get("content-type", "")
+        if response.status_code != 200 or "application/json" not in content_type:
+            return response
+        try:
+            length = int(response.headers.get("content-length") or 0)
+        except ValueError:
+            length = 0
+        if length > 65536:
+            return response
+        body = b"".join([chunk async for chunk in response.body_iterator])
+        try:
+            payload = json.loads(body.decode("utf-8"))
+        except Exception:
+            return Response(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+                background=response.background,
+            )
+        if isinstance(payload, dict) and payload.get("success") is False:
+            code = str(payload.get("code") or "business_error")
+            status = self._STATUS.get(code, 400)
+            headers = dict(response.headers)
+            headers.pop("content-length", None)
+            return Response(
+                content=body,
+                status_code=status,
+                headers=headers,
+                media_type="application/json",
+                background=response.background,
+            )
+        headers = dict(response.headers)
+        headers.pop("content-length", None)
+        return Response(
+            content=body,
+            status_code=response.status_code,
+            headers=headers,
+            media_type=response.media_type,
+            background=response.background,
+        )
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """给所有响应加基础安全头（CSP 需保留 inline，因为前端是内联脚本）。"""
+
+    CSP = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; "
+        "font-src 'self' data:; "
+        "connect-src 'self' ws: wss:; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+
+    async def dispatch(self, request: Request, call_next) -> Response:
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy", "geolocation=(), microphone=(), camera=()"
+        )
+        response.headers.setdefault("Content-Security-Policy", self.CSP)
+        return response

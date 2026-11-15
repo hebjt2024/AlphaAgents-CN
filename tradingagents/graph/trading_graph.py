@@ -892,6 +892,10 @@ flowchart TD
         # 因此 set_current_metrics 要在调用图的线程内完成 —— 本函数正是在
         # 该线程内被调用的。
         # -----------------------------------------------------------------
+        from tradingagents.runtime import set_current_trade_date
+
+        # 工具层据此过滤未来数据（公告披露日、研报日期、宏观发布日等）。
+        set_current_trade_date(str(trade_date))
         metrics = RunMetrics(
             ticker=str(company_name),
             trade_date=str(trade_date),
@@ -1000,7 +1004,24 @@ flowchart TD
             or "HOLD"
         )
         final_state["final_trade_decision"] = decision_text
-        return final_state, self.process_signal(decision_text)
+        # 结构化决策：prompt 要求组合经理在末尾输出 JSON 块。解析失败时
+        # 不影响原有信号提取；解析成功时把置信度/论点/引用/风险标记带出去。
+        from tradingagents.services.decision_schema import (
+            parse_structured_decision,
+        )
+
+        structured = parse_structured_decision(decision_text)
+        signal = self.process_signal(decision_text)
+        if (
+            structured.get("structured")
+            and structured.get("valid")
+            and signal == "HOLD"
+            and structured.get("decision") not in (None, "HOLD")
+        ):
+            # 文本提取失败退化成 HOLD，但 JSON 明确给出方向时，以 JSON 为准。
+            signal = structured["decision"]
+        final_state["decision_structured"] = structured
+        return final_state, signal
 
     # -------------------------------------------------------------------------
     # 私有方法：记录状态日志

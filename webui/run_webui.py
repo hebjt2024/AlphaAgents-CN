@@ -32,9 +32,17 @@ logging.basicConfig(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="TradingAgents Web UI")
     parser.add_argument("--port", type=int, default=8000, help="服务端口（默认 8000）")
-    parser.add_argument("--host", type=str, default="0.0.0.0", help="绑定地址")
+    parser.add_argument(
+        "--host",
+        type=str,
+        default=os.getenv("WEBUI_HOST") or "127.0.0.1",
+        help="绑定地址（默认 127.0.0.1；需要局域网访问时显式设为 0.0.0.0）",
+    )
     parser.add_argument("--reload", action="store_true", help="开发模式热重载")
     args = parser.parse_args()
+    # 让启动告警看到真实绑定地址，而不是 .env 里写的值。
+    os.environ["WEBUI_HOST"] = str(args.host)
+    os.environ["WEBUI_PORT"] = str(args.port)
 
     import uvicorn
 

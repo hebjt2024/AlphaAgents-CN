@@ -55,6 +55,13 @@ class SchedulerBriefingTests(unittest.TestCase):
             patch.object(scheduler, "_run_briefing_once") as briefing,
             patch.object(scheduler, "_run_alerts_once") as alerts,
             patch.object(scheduler, "_run_review_once") as review,
+            # 新增的默认开启任务：测试只关心推送分支，不应触发联网
+            patch.object(scheduler, "_run_sentiment_snapshot_once"),
+            patch.object(scheduler, "_run_portfolio_snapshot_once"),
+            patch.object(scheduler, "_run_data_sync_once"),
+            patch.object(scheduler, "_run_social_snapshot_once"),
+            patch.object(scheduler, "_run_screener_once"),
+            patch.object(scheduler, "_run_evaluation_once"),
         ):
             scheduler._run_once()
 
