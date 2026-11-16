@@ -1,0 +1,35 @@
+# =============================================================================
+# 生产部署覆盖文件：只拉取"已推送的镜像"，绝不在服务器上构建
+#
+# 用法（服务器上）：
+#   export IMAGE_REPO=ghcr.io/your-name/alphaagents-cn
+#   export IMAGE_TAG=1.0.0
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# 说明：
+#   - `build: !reset null` 需要 Docker Compose v2.24+（旧版本请改用：
+#     `docker compose --pull always --no-build up -d`，同样不会本地构建）。
+#   - IMAGE_REPO 必填（用 :? 强制检查，避免误把本地 alphaagents-cn 当生产镜像）。
+#   - pull_policy: always 保证每次启动前先拉取最新标签，避免"机器上是旧镜像"。
+# =============================================================================
+services:
+  alphaagents:
+    image: ${IMAGE_REPO:?请设置 IMAGE_REPO，例如 ghcr.io/your-name/alphaagents-cn}:${IMAGE_TAG:-latest}
+    build: !reset null
+    pull_policy: always
+    environment:
+      # 生产环境建议开鉴权，避免任何人访问面板即可消耗 LLM 额度
+      # 在 .env 中设置 WEBUI_API_KEY=<强随机字符串>
+      WEBUI_HOST: 0.0.0.0
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

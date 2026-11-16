@@ -1,30 +1,83 @@
+# =============================================================================
+# AlphaAgents-CN 本地构建 / 部署编排
+#
+# 常用命令：
+#   cp .env.docker.example .env        # 首次：准备配置（填写 LLM Key）
+#   docker compose up -d --build       # 本地构建并启动
+#   docker compose logs -f             # 看日志
+#   docker compose down                # 停止（数据保留在 ./data 等目录）
+#
+# 可选变量（写在 .env 或 shell 环境里）：
+#   IMAGE_REPO   镜像仓库地址，例如 ghcr.io/your-name/alphaagents-cn
+#   IMAGE_TAG    镜像标签，默认 latest
+#   APP_VERSION  写入镜像 OCI 标签的版本号
+#   PORT         宿主机端口，默认 8000
+#   PIP_INDEX_URL 构建时使用的 pip 镜像源（国内加速）
+# =============================================================================
 name: alphaagents-cn
 
 services:
   alphaagents:
+    image: ${IMAGE_REPO:-alphaagents-cn}:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
-    image: alphaagents-cn:latest
+      args:
+        APP_VERSION: ${APP_VERSION:-0.0.0}
+        VCS_REF: ${VCS_REF:-unknown}
+        BUILD_DATE: ${BUILD_DATE:-unknown}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-}
+        APT_MIRROR: ${APT_MIRROR:-}
+        # 构建期代理：Docker Desktop 用 host.docker.internal，Linux 用网关 IP
+        HTTP_PROXY: ${BUILD_HTTP_PROXY:-}
+        HTTPS_PROXY: ${BUILD_HTTPS_PROXY:-}
+        NO_PROXY: ${BUILD_NO_PROXY:-localhost,127.0.0.1,::1}
     container_name: alphaagents-cn
+    # init: 让 PID 1 正确转发 SIGTERM 并回收僵尸进程（优雅停机更可靠）
+    init: true
     restart: unless-stopped
+    stop_grace_period: 30s
     ports:
       - "${PORT:-8000}:8000"
+    # 所有密钥/开关都放在 .env（已 gitignore）。缺失时先 cp .env.docker.example .env
     env_file:
       - .env
     environment:
-      - TZ=Asia/Shanghai
-      - TA_DB_PATH=/app/data/tradingagents.db
+      TZ: Asia/Shanghai
+      # 容器内数据库路径（对应下面挂载的 ./data）
+      TA_DB_PATH: /app/data/tradingagents.db
+      # 容器内必须监听 0.0.0.0，宿主机再通过 PORT 暴露
+      WEBUI_HOST: 0.0.0.0
+      WEBUI_PORT: "8000"
+    # 让容器内可用 host.docker.internal 指代宿主机（Linux 需显式声明，
+    # Docker Desktop 自带该能力）。运行期代理可写进 .env：
+    #   HTTP_PROXY=http://host.docker.internal:7890
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
+      # SQLite 报告库 / 自选股 / 组合 / 任务记录
       - ./data:/app/data
+      # 每次分析的完整报告落盘
       - ./eval_results:/app/eval_results
+      # 运行日志
       - ./logs:/app/logs
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=3)"]
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/readyz", timeout=3).status == 200 else 1)
       interval: 30s
       timeout: 5s
       retries: 3
-      start_period: 20s
+      start_period: 45s
+    # 容器内已有 app 用户（uid=1000）。若宿主机挂载目录属主不是 1000，
+    # 可取消下面一行并按宿主机用户覆盖（Linux 常见）：
+    # user: "${APP_UID:-1000}:${APP_GID:-1000}"
+    security_opt:
+      - no-new-privileges:true
     deploy:
       resources:
         limits:

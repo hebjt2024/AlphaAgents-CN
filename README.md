@@ -165,7 +165,29 @@ python webui/run_webui.py --port 8000
 > 默认只监听 `127.0.0.1`。需要局域网访问时显式使用 `--host 0.0.0.0`，
 > 并强烈建议同时设置 `WEBUI_API_KEY` 或开启多用户模式（Docker 镜像内已显式绑定 0.0.0.0）。
 
-### 方式三：命令行（pip）
+### 方式三：Docker（镜像打包 / 部署）
+
+```bash
+# 1. 配置（填写 LLM 密钥）
+cp .env.docker.example .env
+
+# 2. 构建并启动
+docker compose up -d --build
+
+# 3. 验证
+curl http://127.0.0.1:8000/healthz
+curl http://127.0.0.1:8000/readyz
+```
+
+- 国内网络构建失败时，在 `.env` 里设置 `APT_MIRROR` / `PIP_INDEX_URL`，
+  或使用本机代理：`pwsh scripts/docker-build.ps1 -Proxy http://127.0.0.1:7890`
+  （脚本会自动转换成容器可访问的 `host.docker.internal`）。
+- 多架构构建 / 推送镜像仓库 / 服务器部署 / 反向代理 / 备份恢复 / 排障，
+  见 **[docs/DOCKER.md](docs/DOCKER.md)**。
+- CI 会在推送 `v*` 标签时自动构建多架构镜像并发布到 GHCR
+  （`.github/workflows/docker.yml`）。
+
+### 方式四：命令行（pip）
 
 ```bash
 pip install -r requirements.txt
@@ -771,6 +793,7 @@ AlphaAgents-CN/
 
 | 文档 | 说明 |
 |---|---|
+| [Docker 打包与部署](docs/DOCKER.md) | 镜像构建、多架构、推送 GHCR/ACR/TCR、服务器部署、备份与排障 |
 | [功能与 API 说明](docs/FEATURES_AND_API.md) | 功能清单、配置、CLI、HTTP API、WebSocket、定时任务 |
 | [代码流程讲解](docs/代码流程讲解.md) | 按执行顺序串联所有代码文件 |
 | [图解指南](docs/图解指南.md) | Mermaid 可视化架构图 |

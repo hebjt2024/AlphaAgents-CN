@@ -1,0 +1,191 @@
+# =============================================================================
+# Docker 镜像构建与发布
+#
+# 触发条件：
+#   - push 到 main/master：构建并推送 latest + sha-xxxx + 分支名标签
+#   - push 标签 v*       ：按语义化版本推送（1.2.3 / 1.2 / latest）
+#   - pull_request       ：只构建不推送（验证 Dockerfile 没坏）
+#   - 手动触发           ：可指定是否推送、目标平台
+#
+# 镜像地址：ghcr.io/<owner>/<repo>（metadata-action 会自动转小写）
+#
+# 首次使用：
+#   1. 仓库 Settings → Actions → General → Workflow permissions
+#      勾选 "Read and write permissions"（或保持默认，本工作流已声明 packages: write）
+#   2. 推一个 tag：git tag v0.3.0 && git push origin v0.3.0
+#   3. 拉取：docker pull ghcr.io/<owner>/<repo>:0.3.0
+#
+# 想同时推 Docker Hub / 阿里云 ACR / 腾讯云 TCR：
+#   见 docs/DOCKER.md「多仓库推送」一节（附可直接粘贴的片段）。
+# =============================================================================
+name: Docker
+
+on:
+  push:
+    branches: [main, master]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+    inputs:
+      push:
+        description: "构建后推送到 GHCR"
+        type: boolean
+        default: false
+      platforms:
+        description: "目标平台（逗号分隔）"
+        type: string
+        default: "linux/amd64,linux/arm64"
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: docker-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # 冒烟测试用的本地镜像名
+  SMOKE_IMAGE: alphaagents-cn:smoke
+
+jobs:
+  build:
+    name: 构建镜像（多架构）
+    runs-on: ubuntu-latest
+    outputs:
+      pushed: ${{ steps.gate.outputs.push }}
+      version: ${{ steps.meta.outputs.version }}
+      tags: ${{ steps.meta.outputs.tags }}
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 启用 QEMU（arm64 交叉构建）
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: 启用 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 判断是否需要推送
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_PUSH: ${{ inputs.push }}
+        run: |
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            push="$INPUT_PUSH"
+          elif [ "$EVENT_NAME" = "pull_request" ]; then
+            push="false"
+          else
+            push="true"
+          fi
+          [ -z "$push" ] && push="false"
+          echo "push=$push" >> "$GITHUB_OUTPUT"
+          echo "本次将推送镜像: $push"
+
+      - name: 登录 GHCR
+        if: steps.gate.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: 生成镜像元数据（标签 / OCI 标签）
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: |
+            ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=ref,event=branch
+            type=ref,event=pr
+            type=sha,prefix=sha-,format=short
+            type=raw,value=latest,enable={{is_default_branch}}
+          labels: |
+            org.opencontainers.image.title=AlphaAgents-CN
+            org.opencontainers.image.description=A 股多智能体投研系统（WebUI + CLI）
+            org.opencontainers.image.licenses=Apache-2.0
+
+      - name: 构建 / 推送
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ github.event_name == 'workflow_dispatch' && inputs.platforms || 'linux/amd64,linux/arm64' }}
+          push: ${{ steps.gate.outputs.push == 'true' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          build-args: |
+            APP_VERSION=${{ steps.meta.outputs.version }}
+            VCS_REF=${{ github.sha }}
+            BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: true
+          sbom: true
+
+      - name: 输出镜像摘要
+        run: |
+          echo "### 镜像信息" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 版本：\`${{ steps.meta.outputs.version }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- 推送：\`${{ steps.gate.outputs.push }}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          echo "${{ steps.meta.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+  smoke:
+    name: 冒烟测试（构建镜像并探活）
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 启用 Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: 构建本地镜像（仅 amd64，加载到守护进程）
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          platforms: linux/amd64
+          tags: ${{ env.SMOKE_IMAGE }}
+          build-args: |
+            APP_VERSION=smoke
+            VCS_REF=${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: 启动容器并检查健康接口
+        run: |
+          docker run -d --name smoke -p 18000:8000 "$SMOKE_IMAGE"
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:18000/healthz >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 2
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::/healthz 未在 120 秒内就绪"
+            docker logs smoke || true
+            exit 1
+          fi
+          echo "✓ /healthz 正常"
+          # /readyz 会真实检查数据库可写与表结构（首次访问会建表）
+          if curl -fsS http://127.0.0.1:18000/readyz >/dev/null 2>&1; then
+            echo "✓ /readyz 正常"
+          else
+            echo "::warning::/readyz 未通过，输出容器日志以便排查"
+            docker logs smoke | tail -80
+          fi
+
+      - name: 清理容器
+        if: always()
+        run: docker rm -f smoke || true
