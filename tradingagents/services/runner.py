@@ -39,6 +39,10 @@ def run_analysis(
         parse_structured_decision,
     )
     from tradingagents.services.fast_preview import preliminary_decision
+    from tradingagents.services.plain_language import (
+        build_plain_summary,
+        format_plain_summary,
+    )
 
     structured_decision = final_state.get("decision_structured") or (
         parse_structured_decision(
@@ -66,7 +70,19 @@ def run_analysis(
         ticker, decision_plan, account=account, owner=owner
     )
 
+    # 人话层：定时任务的接收者多半不是专业读者，
+    # 通知里必须先给"结论 + 该做什么"，而不是一整篇行话报告。
+    plain_summary = build_plain_summary(
+        ticker=ticker,
+        decision=decision,
+        plan=decision_plan,
+        structured=structured_decision,
+        decision_text=final_state.get("final_trade_decision", ""),
+        position_advice=position_advice,
+    )
+
     reports = {
+        "plain_summary": format_plain_summary(plain_summary),
         "market_report": final_state.get("market_report", ""),
         "strategy_report": final_state.get("strategy_report", ""),
         "sentiment_report": final_state.get("sentiment_report", ""),
@@ -98,6 +114,7 @@ def run_analysis(
             "decision_diff": decision_diff,
             "decision_structured": structured_decision,
             "position_advice": position_advice,
+            "plain_summary": plain_summary,
         },
     )
 
@@ -109,6 +126,7 @@ def run_analysis(
                 "trade_date": trade_date,
                 "decision": decision,
                 "decision_text": final_state.get("final_trade_decision", ""),
+                "plain_summary": plain_summary,
             }
         )
         notify_result = send_notification(title, text)
@@ -122,6 +140,7 @@ def run_analysis(
         "decision_diff": decision_diff,
         "decision_structured": structured_decision,
         "position_advice": position_advice,
+        "plain_summary": plain_summary,
         "final_state": final_state,
         "notification": notify_result,
     }

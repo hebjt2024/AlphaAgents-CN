@@ -149,9 +149,10 @@ class NoApiKeyBackwardsCompatTests(EnvMixin):
     def test_existing_success_payload_shape_is_preserved(self):
         resp = self.client.get("/api/status")
         body = resp.json()
-        self.assertEqual(
-            set(body),
-            {"running", "company", "date", "start_time", "job_id"},
+        # 原有字段必须保留；队列初始化后还会追加 queue_* 字段，
+        # 因此这里断言"包含"而不是"完全相等"（避免用例间顺序依赖）。
+        self.assertTrue(
+            {"running", "company", "date", "start_time", "job_id"} <= set(body)
         )
 
 

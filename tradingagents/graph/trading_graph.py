@@ -680,6 +680,11 @@ class TradingAgentsGraph:
             effort = self.config.get("anthropic_effort")
             if effort:
                 kwargs["effort"] = effort
+            # 输出长度上限：langchain-anthropic 的默认值只有 1024 token，
+            # 中文报告会被截断在半句话上（结尾的结构化 JSON 也一起丢掉）。
+            max_tokens = self.config.get("llm_max_tokens")
+            if max_tokens:
+                kwargs["max_tokens"] = int(max_tokens)
 
         return kwargs
 
@@ -1397,3 +1402,26 @@ flowchart TD
             #   LLM 收到完整的分析文本，只返回一个决策词
         """
         return self.signal_processor.process_signal(full_signal)
+
+    # -------------------------------------------------------------------------
+    # 可读性方法：把最终报告改写成白话版（可选功能）
+    # -------------------------------------------------------------------------
+    def rewrite_in_plain_language(self, text: str) -> str:
+        """用 LLM 把最终报告改写成普通人能读懂的白话版。
+
+        【为什么需要？】
+        规则层（services/plain_language.py）已经把结论翻译成白话卡，
+        但报告正文仍是一整篇行话。这里提供可选的 LLM 改写，把正文也换成
+        白话 —— 代价是多一次模型调用，以及改写失真的风险，所以默认关闭。
+
+        【开关】
+        配置项 ``plain_language_rewrite``（环境变量 ``PLAIN_LANGUAGE_REWRITE=1``）。
+
+        返回:
+            str: 白话版正文；未启用或调用失败时返回空字符串。
+        """
+        if not text or not self.config.get("plain_language_rewrite"):
+            return ""
+        from tradingagents.services.plain_language import rewrite_in_plain_language
+
+        return rewrite_in_plain_language(text, self.quick_thinking_llm)

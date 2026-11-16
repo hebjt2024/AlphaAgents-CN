@@ -183,6 +183,18 @@ DEFAULT_CONFIG = {
     # 控制 Claude 4.5+ 和 4.6 模型的 token 使用量和响应详尽程度
     "anthropic_effort": None,
 
+    # 单次回复的最大输出 token 数（仅对 Anthropic 兼容端点生效）。
+    # WHY 必须显式设置：langchain-anthropic 的默认值是 1024，
+    # 中文大约只有 1500~1800 字，最终报告会写到一半被硬截断，
+    # 结尾的结构化 JSON 块也一起丢失。
+    "llm_max_tokens": _env_int("LLM_MAX_TOKENS", 8192),
+
+    # 是否用 LLM 把最终报告额外改写成一版“白话版”。
+    # 默认关闭：会多消耗一次模型调用，且改写存在失真风险。
+    # 规则层的白话结论卡（services/plain_language.py）始终可用，不受此开关影响。
+    "plain_language_rewrite": os.getenv("PLAIN_LANGUAGE_REWRITE", "0").lower()
+    in ("1", "true", "yes", "on"),
+
     # ====== 辩论与讨论设置 ======
     # 多空辩论最大轮数：多头研究员和空头研究员之间辩论的回合数
     # 每轮辩论双方各发表一次观点，值越大辩论越充分但耗时也越长
@@ -217,7 +229,12 @@ DEFAULT_CONFIG = {
         "technical_indicators": "akshare",            # 技术指标：akshare（baostock 不支持）
         "fundamental_data": "akshare,baostock",       # 基本面数据：akshare 优先，baostock 备选
         "news_data": "akshare",                       # 新闻数据：akshare（baostock 不支持）
-        "capital_flow": "akshare",                    # 资金流向：akshare（东方财富）
+        # 资金流向：优先走 eastmoney_direct（直连、单次请求、服务端按代码过滤），
+        # 失败再回退到 akshare。
+        # WHY 直连优先：AkShare 的龙虎榜实现会**翻页拉取整个日期区间的全部记录**
+        # （一次 20 页、20 次请求），既慢（实测 20s+）又极易触发东方财富限流；
+        # 直连版本只发 1 次请求。这是"接口报错刷屏"的主要来源之一。
+        "capital_flow": "eastmoney_direct,akshare",
     },
 
     # 是否允许调用"未在 data_vendors 中配置"的供应商。

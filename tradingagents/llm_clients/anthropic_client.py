@@ -68,6 +68,7 @@
 
 # typing 模块：Python 标准库，提供类型注解
 # Any 表示任意类型，Optional 表示值可以为 None
+import os
 from typing import Any
 
 # LangChain 的 Anthropic 聊天模型封装
@@ -102,6 +103,19 @@ _PASSTHROUGH_KWARGS = (
     "http_async_client",   # 自定义异步 HTTP 客户端（高级用法，一般不需要）
     "effort",              # 思考努力程度（"high"/"medium"/"low"），控制 Claude 的思考深度
 )
+
+#: 默认最大输出 token 数。
+#:
+#: WHY 必须显式设置：
+#: langchain-anthropic 的 ``max_tokens`` 默认值是 **1024**，而 Anthropic 协议
+#: 又把它当成必填参数。1024 token 对中文来说大约只有 1500~1800 个字，
+#: 组合经理的最终报告写不到一半就会被硬生生截断（停在半句话上），
+#: 结尾要求的结构化 JSON 块也跟着一起丢掉 —— 下游于是只能从正文里
+#: 抓词猜决策词，把“当日不得卖出”误读成“卖出”。
+#:
+#: 8192 足以容纳一份完整的中文投资报告，且在 Claude / MiniMax 的
+#: Anthropic 兼容端点上都在模型自身的输出上限之内。
+DEFAULT_MAX_TOKENS = 8192
 
 
 # ============================================================================
@@ -263,6 +277,16 @@ class AnthropicClient(BaseLLMClient):
             llm_kwargs["timeout"] = 300.0  # 5分钟超时
         if "max_retries" not in self.kwargs:
             llm_kwargs["max_retries"] = 2  # 默认重试2次
+
+        # 输出长度上限：必须显式给，否则 langchain-anthropic 用 1024 的默认值，
+        # 长报告会在中途被截断（详见 DEFAULT_MAX_TOKENS 的说明）。
+        # 优先级：调用方显式传入 > 环境变量 LLM_MAX_TOKENS > 默认值。
+        if "max_tokens" not in llm_kwargs:
+            env_tokens = os.getenv("LLM_MAX_TOKENS")
+            if env_tokens and env_tokens.strip().isdigit():
+                llm_kwargs["max_tokens"] = int(env_tokens.strip())
+            else:
+                llm_kwargs["max_tokens"] = DEFAULT_MAX_TOKENS
 
         # 遍历需要转发的参数名列表
         for key in _PASSTHROUGH_KWARGS:

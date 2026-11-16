@@ -509,7 +509,31 @@ def send_notification(
 
 
 def build_report_notification(report: dict) -> tuple[str, str]:
+    """把分析结果拼成通知标题与正文。
+
+    WHY 优先用人话结论：
+    通知（钉钉/企微/邮件）的读者多半不是专业读者，直接推 1500 字行话报告
+    等于没人看。这里先给"结论 + 该做什么"，再附上人话理由与风险，
+    最后才是原文摘录。拿不到人话结论时退回原来的纯文本行为。
+    """
     title = f"{report.get('ticker', '')} {report.get('trade_date', '')} 分析完成"
     decision = report.get("decision") or "未知"
+    plain = report.get("plain_summary") or {}
+
+    if plain:
+        lines = [f"**{plain.get('headline') or f'决策：{decision}'}**", ""]
+        if plain.get("action"):
+            lines.append(f"该怎么做：{plain['action']}")
+        for item in (plain.get("do_list") or [])[:3]:
+            lines.append(f"- {item}")
+        for item in (plain.get("why") or [])[:3]:
+            lines.append(f"· {item}")
+        for item in (plain.get("risks") or [])[:2]:
+            lines.append(f"⚠ {item}")
+        original = str(report.get("decision_text", "") or "")
+        if original:
+            lines.extend(["", "完整报告：", original[:1200]])
+        return title, "\n".join(lines)
+
     text = f"决策：**{decision}**\n\n{report.get('decision_text', '')[:1500]}"
     return title, text

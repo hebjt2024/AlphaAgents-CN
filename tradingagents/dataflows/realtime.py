@@ -120,6 +120,10 @@ def get_realtime_quotes(tickers: list[str] | tuple[str, ...]) -> dict[str, dict[
 
     WHY 批量：``stock_zh_a_spot_em`` 一次返回全市场，且有 5 分钟缓存；
     逐只调用 ``stock_bid_ask_em`` 会触发限流且慢一个数量级。
+
+    WHY 有腾讯兜底：``stock_zh_a_spot_em`` 走东方财富 ``push2`` 域名，
+    该域名是最容易被 IP 限流的接口。腾讯 ``qt.gtimg.cn`` 是完全独立的
+    数据源，东方财富限流期间通常仍然可用，因此作为第二通道。
     """
     wanted = {normalize_code(str(item)) for item in (tickers or [])}
     wanted.discard("")
@@ -128,15 +132,22 @@ def get_realtime_quotes(tickers: list[str] | tuple[str, ...]) -> dict[str, dict[
 
     from .akshare_adapter import get_akshare_spot_snapshot
 
-    df = get_akshare_spot_snapshot()
+    df = None
+    try:
+        df = get_akshare_spot_snapshot()
+    except Exception as exc:  # noqa: BLE001 - 快照失败不应中断调用方
+        logger.info("东方财富快照不可用，尝试腾讯行情兜底: %s", exc)
+        df = None
+
     if df is None or getattr(df, "empty", True):
-        return {}
+        return _tencent_fallback(sorted(wanted))
+
     code_col = next(
         (column for column in ("代码", "code", "symbol") if column in df.columns),
         None,
     )
     if not code_col:
-        return {}
+        return _tencent_fallback(sorted(wanted))
 
     quotes: dict[str, dict[str, Any]] = {}
     for _, row in df.iterrows():
@@ -148,7 +159,26 @@ def get_realtime_quotes(tickers: list[str] | tuple[str, ...]) -> dict[str, dict[
             if column in df.columns:
                 quote[key] = _text(row.get(column)) if key == "name" else _num(row.get(column))
         quotes[code] = quote
+
+    # 东方财富快照返回了，但没覆盖到请求的标的（例如全市场快照缺行）：
+    # 对缺失的标的再走腾讯补一次，避免"部分空值"。
+    missing = [code for code in wanted if code not in quotes]
+    if missing:
+        quotes.update(_tencent_fallback(sorted(missing)))
     return quotes
+
+
+def _tencent_fallback(codes: list[str]) -> dict[str, dict[str, Any]]:
+    """腾讯行情兜底（独立数据源）。失败时返回空字典。"""
+    if not codes:
+        return {}
+    try:
+        from .direct_sources import get_tencent_quotes
+
+        return get_tencent_quotes(codes)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("腾讯行情兜底也失败: %s", exc)
+        return {}
 
 
 def get_realtime_quote(ticker: str) -> dict[str, Any] | None:

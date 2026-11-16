@@ -81,5 +81,42 @@ class FactoryPrecheckTests(unittest.TestCase):
         self.assertIn("ANTHROPIC_API_KEY", str(ctx.exception))
 
 
+class MaxTokensTests(unittest.TestCase):
+    """输出长度上限：默认 1024 会把中文报告截断在半句话上。"""
+
+    def test_anthropic_client_sets_max_tokens_default(self):
+        with patch.dict(
+            os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True
+        ):
+            client = create_llm_client("anthropic", "claude-sonnet-4-6")
+            llm = client.get_llm()
+        self.assertGreaterEqual(llm.max_tokens, 4096)
+
+    def test_explicit_max_tokens_wins(self):
+        with patch.dict(
+            os.environ, {"ANTHROPIC_API_KEY": "test-key"}, clear=True
+        ):
+            client = create_llm_client(
+                "anthropic", "claude-sonnet-4-6", max_tokens=1234
+            )
+            llm = client.get_llm()
+        self.assertEqual(llm.max_tokens, 1234)
+
+    def test_env_override(self):
+        with patch.dict(
+            os.environ,
+            {"ANTHROPIC_API_KEY": "test-key", "LLM_MAX_TOKENS": "2048"},
+            clear=True,
+        ):
+            client = create_llm_client("anthropic", "claude-sonnet-4-6")
+            llm = client.get_llm()
+        self.assertEqual(llm.max_tokens, 2048)
+
+    def test_default_config_exposes_max_tokens(self):
+        from tradingagents.default_config import DEFAULT_CONFIG
+
+        self.assertGreaterEqual(DEFAULT_CONFIG["llm_max_tokens"], 4096)
+
+
 if __name__ == "__main__":
     unittest.main()

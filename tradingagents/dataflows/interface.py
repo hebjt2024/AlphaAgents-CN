@@ -177,6 +177,8 @@
 
 import logging
 import os
+import threading
+import time
 from dataclasses import dataclass
 
 # 从 y_finance 模块导入 Yahoo Finance 供应商的具体实现函数。
@@ -276,6 +278,32 @@ from .cache_provider import (
 # 从 config 模块导入配置获取函数
 # get_config() 返回当前的全局配置字典（详见 config.py 的注释）
 from .config import get_config
+from .direct_sources import (
+    DirectSourceRateLimited,
+)
+
+# 直连备用源：绕过 AkShare 直接访问东方财富的其它域名 / 腾讯行情。
+# WHY：push2 / push2his / datacenter-web 是**不同域名**，限流通常按域名分桶，
+# 经常出现"一个域名挂了、另一个还能用"。把它们作为独立数据源接进降级链，
+# 才有真正的多源冗余（详见 direct_sources 模块说明）。
+from .direct_sources import (
+    get_em_capital_flow as get_direct_capital_flow,
+)
+from .direct_sources import (
+    get_em_dragon_tiger as get_direct_dragon_tiger,
+)
+from .vendor_health import (
+    is_available as vendor_is_available,
+)
+from .vendor_health import (
+    mark_failure as vendor_mark_failure,
+)
+from .vendor_health import (
+    mark_success as vendor_mark_success,
+)
+from .vendor_health import (
+    reset as vendor_health_reset,
+)
 from .y_finance import (
     get_balance_sheet as get_yfinance_balance_sheet,  # 获取资产负债表
 )
@@ -371,11 +399,12 @@ TOOLS_CATEGORIES = {
 # 列表顺序可能影响降级优先级（但具体的降级顺序由 VENDOR_METHODS 字典的键顺序决定）。
 # 这是一个 Python 列表（list），用方括号定义，元素用逗号分隔。
 VENDOR_LIST = [
-    "akshare",        # AkShare - 东方财富 API，A 股数据最全
-    "baostock",       # BaoStock - 证券宝，A 股备选，稳定可靠
-    "yfinance",       # Yahoo Finance - 美股/全球数据，免费无需 API 密钥
-    "alpha_vantage",  # Alpha Vantage - 需要 API 密钥
-    "cache",          # 内置缓存 - 最终兜底方案
+    "akshare",          # AkShare - 东方财富 API，A 股数据最全
+    "eastmoney_direct", # 直连东方财富其它域名（push2his / datacenter-web），AkShare 的冗余通道
+    "baostock",         # BaoStock - 证券宝，A 股备选，稳定可靠
+    "yfinance",         # Yahoo Finance - 美股/全球数据，免费无需 API 密钥
+    "alpha_vantage",    # Alpha Vantage - 需要 API 密钥
+    "cache",            # 内置缓存 - 最终兜底方案
 ]
 
 # ---------------------------------------------------------------------------
@@ -456,14 +485,18 @@ VENDOR_METHODS = {
         "cache": get_cached_insider_transactions,
     },
     # ---- A 股资金流向 ----
+    # eastmoney_direct 走 push2his / datacenter-web 直连，与 AkShare 使用的
+    # 域名不完全相同，是"同一家数据商、不同域名"的冗余通道。
     "get_capital_flow": {
         "akshare": get_akshare_capital_flow,
+        "eastmoney_direct": get_direct_capital_flow,
     },
     "get_northbound_flow": {
         "akshare": get_akshare_northbound_flow,
     },
     "get_dragon_tiger": {
         "akshare": get_akshare_dragon_tiger,
+        "eastmoney_direct": get_direct_dragon_tiger,
     },
 }
 
@@ -590,17 +623,13 @@ REASON_TIMEOUT = "timeout"                # 请求超时
 FAILURE_MESSAGE_PREFIX = "未获取到 "
 
 # 明确没有备选数据源的数据项（FIX 6）
-# WHY：这三个资金流向接口只有 AkShare 一个数据源，既没有 baostock / yfinance
-# 备选，也没有本地缓存。以前它们失败时会抛出
+# WHY：以前这些接口只有 AkShare 一个数据源，失败时抛
 # RuntimeError("No available vendor for ...")，看起来像"数据源链路被耗尽"，
 # 实际上只是"这个数据项根本没有第二个数据源"。
-# 与其伪装成供应商链耗尽，不如如实说明：
-#   该数据项当前没有可用数据源（AkShare 接口不可用）
-# 注意：这里只描述事实，绝不伪造数据。
+# 与其伪装成供应商链耗尽，不如如实说明。
+# 注意：资金流 / 龙虎榜 现在已有 eastmoney_direct 备用通道，不再属于此列。
 NO_FALLBACK_METHODS = {
-    "get_capital_flow": "该数据项当前没有可用数据源（AkShare 接口不可用）",
     "get_northbound_flow": "该数据项当前没有可用数据源（AkShare 接口不可用）",
-    "get_dragon_tiger": "该数据项当前没有可用数据源（AkShare 接口不可用）",
 }
 
 
@@ -768,6 +797,84 @@ def _build_failure_message(
 # ---------------------------------------------------------------------------
 # 函数：route_to_vendor（核心路由函数）
 # ---------------------------------------------------------------------------
+# 单次分析内的结果复用（memoization）
+#
+# WHY：一次深度分析里有 4 个分析师并行跑，它们会请求大量**完全相同**的数据
+# （同一标的、同一区间、同一指标）。每个请求都真打一次东方财富，既慢又极易
+# 触发 IP 限流。这里用短 TTL 的进程内缓存把重复请求合并成一次。
+#
+# 只缓存**成功**结果：失败要留给下一轮重新尝试（并受熔断器保护）。
+_MEMO_ENABLED = os.getenv("DATA_RESULT_MEMO", "1").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
+_MEMO_TTL = float(os.getenv("DATA_RESULT_MEMO_TTL", "60") or 60)
+_MEMO_MAX_ENTRIES = 512
+_memo_store: dict[tuple, tuple[float, object]] = {}
+_memo_lock = threading.Lock()
+
+
+def _memo_cache_key(method: str, args: tuple, kwargs: dict) -> tuple:
+    """构造稳定的缓存键（参数均为基本类型：代码、日期、指标名等）。"""
+    try:
+        return (
+            method,
+            tuple(repr(item) for item in args),
+            tuple(sorted((key, repr(value)) for key, value in kwargs.items())),
+        )
+    except Exception:  # noqa: BLE001 - 键构造失败时退化为不缓存
+        return ("__unhashable__", method, id(args))
+
+
+def _memo_get(key: tuple):
+    if not _MEMO_ENABLED or _MEMO_TTL <= 0:
+        return None
+    now = time.time()
+    with _memo_lock:
+        entry = _memo_store.get(key)
+        if entry is None:
+            return None
+        stored_at, value = entry
+        if now - stored_at > _MEMO_TTL:
+            _memo_store.pop(key, None)
+            return None
+        return value
+
+
+def _memo_put(key: tuple, value) -> None:
+    if not _MEMO_ENABLED or _MEMO_TTL <= 0:
+        return
+    if key and key[0] == "__unhashable__":
+        return
+    now = time.time()
+    with _memo_lock:
+        if len(_memo_store) >= _MEMO_MAX_ENTRIES:
+            # 简单淘汰：清掉已过期的条目；仍然超限就整体清空（分析级缓存，
+            # 清空只影响性能，不影响正确性）。
+            expired = [
+                item_key
+                for item_key, (stored_at, _) in _memo_store.items()
+                if now - stored_at > _MEMO_TTL
+            ]
+            for item_key in expired:
+                _memo_store.pop(item_key, None)
+            if len(_memo_store) >= _MEMO_MAX_ENTRIES:
+                _memo_store.clear()
+        _memo_store[key] = (now, value)
+
+
+def reset_route_caches() -> None:
+    """清空结果复用缓存与熔断状态。
+
+    用途：
+      - 测试隔离（避免上一个用例的缓存/熔断影响下一个）；
+      - 手动排查时希望"立刻重新取一次"。
+    """
+    with _memo_lock:
+        _memo_store.clear()
+    vendor_health_reset()
 # 合成（离线演示）数据的识别。
 #
 # WHY 不再用字符串嗅探（FIX 4）：
@@ -796,6 +903,8 @@ def _is_synthetic_payload(result) -> bool:
 # ---------------------------------------------------------------------------
 
 #: 这些方法的第一个位置参数是标的代码，需要做 A 股校验。
+#: 注意：get_northbound_flow 的第一个参数是**日期**而不是标的，
+#: 若把它放进这里，A_SHARE_ONLY 会把日期当成股票代码而拒绝整次调用。
 _TICKER_METHODS = frozenset(
     {
         "get_stock_data",
@@ -807,7 +916,6 @@ _TICKER_METHODS = frozenset(
         "get_news",
         "get_insider_transactions",
         "get_capital_flow",
-        "get_northbound_flow",
         "get_dragon_tiger",
     }
 )
@@ -825,12 +933,30 @@ def _first_symbol_arg(method: str, args, kwargs) -> str:
     """取出方法调用中的标的代码（没有则返回空串）。"""
     if method not in _TICKER_METHODS:
         return ""
+    candidate = ""
     if args:
-        return str(args[0] or "").strip()
-    for key in ("ticker", "symbol", "code"):
-        if key in kwargs and kwargs[key]:
-            return str(kwargs[key]).strip()
-    return ""
+        candidate = str(args[0] or "").strip()
+    else:
+        for key in ("ticker", "symbol", "code"):
+            if key in kwargs and kwargs[key]:
+                candidate = str(kwargs[key]).strip()
+                break
+    # 防御：某些方法的签名可能被误判，若第一个参数其实是日期就跳过校验
+    if _looks_like_date(candidate):
+        return ""
+    return candidate
+
+
+def _looks_like_date(value: str) -> bool:
+    """判断字符串是否像日期（YYYY-MM-DD / YYYYMMDD / YYYY/MM/DD）。"""
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if len(text) == 10 and text[4] in "-/" and text[7] in "-/":
+        return text.replace("-", "").replace("/", "").isdigit()
+    if len(text) == 8 and text.isdigit():
+        return True
+    return False
 
 
 def _looks_like_a_share(symbol: str) -> bool:
@@ -1020,6 +1146,16 @@ def route_to_vendor(method: str, *args, **kwargs):
     last_failure: VendorResult | None = None
     # 记录"离线演示数据兜底因默认关闭而被跳过"，用于如实说明失败原因
     synthetic_blocked = False
+    # 记录因熔断冷却被跳过的数据源，便于在失败消息里如实说明
+    cooled_down: list[str] = []
+
+    # 单次分析内的结果复用：4 个分析师会并发请求同一批数据，
+    # 相同参数的请求只真正打一次接口，大幅降低触发限流的概率。
+    memo_key = _memo_cache_key(method, args, kwargs)
+    cached = _memo_get(memo_key)
+    if cached is not None:
+        return cached
+
     for vendor in fallback_vendors:
         # 跳过映射表中不存在的供应商（防御性编程）
         # 防御性编程：即使配置写错了供应商名，也不会崩溃
@@ -1029,6 +1165,13 @@ def route_to_vendor(method: str, *args, **kwargs):
         # 默认禁止使用 cache 离线演示数据
         if vendor == "cache" and not allow_synthetic:
             synthetic_blocked = True
+            continue
+
+        # 熔断：该数据源刚被限流/超时，冷却期内直接跳过。
+        # WHY：东方财富官方口径是"等待期间不要重复调用，否则会延长限流"，
+        # 继续重试只会把 5 分钟的封禁拖成 40 分钟。
+        if not vendor_is_available(vendor, method):
+            cooled_down.append(vendor)
             continue
 
         # 获取供应商的实现函数
@@ -1074,6 +1217,10 @@ def route_to_vendor(method: str, *args, **kwargs):
                     last_failure = VendorResult(
                         ok=False, data=result, vendor=vendor, reason=reason
                     )
+                    # 只有"限流/超时"才熔断；"没有数据"是标的/区间问题，
+                    # 把数据源整体熔断反而是误伤。
+                    if reason in (REASON_RATE_LIMITED, REASON_TIMEOUT):
+                        vendor_mark_failure(vendor, method, reason)
                     # 若当前供应商不是降级链中的最后一个，则降级到下一个供应商
                     if vendor != fallback_vendors[-1]:
                         continue
@@ -1084,6 +1231,9 @@ def route_to_vendor(method: str, *args, **kwargs):
                 if is_synthetic and not result.lstrip().startswith("[SIMULATED"):
                     result = SyntheticPayload("[SIMULATED DATA] " + result)
 
+            # 成功：清除该数据源的熔断状态，并写入单次分析内的复用缓存
+            vendor_mark_success(vendor, method)
+            _memo_put(memo_key, result)
             return result
         except SyntheticDataRefusedError:
             # 拒绝使用离线演示数据是显式的安全闸门，必须向上抛出，
@@ -1091,14 +1241,15 @@ def route_to_vendor(method: str, *args, **kwargs):
             raise
         except AlphaVantageRateLimitError as exc:
             # Alpha Vantage 频率限制，继续尝试下一个供应商
+            vendor_mark_failure(vendor, method, REASON_RATE_LIMITED)
             last_failure = VendorResult(
                 ok=False, data=str(exc), vendor=vendor, reason=REASON_RATE_LIMITED
             )
             continue
         except AkShareRateLimitError as exc:
             # AkShare 频率限制（东方财富 API 限流），继续尝试下一个供应商
-            # 东方财富 API 限流时，等待一段时间后重试可能有效，
-            # 但为了快速响应，这里选择直接降级到下一个供应商
+            # 并把该数据源放入冷却期，避免后续调用继续重试、延长封禁
+            vendor_mark_failure(vendor, method, REASON_RATE_LIMITED)
             last_failure = VendorResult(
                 ok=False, data=str(exc), vendor=vendor, reason=REASON_RATE_LIMITED
             )
@@ -1106,13 +1257,24 @@ def route_to_vendor(method: str, *args, **kwargs):
         except AkShareTimeoutError as exc:
             # AkShare 请求超时，继续尝试下一个供应商
             # 超时可能是网络问题或东方财富服务器响应缓慢
+            vendor_mark_failure(vendor, method, REASON_TIMEOUT)
             last_failure = VendorResult(
                 ok=False, data=str(exc), vendor=vendor, reason=REASON_TIMEOUT
+            )
+            continue
+        except DirectSourceRateLimited as exc:
+            # 直连源被限流（东方财富限流时直接断开连接，不返回 429）
+            # 必须按限流处理：用 5 分钟冷却，而不是 1 分钟的网络故障冷却。
+            vendor_mark_failure(vendor, method, REASON_RATE_LIMITED)
+            last_failure = VendorResult(
+                ok=False, data=str(exc), vendor=vendor, reason=REASON_RATE_LIMITED
             )
             continue
         except Exception as exc:
             # 其他异常（网络错误、数据不可用等）也尝试降级
             # 多供应商设计就是为了容错——一个供应商挂了，自动切换下一个
+            # 直连备用源把网络错误统一包成 DirectSourceError，归为"数据源故障"
+            vendor_mark_failure(vendor, method, REASON_VENDOR_ERROR)
             last_failure = VendorResult(
                 ok=False, data=str(exc), vendor=vendor, reason=REASON_VENDOR_ERROR
             )
@@ -1128,6 +1290,11 @@ def route_to_vendor(method: str, *args, **kwargs):
     # 步骤6：所有供应商都失败
     # 统一失败出口：返回保留原始原因的消息，并带上机器可读的原因语义
     message = _build_failure_message(method, last_failure, synthetic_blocked)
+    if cooled_down:
+        message += (
+            f"；已跳过处于冷却期的数据源：{', '.join(cooled_down)}"
+            "（限流后主动等待，避免延长封禁）"
+        )
     logger.warning(
         "route_to_vendor(%s) 取数失败（vendor=%s, reason=%s）：%s",
         method,

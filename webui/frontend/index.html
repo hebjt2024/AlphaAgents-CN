@@ -386,6 +386,24 @@
   .final-text { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: rgba(79,140,255,.04); }
   .final-text .md { font-size: 13px; color: var(--text-2); }
 
+  /* 人话结论卡：把行话结论翻译成普通人看得懂的样子 */
+  .plain-card { border: 1px solid rgba(79,140,255,.35); border-radius: 14px; padding: 14px 16px; background: linear-gradient(180deg, rgba(79,140,255,.10), rgba(79,140,255,.02)); }
+  .plain-headline { font-size: 16px; font-weight: 800; color: var(--text-1); line-height: 1.5; }
+  .plain-action { font-size: 13px; color: var(--text-1); margin-top: 6px; }
+  .plain-section { margin-top: 12px; }
+  .plain-section .t { font-size: 11px; color: var(--text-3); font-weight: 700; letter-spacing: .04em; margin-bottom: 4px; }
+  .plain-section ul { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-2); }
+  .plain-section li { margin: 3px 0; }
+  .plain-numbers { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin-top: 6px; }
+  .plain-num { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; background: rgba(148,163,184,.035); }
+  .plain-num .k { font-size: 11px; color: var(--text-2); font-weight: 700; }
+  .plain-num .v { font-size: 15px; font-weight: 800; font-variant-numeric: tabular-nums; }
+  .plain-num .p { font-size: 11px; color: var(--text-3); margin-top: 2px; line-height: 1.5; }
+  .plain-terms { margin-top: 12px; font-size: 11px; color: var(--text-3); }
+  .plain-terms summary { cursor: pointer; }
+  .plain-terms ul { margin: 6px 0 0; padding-left: 18px; }
+  .plain-note { margin-top: 12px; font-size: 11px; color: var(--text-3); line-height: 1.6; }
+
   /* Tools panels */
   .tools-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
   .tool-card { display: none; }
@@ -1182,6 +1200,7 @@
               <div class="result-head" id="resultHead" style="display:none;border-bottom:1px solid var(--border);">
                 <div class="decision hold" id="decisionBadge">⚖️ 持有 HOLD</div>
                 <div style="display:flex;gap:8px;">
+                  <button class="btn btn-ghost btn-sm" id="textModeBtn" onclick="togglePlainText()" style="display:none;">看白话版</button>
                   <button class="btn btn-ghost btn-sm" onclick="exportResultMarkdown()">导出 Markdown</button>
                 </div>
               </div>
@@ -1750,6 +1769,7 @@ const state = {
   reports: [],
   briefings: [],
   lastResult: null,
+  plainText: false,
   presets: {},
   defaults: null,
   klineRange: 'all',
@@ -2718,6 +2738,8 @@ function clearLogs() {
 
 /* ================= 结果 ================= */
 const REPORT_TITLES = {
+  // 放在最前：先给结论，再给细节 —— 普通人只看第一张卡就够了
+  plain_summary: '🗣 人话结论',
   // 放在最前：对已经持仓的人来说，"我手里这只怎么办" 比技术面分析更重要
   position_advice: '💼 持仓建议',
   market_report: '📈 市场分析报告',
@@ -2730,6 +2752,7 @@ const REPORT_TITLES = {
 };
 function clearResultTab() {
   state.lastResult = null;
+  state.plainText = false;
   hideFastPreview();
   const head = $('resultHead');
   if (head) head.style.display = 'none';
@@ -2743,19 +2766,58 @@ function decisionPlanHtml(plan) {
   const score = Number(plan.score || 0);
   const scoreCls = score >= 60 ? 'up' : score <= 40 ? 'down' : '';
   const reasons = (plan.reasons || []).map(r => `<li>${escapeHtml(r)}</li>`).join('');
+  // 每个指标都带一句白话解释：鼠标悬停即可看到"这个数字是什么意思"
+  const tips = {
+    score: '综合参考分：把所有信号合起来看有多一致。50 分是"多空差不多"，越高说明看涨的理由越充分',
+    confidence: '置信度：系统自己有多大把握。低于 35 表示基本没把握，建议小仓位',
+    consensus: '策略共识：技术指标-rules 整体偏多、偏空还是中性',
+    entry: '参考价：本次分析对应的价格基准',
+    stop_loss: '止损参考：跌到这附近就该认亏离场（规则估算，不是保证）',
+    take_profit: '目标参考：涨到这附近可以考虑了结（规则估算，不是保证）',
+    risk_reward: '风险收益比：赚 1 块大概要冒多少亏的风险，越大越划算',
+    position: '建议仓位：建议投入的钱占全部资金的比例',
+  };
+  const tip = key => tips[key] ? ` title="${escapeHtml(tips[key])}"` : '';
   return `<div class="decision-plan">
     <div class="plan-grid">
-      <div class="plan-item"><div class="k">综合参考分</div><div class="v ${scoreCls}">${score} / 100</div></div>
-      <div class="plan-item"><div class="k">置信度</div><div class="v">${plan.confidence || 0}%</div></div>
-      <div class="plan-item"><div class="k">策略共识</div><div class="v">${escapeHtml(plan.consensus || '中性')}</div></div>
-      <div class="plan-item"><div class="k">参考价</div><div class="v">${plan.entry || 0}</div></div>
-      <div class="plan-item"><div class="k">止损参考</div><div class="v">${plan.stop_loss || 0}</div></div>
-      <div class="plan-item"><div class="k">目标参考</div><div class="v">${plan.take_profit || 0}</div></div>
-      <div class="plan-item"><div class="k">风险收益比</div><div class="v">${plan.risk_reward || 0}</div></div>
-      <div class="plan-item"><div class="k">建议仓位</div><div class="v">${Math.round((plan.position_pct || 0) * 100)}%</div></div>
+      <div class="plan-item"${tip('score')}><div class="k">综合参考分</div><div class="v ${scoreCls}">${score} / 100</div></div>
+      <div class="plan-item"${tip('confidence')}><div class="k">置信度</div><div class="v">${plan.confidence || 0}%</div></div>
+      <div class="plan-item"${tip('consensus')}><div class="k">策略共识</div><div class="v">${escapeHtml(plan.consensus || '中性')}</div></div>
+      <div class="plan-item"${tip('entry')}><div class="k">参考价</div><div class="v">${plan.entry || 0}</div></div>
+      <div class="plan-item"${tip('stop_loss')}><div class="k">止损参考</div><div class="v">${plan.stop_loss || 0}</div></div>
+      <div class="plan-item"${tip('take_profit')}><div class="k">目标参考</div><div class="v">${plan.take_profit || 0}</div></div>
+      <div class="plan-item"${tip('risk_reward')}><div class="k">风险收益比</div><div class="v">${plan.risk_reward || 0}</div></div>
+      <div class="plan-item"${tip('position')}><div class="k">建议仓位</div><div class="v">${Math.round((plan.position_pct || 0) * 100)}%</div></div>
     </div>
     ${reasons ? `<ul class="plan-reasons">${reasons}</ul>` : ''}
   </div>`;
+}
+function plainSummaryHtml(summary) {
+  if (!summary) return '';
+  const esc = escapeHtml;
+  const section = (title, items) => {
+    if (!items || !items.length) return '';
+    return `<div class="plain-section"><div class="t">${esc(title)}</div><ul>${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul></div>`;
+  };
+  const numbers = summary.numbers || [];
+  const terms = summary.terms || [];
+  return `<div class="plain-card">
+    <div class="plain-headline">${esc(summary.headline || '')}</div>
+    ${summary.action ? `<div class="plain-action">👉 该怎么做：${esc(summary.action)}</div>` : ''}
+    ${summary.action_holding ? `<div class="plain-action">💼 你手里有这只：${esc(summary.action_holding)}</div>` : ''}
+    ${section('具体怎么做', summary.do_list)}
+    ${section('为什么', summary.why)}
+    ${section('要当心', summary.risks)}
+    ${numbers.length ? `<div class="plain-section"><div class="t">关键数字</div><div class="plain-numbers">${numbers.map(n => `<div class="plain-num"><div class="k">${esc(n.label || '')}</div><div class="v">${esc(n.value || '')}</div><div class="p">${esc(n.plain || '')}</div></div>`).join('')}</div></div>` : ''}
+    ${summary.confidence_note ? `<div class="plain-section"><div class="t">把握程度</div><div class="plain-action">${esc(summary.confidence_note)}</div></div>` : ''}
+    ${terms.length ? `<details class="plain-terms"><summary>术语对照：看不懂的词都在这里（${terms.length} 个）</summary><ul>${terms.map(t => `<li><b>${esc(t.term)}</b>：${esc(t.meaning)}</li>`).join('')}</ul></details>` : ''}
+    <div class="plain-note">${esc(summary.reliability || '')}${summary.disclaimer ? ' · ' + esc(summary.disclaimer) : ''}</div>
+  </div>`;
+}
+function togglePlainText() {
+  if (!state.lastResult) return;
+  state.plainText = !state.plainText;
+  renderResult(state.lastResult);
 }
 function renderResult(data) {
   state.lastResult = data;
@@ -2769,9 +2831,22 @@ function renderResult(data) {
 
   const reports = data.reports || {};
   const parts = [];
+  // 1) 人话结论：最上面，告诉用户"结论是什么、该做什么"
+  if (data.plain_summary) parts.push(plainSummaryHtml(data.plain_summary));
+  // 2) 结构化决策卡
   if (data.decision_plan) parts.push(decisionPlanHtml(data.decision_plan));
-  parts.push(`<div class="final-text"><div class="md">${renderMarkdown(data.decision_text || '')}</div></div>`);
+  // 3) 最终报告全文（可切换白话版）
+  const plainAvailable = !!(data.decision_text_plain && data.decision_text_plain.trim());
+  const toggleBtn = $('textModeBtn');
+  if (toggleBtn) {
+    toggleBtn.style.display = plainAvailable ? '' : 'none';
+    toggleBtn.textContent = state.plainText ? '看原版' : '看白话版';
+  }
+  const finalText = (state.plainText && plainAvailable) ? data.decision_text_plain : (data.decision_text || '');
+  parts.push(`<div class="final-text"><div class="md">${renderMarkdown(finalText)}</div></div>`);
+  // 4) 各章节折叠块
   Object.entries(REPORT_TITLES).forEach(([key, title]) => {
+    if (key === 'plain_summary') return;
     const text = reports[key];
     if (!text || String(text).trim() === '') return;
     parts.push(`<div class="report">
@@ -2787,10 +2862,14 @@ function exportResultMarkdown() {
   if (!state.lastResult) return;
   const d = state.lastResult;
   let md = `# ${d.company || $('company').value} ${d.date || $('date').value} 分析报告\n\n`;
-  md += `**决策：${d.decision || 'HOLD'}**\n\n${d.decision_text || ''}\n\n`;
+  md += `**决策：${d.decision || 'HOLD'}**\n\n`;
+  const plainMd = (d.reports || {}).plain_summary;
+  if (plainMd) md += plainMd + "\n\n";
+  md += `${d.decision_text_plain || d.decision_text || ''}\n\n`;
   const planMd = (d.reports || {}).decision_plan;
   if (planMd) md += planMd + "\n\n";
   Object.entries(REPORT_TITLES).forEach(([key, title]) => {
+    if (key === 'plain_summary') return;
     const text = (d.reports || {})[key];
     if (text) md += `## ${title}\n\n${text}\n\n`;
   });
@@ -4527,6 +4606,7 @@ async function openReport(id) {
     const r = data.report;
     $('modalTitle').textContent = `${r.ticker} · ${r.trade_date}`;
     const sections = [
+      ['plain_summary', '人话结论'],
       ['final_trade_decision', '最终决策'], ['decision_structured', '结构化决策块'],
       ['decision_plan', '决策卡'],
       ['market_report', '市场分析'], ['strategy_report', '策略信号'],

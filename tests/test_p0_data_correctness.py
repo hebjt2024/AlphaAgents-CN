@@ -402,29 +402,41 @@ class VendorFailureSemanticsTests(unittest.TestCase):
 
 
 class CapitalFlowFallbackTests(unittest.TestCase):
-    """FIX 6：如实说明"没有可用数据源"，并正确识别"不适用"。"""
+    """资金流向类数据项的降级与"不适用"识别。
 
-    def test_capital_flow_methods_have_no_fallback_vendor(self):
-        for method in ("get_capital_flow", "get_northbound_flow", "get_dragon_tiger"):
+    历史：这三类数据项曾经只有 AkShare 一个数据源。现在
+    ``get_capital_flow`` / ``get_dragon_tiger`` 已接入 ``eastmoney_direct``
+    直连备用通道（东方财富的另一组域名），只有 ``get_northbound_flow``
+    仍是单数据源。
+    """
+
+    def test_capital_flow_has_direct_fallback(self):
+        for method in ("get_capital_flow", "get_dragon_tiger"):
             with self.subTest(method=method):
-                self.assertIn(method, interface.NO_FALLBACK_METHODS)
-                self.assertEqual(
-                    list(interface.VENDOR_METHODS[method].keys()), ["akshare"]
-                )
+                vendors = list(interface.VENDOR_METHODS[method].keys())
+                self.assertIn("akshare", vendors)
+                self.assertIn("eastmoney_direct", vendors)
+                self.assertNotIn(method, interface.NO_FALLBACK_METHODS)
+
+    def test_northbound_still_single_source(self):
+        self.assertIn("get_northbound_flow", interface.NO_FALLBACK_METHODS)
+        self.assertEqual(
+            list(interface.VENDOR_METHODS["get_northbound_flow"].keys()), ["akshare"]
+        )
 
     def test_unavailable_message_is_explicit(self):
-        original = interface.VENDOR_METHODS["get_capital_flow"]
+        original = interface.VENDOR_METHODS["get_northbound_flow"]
 
         def _boom(*args, **kwargs):
             raise RuntimeError("akshare 接口不可用")
 
         try:
-            interface.VENDOR_METHODS["get_capital_flow"] = {"akshare": _boom}
+            interface.VENDOR_METHODS["get_northbound_flow"] = {"akshare": _boom}
             result = interface.route_to_vendor(
-                "get_capital_flow", "600519", "2024-01-02", 20
+                "get_northbound_flow", "2024-01-02", 10
             )
         finally:
-            interface.VENDOR_METHODS["get_capital_flow"] = original
+            interface.VENDOR_METHODS["get_northbound_flow"] = original
 
         self.assertIn("该数据项当前没有可用数据源", result)
         failed, reason = interface.is_error_result(result)
@@ -477,7 +489,8 @@ class ThrottleAndRateLimitTests(unittest.TestCase):
         # 4 个并发请求必须被串行化，总耗时至少 3 个间隔
         self.assertGreaterEqual(elapsed, 0.15)
 
-    def test_rate_limit_error_is_raised_after_retries(self):
+    def test_rate_limit_error_stops_retrying(self):
+        """限流默认**不重试**：秒级退避只会延长东方财富的封禁。"""
         calls = {"n": 0}
 
         def _limited():
@@ -486,9 +499,28 @@ class ThrottleAndRateLimitTests(unittest.TestCase):
 
         with self.assertRaises(akshare_adapter.AkShareRateLimitError):
             akshare_adapter.retry_with_backoff(
-                _limited, max_retries=1, base_delay=0.0, max_delay=0.0
+                _limited, max_retries=3, base_delay=0.0, max_delay=0.0
             )
-        self.assertEqual(calls["n"], 2)
+        self.assertEqual(calls["n"], 1)
+
+    def test_rate_limit_retry_can_be_reenabled(self):
+        """显式开启 AKSHARE_RETRY_ON_RATE_LIMIT 时恢复旧的硬扛重试。"""
+        original = akshare_adapter.AKSHARE_RETRY_ON_RATE_LIMIT
+        calls = {"n": 0}
+
+        def _limited():
+            calls["n"] += 1
+            raise RuntimeError("HTTP 429 Too Many Requests")
+
+        try:
+            akshare_adapter.AKSHARE_RETRY_ON_RATE_LIMIT = True
+            with self.assertRaises(akshare_adapter.AkShareRateLimitError):
+                akshare_adapter.retry_with_backoff(
+                    _limited, max_retries=2, base_delay=0.0, max_delay=0.0
+                )
+        finally:
+            akshare_adapter.AKSHARE_RETRY_ON_RATE_LIMIT = original
+        self.assertEqual(calls["n"], 3)
 
     def test_non_rate_limit_error_is_not_converted(self):
         def _broken():

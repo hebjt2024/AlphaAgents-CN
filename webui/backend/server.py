@@ -1214,6 +1214,12 @@ def run_analysis_sync(
             parse_structured_decision,
         )
         from tradingagents.services.fast_preview import preliminary_decision
+        from tradingagents.services.plain_language import (
+            build_plain_summary,
+            explain_terms,
+            format_plain_summary,
+            strip_structured_block,
+        )
 
         structured_decision = final_state.get("decision_structured") or (
             parse_structured_decision(
@@ -1268,9 +1274,31 @@ def run_analysis_sync(
         except Exception:
             logger.debug("持仓建议生成失败", exc_info=True)
 
+        # 人话层：把行话与数字翻译成普通人能读的结论卡，
+        # 并给全文的行话就地加括号解释（不改动 JSON 代码块）。
+        plain_summary = build_plain_summary(
+            ticker=request.company,
+            decision=decision,
+            plan=decision_plan,
+            structured=structured_decision,
+            decision_text=final_state.get("final_trade_decision", ""),
+            position_advice=position_advice,
+        )
+        # 展示层去掉给程序读的 JSON 块（结构化决策卡已用人话展示过同样的信息）
+        decision_text_plain = explain_terms(
+            strip_structured_block(final_state.get("final_trade_decision", ""))
+        )
+        # 可选：LLM 白话改写（默认关闭）。失败时保留规则层的行话解释版本。
+        rewritten = ta.rewrite_in_plain_language(
+            final_state.get("final_trade_decision", "")
+        )
+        if rewritten:
+            decision_text_plain = rewritten
+
         # 完整 reports 字段：保持与 AgentState 字段名一致，前端按 key 渲染对应卡片
         # 注意：investment_plan 是研究经理的推荐，trader_investment_plan 是交易员的执行方案
         reports = {
+            "plain_summary": format_plain_summary(plain_summary),
             "market_report": final_state.get("market_report", ""),
             "strategy_report": final_state.get("strategy_report", ""),
             "sentiment_report": final_state.get("sentiment_report", ""),
@@ -1309,6 +1337,7 @@ def run_analysis_sync(
                         "decision_structured": structured_decision,
                         "portfolio_evaluation": portfolio_evaluation,
                         "position_advice": position_advice,
+                        "plain_summary": plain_summary,
                     },
                 )
             except ApiError:
@@ -1323,6 +1352,7 @@ def run_analysis_sync(
         complete_data = {
             "decision": decision,
             "decision_text": final_state.get("final_trade_decision", ""),
+            "decision_text_plain": decision_text_plain,
             "reports": reports,
             "company": request.company,
             "date": request.date,
@@ -1334,6 +1364,7 @@ def run_analysis_sync(
             "decision_structured": structured_decision,
             "portfolio_evaluation": portfolio_evaluation,
             "position_advice": position_advice,
+            "plain_summary": plain_summary,
             "cancelled": cancelled,
         }
         try:
@@ -4714,10 +4745,18 @@ async def readyz():
     checks = [_check_database(), _check_scheduler(), _check_disk()]
     failed = [c for c in checks if c["required"] and c["status"] == "failed"]
     ready = not failed
+    # 处于限流冷却期的数据源（只做展示，不影响就绪判定）
+    try:
+        from tradingagents.dataflows.vendor_health import snapshot
+
+        vendor_cooldowns = snapshot()
+    except Exception:  # pragma: no cover - 健康检查不应因附加信息失败
+        vendor_cooldowns = {}
     content = {
         "status": "ready" if ready else "not_ready",
         "ready": ready,
         "checks": checks,
+        "vendor_cooldowns": vendor_cooldowns,
         "version": APP_VERSION,
         "uptime_seconds": round(time.time() - _PROCESS_STARTED_AT, 3),
     }

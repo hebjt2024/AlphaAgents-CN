@@ -1492,11 +1492,55 @@ def sanitize_for_console(text: str) -> str:
 
 
 # =====================================================================
+# 函数：build_plain_context(record, ticker, decision)
+# 功能：把最终报告翻译成"人话结论"所需的上下文
+# 参数：record - 最终状态字典; ticker - 股票代码; decision - 决策词
+# 返回：(决策卡, 结构化决策, 人话结论卡)
+# =====================================================================
+def build_plain_context(record: dict, ticker: str, decision: str):
+    """组装决策卡 / 结构化决策 / 人话结论卡。
+
+    WHY 需要这一层：终端里原本直接展示组合经理的原文，行话很多，
+    普通用户读完仍不知道"那我到底该不该买"。这里把同样的信息翻译成
+    结论先行的白话卡片，并把行话就地加括号解释。
+    """
+    from tradingagents.services.decision_plan import build_decision_plan
+    from tradingagents.services.decision_schema import parse_structured_decision
+    from tradingagents.services.plain_language import build_plain_summary
+
+    text = record.get("final_trade_decision", "") or ""
+    # 注意：reports 里的 decision_plan / decision_structured 存的是**Markdown 字符串**，
+    # 只有 state 里的同名字段才是字典。类型不符时按"没有"处理，避免把字符串当字典用。
+    raw_structured = record.get("decision_structured")
+    structured = (
+        raw_structured
+        if isinstance(raw_structured, dict)
+        else parse_structured_decision(text, decision or "HOLD")
+    )
+    # 调用方没给决策词时（例如从历史记录回看），用解析结果兜底
+    decision = decision or structured.get("decision") or "HOLD"
+    raw_plan = record.get("decision_plan")
+    plan = (
+        raw_plan
+        if isinstance(raw_plan, dict)
+        else build_decision_plan(record.get("strategy_result"), decision)
+    )
+    plain = build_plain_summary(
+        ticker=ticker,
+        decision=decision or "HOLD",
+        plan=plan,
+        structured=structured,
+        decision_text=text,
+    )
+    return plan, structured, plain
+
+
+# =====================================================================
 # 函数：display_summary_report(record, ticker, date)
 # 功能：以层级分明的方式展示分析摘要
 # 参数：record - 分析记录字典; ticker - 股票代码; date - 分析日期
 # =====================================================================
-def display_summary_report(record: dict, ticker: str, date: str):
+def display_summary_report(record: dict, ticker: str, date: str, decision: str = ""):
     """以摘要优先模式展示分析结果"""
 
     company = record.get("company_of_interest", ticker)
@@ -1514,6 +1558,37 @@ def display_summary_report(record: dict, ticker: str, date: str):
         border_style="blue",
         padding=(0, 2),
     ))
+
+    # ---- Level 0: 人话结论（结论先行，普通人只看这一屏）----
+    try:
+        # Rich 的方括号是样式标记；报告里会出现 [公告]/[行情] 这类引用，
+        # 必须转义，否则会被当成标签解析（甚至报错）。
+        from rich.markup import escape as rich_escape
+
+        _plan, _structured, plain = build_plain_context(record, ticker, decision)
+        plain_lines = [f"[bold]{rich_escape(plain['headline'])}[/bold]"]
+        if plain.get("action"):
+            plain_lines.append(
+                f"[bold]该怎么做[/bold]：{rich_escape(plain['action'])}"
+            )
+        if plain.get("action_holding"):
+            plain_lines.append(
+                f"[bold]你手里有这只[/bold]：{rich_escape(plain['action_holding'])}"
+            )
+        for item in plain.get("do_list") or []:
+            plain_lines.append(f"  - {rich_escape(item)}")
+        for item in (plain.get("why") or [])[:3]:
+            plain_lines.append(f"  · {rich_escape(item)}")
+        for item in (plain.get("risks") or [])[:2]:
+            plain_lines.append(f"  [yellow]![/yellow] {rich_escape(item)}")
+        console.print(Panel(
+            "\n".join(plain_lines),
+            title="人话结论",
+            border_style="green",
+            padding=(1, 2),
+        ))
+    except Exception as exc:  # 白话层失败不应影响主流程
+        console.print(f"[dim](人话结论生成失败: {exc})[/dim]")
 
     # ---- Level 1: 评级（最醒目）----
     rating = parsed.get("rating", "未知")
@@ -1588,6 +1663,20 @@ def display_complete_report(final_state):
     # Rule 组件：水平分割线
     console.print(Rule("Complete Analysis Report", style="bold green"))
 
+    # 终端里的报告同样要能看懂：给行话就地加括号解释，
+    # 并去掉只给程序读的 JSON 块。
+    # （之前这里直接截断到 1000 字，最关键的结论常常被切掉半句。）
+    from tradingagents.services.plain_language import (
+        explain_terms,
+        strip_structured_block,
+    )
+
+    def _readable(text: str, limit: int = 2000) -> str:
+        text = explain_terms(strip_structured_block(text or ""))
+        if len(text) > limit:
+            text = text[:limit] + "\n...（内容较长已截断，完整报告见「报告文件」）"
+        return sanitize_for_console(text)
+
     # ---- I. 分析师团队报告 ----
     analysts = []
     if final_state.get("market_report"):
@@ -1601,8 +1690,7 @@ def display_complete_report(final_state):
     if analysts:
         console.print(Panel("[bold]I. Analyst Team Reports[/bold]", border_style="cyan"))
         for title, content in analysts:
-            content = sanitize_for_console(content[:1000] + "..." if len(content) > 1000 else content)
-            console.print(Panel(content, title=title, border_style="blue", padding=(1, 2)))
+            console.print(Panel(_readable(content), title=title, border_style="blue", padding=(1, 2)))
 
     # ---- II. 研究团队决策 ----
     if final_state.get("investment_debate_state"):
@@ -1617,14 +1705,12 @@ def display_complete_report(final_state):
         if research:
             console.print(Panel("[bold]II. Research Team Decision[/bold]", border_style="magenta"))
             for title, content in research:
-                content = sanitize_for_console(content[:1000] + "..." if len(content) > 1000 else content)
-                console.print(Panel(content, title=title, border_style="blue", padding=(1, 2)))
+                console.print(Panel(_readable(content), title=title, border_style="blue", padding=(1, 2)))
 
     # ---- III. 交易团队计划 ----
     if final_state.get("trader_investment_plan"):
         console.print(Panel("[bold]III. Trading Team Plan[/bold]", border_style="yellow"))
-        content = sanitize_for_console(final_state["trader_investment_plan"][:1000] + "..." if len(final_state["trader_investment_plan"]) > 1000 else final_state["trader_investment_plan"])
-        console.print(Panel(content, title="Trader", border_style="blue", padding=(1, 2)))
+        console.print(Panel(_readable(final_state["trader_investment_plan"]), title="Trader", border_style="blue", padding=(1, 2)))
 
     # ---- IV. 风险管理团队决策 ----
     if final_state.get("risk_debate_state"):
@@ -1639,14 +1725,15 @@ def display_complete_report(final_state):
         if risk_reports:
             console.print(Panel("[bold]IV. Risk Management Team Decision[/bold]", border_style="red"))
             for title, content in risk_reports:
-                content = sanitize_for_console(content[:1000] + "..." if len(content) > 1000 else content)
-                console.print(Panel(content, title=title, border_style="blue", padding=(1, 2)))
+                console.print(Panel(_readable(content), title=title, border_style="blue", padding=(1, 2)))
 
         # ---- V. 投资组合经理决策 ----
         if risk.get("judge_decision"):
             console.print(Panel("[bold]V. Portfolio Manager Decision[/bold]", border_style="green"))
-            content = sanitize_for_console(risk["judge_decision"][:1000] + "..." if len(risk["judge_decision"]) > 1000 else risk["judge_decision"])
-            console.print(Panel(content, title="Portfolio Manager", border_style="blue", padding=(1, 2)))
+            # 若开启了 LLM 白话改写，优先展示白话版；否则展示加了术语解释的原文。
+            # 最终决策最重要，给足长度（4000 字），别再切半句。
+            manager_text = final_state.get("decision_text_plain") or risk["judge_decision"]
+            console.print(Panel(_readable(manager_text, limit=4000), title="Portfolio Manager", border_style="blue", padding=(1, 2)))
 
 
 # =====================================================================
@@ -2315,12 +2402,46 @@ def run_analysis():
     try:
         from tradingagents.storage import save_report
 
+        # 人话层：CLI 与 WebUI 存同一套字段，报告中心才能统一展示
+        try:
+            from tradingagents.services.decision_plan import format_decision_plan
+            from tradingagents.services.decision_schema import (
+                format_structured_decision,
+            )
+            from tradingagents.services.plain_language import (
+                format_plain_summary,
+            )
+
+            _plan, _structured, _plain = build_plain_context(
+                final_state, selections["ticker"], decision
+            )
+            plain_summary_md = format_plain_summary(_plain)
+            decision_plan_md = format_decision_plan(_plan)
+            decision_structured_md = format_structured_decision(_structured)
+        except Exception:
+            plain_summary_md = ""
+            decision_plan_md = ""
+            decision_structured_md = ""
+
+        # 可选：LLM 白话改写（默认关闭）
+        try:
+            rewritten = graph.rewrite_in_plain_language(
+                final_state.get("final_trade_decision", "")
+            )
+        except Exception:
+            rewritten = ""
+        if rewritten:
+            final_state["decision_text_plain"] = rewritten
+
         report_id = save_report(
             ticker=selections["ticker"],
             trade_date=selections["analysis_date"],
             decision=decision,
             decision_text=final_state.get("final_trade_decision", ""),
             reports={
+                "plain_summary": plain_summary_md,
+                "decision_plan": decision_plan_md,
+                "decision_structured": decision_structured_md,
                 "market_report": final_state.get("market_report", ""),
                 "sentiment_report": final_state.get("sentiment_report", ""),
                 "news_report": final_state.get("news_report", ""),
@@ -2370,7 +2491,12 @@ def run_analysis():
             console.print(f"[red]Error saving report: {e}[/red]")
 
     # 使用摘要优先模式展示结果
-    display_summary_report(final_state, selections["ticker"], selections["analysis_date"])
+    display_summary_report(
+        final_state,
+        selections["ticker"],
+        selections["analysis_date"],
+        decision=decision,
+    )
 
 
 # =====================================================================
@@ -2560,7 +2686,12 @@ def view(
                     ),
                 }
             )
-            display_summary_report(flat, target["ticker"], target["trade_date"])
+            display_summary_report(
+                flat,
+                target["ticker"],
+                target["trade_date"],
+                decision=target.get("decision", ""),
+            )
             console.print(
                 f"\n[dim]数据库记录 id={target['id']}，创建于 {target['created_at']}[/dim]"
             )

@@ -116,6 +116,14 @@ AKSHARE_MAX_DELAY = float(os.getenv("AKSHARE_MAX_DELAY", "30.0"))
 # 请求间隔时间（秒），避免快速连续请求触发限流
 AKSHARE_REQUEST_INTERVAL = float(os.getenv("AKSHARE_REQUEST_INTERVAL", "0.5"))
 
+# 命中限流时是否继续重试。
+# WHY 默认关闭：东方财富明确要求"等待期间不要重复调用，否则会延长限流"，
+# 而限流恢复通常要 5 分钟以上，秒级退避重试只会让封禁更久。
+# 需要旧行为（硬扛重试）时可设 AKSHARE_RETRY_ON_RATE_LIMIT=1。
+AKSHARE_RETRY_ON_RATE_LIMIT = os.getenv(
+    "AKSHARE_RETRY_ON_RATE_LIMIT", "0"
+).strip().lower() in ("1", "true", "yes", "on")
+
 # 上次请求时间戳（模块级，用于请求间隔控制）
 _last_request_time = 0.0
 
@@ -370,6 +378,12 @@ def retry_with_backoff(
             # 记录是否命中"限流"特征，供全部重试失败后决定抛哪种异常
             if _is_rate_limit_error(e):
                 rate_limited = True
+                # WHY 限流不重试：东方财富的官方口径是"等待期间不要重复调用，
+                # 否则会延长限流"。限流通常要 5 分钟以上才恢复，指数退避的
+                # 2s/4s/8s 重试除了把封禁拖长之外没有任何收益。
+                # 立即失败 → 路由层熔断该数据源 → 冷却期内直接跳过。
+                if not AKSHARE_RETRY_ON_RATE_LIMIT:
+                    break
             if attempt < max_retries:
                 delay = min(base_delay * (2 ** attempt), max_delay)
                 # 添加随机抖动，避免多个请求同时重试
