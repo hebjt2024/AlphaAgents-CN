@@ -236,10 +236,14 @@ def get_fund_flow_snapshot(indicator: str = "今日") -> pd.DataFrame:
 
     try:
         adapter._require_akshare()
+        rank_func = adapter._ak_func(
+            "stock_fund_flow_individual_rank_em",
+            "stock_individual_fund_flow_rank",
+        )
+        if rank_func is None:
+            raise RuntimeError("当前 AkShare 版本没有资金流排行接口")
         frame = adapter.retry_with_backoff(
-            lambda: adapter.ak.stock_individual_fund_flow_rank(
-                indicator=indicator
-            ),
+            lambda: rank_func(indicator=indicator),
             max_retries=2,
             base_delay=2.0,
         )

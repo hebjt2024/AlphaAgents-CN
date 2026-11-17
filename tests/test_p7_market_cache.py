@@ -113,6 +113,38 @@ class MarketStoreTests(unittest.TestCase):
         self.assertEqual(len(second), 3)
         self.assertEqual(len(calls), 1, "第二次应命中本地缓存，不再请求数据源")
 
+    def test_unadjusted_fallback_is_cached_separately_with_warning(self):
+        from tradingagents.services.market_data import load_prices
+        from tradingagents.storage.market_store import load_daily_bars
+
+        note = (
+            "# 注意: 本数据来自腾讯财经备用源，为未复权（不复权）原始价格，"
+            "与主数据源的前复权基准不一致。\n"
+        )
+
+        def fetch(code, start, end):
+            return note + CSV
+
+        frame = load_prices(
+            "600519", "2024-01-02", "2024-01-04", fetch=fetch
+        )
+        self.assertEqual(len(frame), 3)
+        self.assertTrue(
+            any("不复权" in item for item in frame.attrs.get("warnings", []))
+        )
+        # 绝不能把不复权数据写进 qfq 缓存，必须单独存一份
+        self.assertTrue(
+            load_daily_bars("600519", "2024-01-02", "2024-01-04", adjust="qfq").empty
+        )
+        self.assertEqual(
+            len(
+                load_daily_bars(
+                    "600519", "2024-01-02", "2024-01-04", adjust="none"
+                )
+            ),
+            3,
+        )
+
     def test_market_data_falls_back_to_local_when_fetch_fails(self):
         from tradingagents.services.market_data import load_prices
         from tradingagents.storage.market_store import save_daily_bars

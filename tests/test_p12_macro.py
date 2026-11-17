@@ -135,14 +135,53 @@ class MacroServiceTests(unittest.TestCase):
         self.ak = akshare_adapter.ak
 
     def _patches(self):
+        # 同时覆盖新旧 AkShare 接口名：代码优先用新接口，旧版本则回退。
         return [
-            patch.object(self.ak, "macro_china_pmi_yearly", return_value=_yearly("PMI", 50.5, 49.8)),
-            patch.object(self.ak, "macro_china_cpi_yearly", return_value=_yearly("CPI", 0.5, 0.3)),
-            patch.object(self.ak, "macro_china_ppi_yearly", return_value=_yearly("PPI", -1.2, -1.8)),
-            patch.object(self.ak, "macro_china_m2_yearly", return_value=_yearly("M2", 8.2, 7.9)),
-            patch.object(self.ak, "macro_china_lpr", return_value=_lpr()),
-            patch.object(self.ak, "macro_china_shibor_all", return_value=_shibor()),
-            patch.object(self.ak, "bond_zh_us_rate", return_value=_bonds()),
+            patch.object(
+                self.ak,
+                "macro_china_pmi",
+                return_value=_yearly("PMI", 50.5, 49.8),
+                create=True,
+            ),
+            patch.object(
+                self.ak,
+                "macro_china_cpi",
+                return_value=_yearly("CPI", 0.5, 0.3),
+                create=True,
+            ),
+            patch.object(
+                self.ak,
+                "macro_china_ppi",
+                return_value=_yearly("PPI", -1.2, -1.8),
+                create=True,
+            ),
+            patch.object(
+                self.ak,
+                "macro_china_money_supply_em",
+                return_value=_yearly("M2", 8.2, 7.9),
+                create=True,
+            ),
+            patch.object(
+                self.ak,
+                "interest_rate_lpr_em",
+                return_value=_lpr(),
+                create=True,
+            ),
+            patch.object(
+                self.ak,
+                "interest_rate_shibor_js",
+                return_value=_shibor(),
+                create=True,
+            ),
+            patch.object(
+                self.ak,
+                "bond_zh_us_yield_em",
+                return_value=_bonds(),
+                create=True,
+            ),
+            patch.object(
+                self.ak, "bond_zh_us_rate", return_value=_bonds(), create=True
+            ),
         ]
 
     def test_macro_indicators(self):
@@ -162,8 +201,13 @@ class MacroServiceTests(unittest.TestCase):
     def test_margin_snapshot(self):
         from tradingagents.dataflows.macro_data import get_margin_snapshot
 
-        with patch.object(self.ak, "macro_china_market_margin_sh", return_value=_margin()), patch.object(
-            self.ak, "macro_china_market_margin_sz", return_value=_margin(1e11)
+        with patch.object(
+            self.ak, "stock_margin_sse_js", return_value=_margin(), create=True
+        ), patch.object(
+            self.ak,
+            "stock_margin_szse_js",
+            return_value=_margin(1e11),
+            create=True,
         ):
             result = get_margin_snapshot()
         self.assertTrue(result["success"])
@@ -175,7 +219,10 @@ class MacroServiceTests(unittest.TestCase):
         from tradingagents.dataflows.macro_data import get_industry_rotation
 
         with patch.object(
-            self.ak, "stock_sector_fund_flow_rank", side_effect=lambda indicator, sector_type: _rotation(indicator)
+            self.ak,
+            "stock_fund_flow_sector_rank_em",
+            side_effect=lambda indicator, sector_type: _rotation(indicator),
+            create=True,
         ):
             result = get_industry_rotation(10)
         self.assertTrue(result["success"])

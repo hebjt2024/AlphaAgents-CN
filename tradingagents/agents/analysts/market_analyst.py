@@ -259,6 +259,22 @@ from tradingagents.agents.utils.macro_tools import (
     get_margin_snapshot,
 )
 
+# 分析师可调用的工具集合：ToolNode 必须使用同一份列表，
+# 否则 LLM 调用到 ToolNode 未注册的工具时会直接抛错，报告只剩开头的引导语。
+MARKET_ANALYST_TOOLS = [
+    get_stock_data,
+    get_indicators,
+    get_capital_flow,
+    get_dragon_tiger,
+    get_valuation_percentile,
+    get_lockup_expiry,
+    get_event_calendar,
+    get_macro_overview,
+    get_margin_snapshot,
+    get_industry_rotation,
+    get_etf_flows,
+]
+
 # 【get_config】
 #   为什么需要：获取全局配置（如数据供应商选择、API 密钥等）。
 #   解决什么问题：系统支持多个数据供应商（如 Yahoo Finance、Alpha Vantage），
@@ -394,25 +410,7 @@ def create_market_analyst(llm):
         #   拿到数据后再生成另一个 tool_call 请求 get_indicators。
         #   这个决策过程完全由 LLM 自主完成，不需要人工编写 if-else 逻辑。
         # ====================================================================
-        tools = [
-            get_stock_data,
-            get_indicators,
-            # A 股资金面（主力资金流向 / 龙虎榜）。非 A 股标的调用会返回
-            # 无数据提示，由 LLM 自行忽略，不影响原有分析流程。
-            get_capital_flow,
-            get_dragon_tiger,
-            # A 股择时辅助：
-            #   - 估值历史分位：技术形态之外，判断当前价位的安全边际
-            #   - 限售解禁 / 事件日历：识别未来可能带来抛压的时间窗口
-            get_valuation_percentile,
-            get_lockup_expiry,
-            get_event_calendar,
-            # 宏观环境 / 杠杆资金 / 行业轮动 / ETF 资金方向
-            get_macro_overview,
-            get_margin_snapshot,
-            get_industry_rotation,
-            get_etf_flows,
-        ]
+        tools = list(MARKET_ANALYST_TOOLS)
 
         # ====================================================================
         # 第三步：构建系统提示词（System Prompt）

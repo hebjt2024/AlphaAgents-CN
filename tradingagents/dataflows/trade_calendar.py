@@ -84,7 +84,12 @@ def _load_trade_dates() -> set:
     try:
         import akshare as ak
 
-        df = ak.tool_trade_date_hist_sina()
+        func = getattr(ak, "calendar_trade_date_hist_sina", None) or getattr(
+            ak, "tool_trade_date_hist_sina", None
+        )
+        if func is None:
+            raise RuntimeError("当前 AkShare 版本没有交易日历接口")
+        df = func()
         if df is not None and not df.empty:
             col = "trade_date" if "trade_date" in df.columns else df.columns[0]
             for value in df[col].tolist():

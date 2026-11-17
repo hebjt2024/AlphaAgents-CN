@@ -60,9 +60,12 @@ def _normalize(frame: pd.DataFrame) -> pd.DataFrame:
 def _fetch_index(symbol: str, start: str, end: str) -> tuple[pd.DataFrame, str]:
     """先试指数，再试沪深 300 ETF。返回 (frame, source)。"""
     adapter._require_akshare()
+    index_func = adapter._ak_func("index_zh_hist_em", "index_zh_a_hist")
     try:
+        if index_func is None:
+            raise RuntimeError("当前 AkShare 版本没有指数行情接口")
         frame = adapter.retry_with_backoff(
-            lambda: adapter.ak.index_zh_a_hist(
+            lambda: index_func(
                 symbol=symbol,
                 period="daily",
                 start_date=start.replace("-", ""),

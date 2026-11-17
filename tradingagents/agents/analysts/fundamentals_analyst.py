@@ -100,6 +100,21 @@ from tradingagents.agents.utils.disclosure_tools import (
     get_shareholder_changes,
 )
 
+# 分析师可调用的工具集合：ToolNode 必须复用同一份列表。
+FUNDAMENTALS_ANALYST_TOOLS = [
+    get_fundamentals,
+    get_balance_sheet,
+    get_cashflow,
+    get_income_statement,
+    get_valuation_percentile,
+    get_earnings_forecast,
+    get_financial_red_flags,
+    get_event_calendar,
+    get_announcements,
+    get_research_consensus,
+    get_shareholder_changes,
+]
+
 # get_config：获取全局配置（如 API 密钥、模型参数等）
 
 
@@ -193,26 +208,7 @@ def create_fundamentals_analyst(llm):
         #   - get_income_statement：获取收入与利润明细（公司"赚了多少、花了多少"）
         # LLM 会自主决定先调用哪个工具，可能先看概况再看详细报表。
         # ====================================================================
-        tools = [
-            get_fundamentals,       # 获取公司综合基本面数据
-            get_balance_sheet,      # 获取资产负债表
-            get_cashflow,           # 获取现金流量表
-            get_income_statement,   # 获取利润表
-            # A 股特有的"把数字变成判断"的工具：
-            #   - 估值历史分位：答"贵不贵"
-            #   - 业绩预告/快报：答"业绩有没有超预期"
-            #   - 财务排雷：答"会不会爆雷"
-            #   - 事件日历：答"接下来有什么大事"
-            get_valuation_percentile,
-            get_earnings_forecast,
-            get_financial_red_flags,
-            get_event_calendar,
-            # 公告 / 研报一致预期 / 股东变化：回答"最近发生了什么、
-            # 机构怎么看、筹码在集中还是分散"。
-            get_announcements,
-            get_research_consensus,
-            get_shareholder_changes,
-        ]
+        tools = list(FUNDAMENTALS_ANALYST_TOOLS)
 
         # ====================================================================
         # 系统提示词（System Prompt）

@@ -90,6 +90,17 @@ from tradingagents.agents.utils.agent_utils import (
 from tradingagents.agents.utils.disclosure_tools import get_announcements
 from tradingagents.agents.utils.macro_tools import get_macro_overview
 
+# 分析师可调用的工具集合：ToolNode 必须复用同一份列表。
+NEWS_ANALYST_TOOLS = [
+    get_news,
+    get_global_news,
+    get_northbound_flow,
+    get_announcements,
+    get_macro_overview,
+    search_web,
+    search_stock_news,
+]
+
 # get_config：获取全局配置
 
 
@@ -179,19 +190,7 @@ def create_news_analyst(llm):
         # 例如，它可能先调用 get_news 获取公司新闻，
         # 再调用 get_global_news 获取宏观经济背景。
         # ====================================================================
-        tools = [
-            get_news,
-            get_global_news,
-            # A 股宏观资金面（北向资金）。非 A 股场景调用会返回无数据提示。
-            get_northbound_flow,
-            # 正式公告（比新闻更权威）：减持/回购/中标/诉讼/监管等
-            get_announcements,
-            # 宏观环境：PMI/CPI/PPI/M2/LPR/国债收益率
-            get_macro_overview,
-            # 配置 TAVILY_API_KEY 后，可联网补充新闻/公告
-            search_web,
-            search_stock_news,
-        ]
+        tools = list(NEWS_ANALYST_TOOLS)
 
         # ====================================================================
         # 系统提示词（System Prompt）

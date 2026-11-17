@@ -10,11 +10,15 @@ import os
 
 # 每个提供商可接受的环境变量（按优先级）
 _PROVIDER_ENV_ALIASES: dict[str, tuple[str, ...]] = {
-    "anthropic": ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"),
-    "openai": ("OPENAI_API_KEY",),
-    "google": ("GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY"),
-    "xai": ("XAI_API_KEY",),
-    "openrouter": ("OPENROUTER_API_KEY",),
+    "anthropic": (
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_API_KEYS",
+    ),
+    "openai": ("OPENAI_API_KEY", "OPENAI_API_KEYS"),
+    "google": ("GOOGLE_API_KEY", "GOOGLE_GENAI_API_KEY", "GOOGLE_API_KEYS"),
+    "xai": ("XAI_API_KEY", "XAI_API_KEYS"),
+    "openrouter": ("OPENROUTER_API_KEY", "OPENROUTER_API_KEYS"),
 }
 
 # 本地服务不需要真实密钥
@@ -26,8 +30,18 @@ def _env_aliases(provider: str, base_url: str | None = None) -> list[str]:
     aliases = list(_PROVIDER_ENV_ALIASES.get(provider, ()))
     # MiniMax 的 Anthropic 兼容端点通常使用 MINIMAX_API_KEY
     if provider == "anthropic" and base_url and "minimax" in base_url.lower():
-        aliases.append("MINIMAX_API_KEY")
+        aliases.extend(("MINIMAX_API_KEY", "MINIMAX_API_KEYS"))
     return aliases
+
+
+def _first_key(value: str | None) -> str | None:
+    if not value:
+        return None
+    for chunk in value.replace(";", ",").replace("\n", ",").split(","):
+        key = chunk.strip()
+        if key:
+            return key
+    return None
 
 
 def _is_local_url(base_url: str | None) -> bool:
@@ -44,11 +58,15 @@ def resolve_api_key(
     base_url: str | None = None,
     explicit: str | None = None,
 ) -> str | None:
-    """解析提供商的 API Key；找不到时返回 None。"""
+    """解析提供商的 API Key；找不到时返回 None。
+
+    如果配置了 ``*_API_KEYS`` 多 Key，返回第一个用于凭证校验；
+    真正的轮询由 ``key_pool.resolve_api_keys`` 负责。
+    """
     if explicit:
-        return explicit
+        return _first_key(explicit)
     for name in _env_aliases(provider, base_url):
-        value = os.getenv(name)
+        value = _first_key(os.getenv(name))
         if value:
             return value
     return None

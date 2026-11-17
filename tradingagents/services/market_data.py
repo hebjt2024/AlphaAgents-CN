@@ -80,10 +80,15 @@ def _trim_to_trading_days(start: str, end: str) -> tuple[str, str] | None:
 def _is_unadjusted(text: str) -> bool:
     """数据源是否明确声明“不复权”。
 
-    东财限流时路由层会降级到腾讯（不复权）。若把它写进 qfq 缓存，
-    跨除权日会出现数倍甚至数十倍的虚假涨跌，因此在入口直接拒绝。
+    东财限流时路由层会降级到腾讯（不复权）。不复权数据不能冒充 qfq 缓存，
+    否则跨除权日会出现数倍甚至数十倍的虚假涨跌；但直接丢弃会让整段分析
+    完全失去价格数据。因此改为按“不复权(none)”独立缓存，并显式标注警告。
     """
     return "不复权" in text or "未复权" in text
+
+
+# 不复权行情的独立缓存口径，与 qfq 严格隔离，避免两种基准混用。
+UNADJUSTED_ADJUST = "none"
 
 
 def _fetch_and_store(
@@ -95,10 +100,16 @@ def _fetch_and_store(
     source: str,
 ) -> pd.DataFrame:
     text = fetch(ticker, start, end)
+    actual_adjust = adjust
     if adjust == "qfq" and _is_unadjusted(text):
-        raise ValueError("数据源返回不复权行情，拒绝写入 qfq 缓存")
+        actual_adjust = UNADJUSTED_ADJUST
     frame = normalize_price_frame(text)
-    save_daily_bars(ticker, frame, adjust=adjust, source=source)
+    save_daily_bars(ticker, frame, adjust=actual_adjust, source=source)
+    if actual_adjust != adjust:
+        frame.attrs["warnings"] = [
+            "该区间仅获取到不复权行情，已按不复权口径单独缓存；"
+            "跨除权日的涨跌幅与均线可能与前复权基准存在差异。"
+        ]
     return frame
 
 
@@ -152,15 +163,36 @@ def load_prices(
             logger.warning("行情补洞失败 %s %s~%s: %s", code, range_start, range_end, exc)
 
     frame = load_daily_bars(code, start, end, adjust=adjust)
+    if frame.empty and adjust != UNADJUSTED_ADJUST:
+        # qfq 拿不到时，允许降级使用已缓存的不复权行情，但必须显式告知调用方。
+        fallback = load_daily_bars(code, start, end, adjust=UNADJUSTED_ADJUST)
+        if not fallback.empty:
+            frame = fallback
+            warnings.append(
+                "本地仅有不复权行情：跨除权日的价格与涨跌幅可能与前复权基准不一致，"
+                "涉及复权比较时请以正式前复权数据复核。"
+            )
     if frame.empty:
         # 本地完全没有这段数据（例如首次请求且补洞失败）：再尝试一次整段，
         # 这样错误信息仍然来自数据源，而不是伪装成"本地为空"。
-        text = fetch(code, start, end)
-        if adjust == "qfq" and _is_unadjusted(text):
-            raise ValueError("数据源返回不复权行情，拒绝写入 qfq 缓存")
-        frame = normalize_price_frame(text)
-        save_daily_bars(code, frame, adjust=adjust, source=source)
+        try:
+            _fetch_and_store(code, start, end, fetch, adjust, source)
+        except Exception as exc:
+            warnings.append(
+                f"整段取数失败：{type(exc).__name__}: {exc}"
+            )
+            logger.warning("行情整段取数失败 %s %s~%s: %s", code, start, end, exc)
         frame = load_daily_bars(code, start, end, adjust=adjust)
+        if frame.empty and adjust != UNADJUSTED_ADJUST:
+            fallback = load_daily_bars(
+                code, start, end, adjust=UNADJUSTED_ADJUST
+            )
+            if not fallback.empty:
+                frame = fallback
+                warnings.append(
+                    "本地仅有不复权行情：跨除权日的价格与涨跌幅可能与前复权基准不一致，"
+                    "涉及复权比较时请以正式前复权数据复核。"
+                )
     if warnings:
         frame.attrs["warnings"] = warnings
     return frame

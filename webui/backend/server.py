@@ -946,7 +946,11 @@ def _analysis_job_handler(job_id: str, payload: dict, cancel_event) -> dict:
     # 让队列的取消事件与分析内部的取消事件联动
     if cancel_event is not None:
         _bridge_cancel_event(cancel_event)
-    run_analysis_sync(request, job_id, owner=str(payload.get("owner") or ""))
+    # 让队列拿到完整分析结果，而不是只有 {"success": true, "job_id": ...}。
+    # 这样 /api/jobs/{id}/result 在页面刷新/重连后仍能取回报告。
+    result = run_analysis_sync(request, job_id, owner=str(payload.get("owner") or ""))
+    if isinstance(result, dict):
+        return result
     return {"success": True, "job_id": job_id}
 
 
@@ -1001,7 +1005,14 @@ def run_analysis_sync(
             key for key in request.strategies if key in valid_strategy_keys
         ]
         if not strategy_keys:
-            strategy_keys = list(DEFAULT_STRATEGY_KEYS)
+            # 未显式选择策略时，跟随分析编排预设：
+            # lite/standard = 核心 6 项，deep = 核心 + 补充视角。
+            strategy_keys = list(
+                pipeline_cfg.get("strategy_keys") or DEFAULT_STRATEGY_KEYS
+            )
+            strategy_keys = [
+                key for key in strategy_keys if key in valid_strategy_keys
+            ] or list(DEFAULT_STRATEGY_KEYS)
 
         broadcast_threadsafe({
             "type": "analysis_start",
@@ -1024,7 +1035,7 @@ def run_analysis_sync(
         config["strategy_keys"] = strategy_keys
 
         # 预设模式下使用预设的辩论轮次；自定义模式下尊重用户滑块
-        if request.pipeline_preset in ("lite", "standard", "deep"):
+        if request.pipeline_preset in PIPELINE_PRESETS:
             config["max_debate_rounds"] = pipeline_cfg["max_debate_rounds"]
             config["max_risk_discuss_rounds"] = pipeline_cfg[
                 "max_risk_discuss_rounds"
@@ -1343,6 +1354,7 @@ def run_analysis_sync(
             except ApiError:
                 raise
             except Exception as exc:
+                logger.warning("报告持久化失败", exc_info=True)
                 broadcast_threadsafe({
                     "type": "progress",
                     "data": {"message": f"报告持久化失败: {exc}"},
@@ -1379,6 +1391,7 @@ def run_analysis_sync(
             "type": "analysis_complete",
             "data": complete_data,
         })
+        return complete_data
 
     except Exception as e:
         err_text = str(e)

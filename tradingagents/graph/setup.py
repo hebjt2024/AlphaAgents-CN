@@ -194,11 +194,15 @@
 # ---------------------------------------------------------------------------
                         # Dict[str, Any] 表示"键为字符串、值为任意类型的字典"
                         # 类型提示不影响运行，只是给人和 IDE 看的"说明书"
+import copy
 import logging
 import os  # 并行开关/并发度环境变量
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import date, timedelta
 
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI  # OpenAI 兼容的聊天模型接口
 
 # ChatOpenAI 是 LangChain 提供的 LLM 封装类，
@@ -239,7 +243,268 @@ ANALYST_REPORT_FIELDS = {
     "fundamentals": "fundamentals_report",
 }
 
+ANALYST_ROLE_NAMES = {
+    "market": "市场/技术面",
+    "social": "社媒舆情",
+    "news": "新闻与公告",
+    "fundamentals": "基本面",
+}
+
 logger = logging.getLogger(__name__)
+
+
+def _compact_tool_output(name: str, content: object, limit: int = 6000) -> str:
+    """把工具返回压缩成模型易读、且不会淹没上下文的材料。
+
+    行情类工具返回的是几千行 CSV，直接塞回模型既慢又容易让推理模型
+    把输出额度全部耗在思考上。这里对 CSV 只保留表头和最近 60 行。
+    """
+    text = str(content or "")
+    if name == "get_stock_data" and "Date,Open" in text:
+        lines = [
+            line
+            for line in text.splitlines()
+            if line and not line.startswith("#")
+        ]
+        if len(lines) > 1:
+            header, rows = lines[0], lines[1:]
+            kept = rows[-60:]
+            text = (
+                f"{header}\n"
+                + "\n".join(kept)
+                + f"\n（原始共 {len(rows)} 行，此处仅保留最近 {len(kept)} 行）"
+            )
+    if len(text) > limit:
+        text = text[:limit] + f"\n（已截断，原文 {len(text)} 字）"
+    return text
+
+
+def _execute_tool_calls(tool_node, ai_message) -> list[ToolMessage]:
+    """直接执行 LLM 请求的工具调用，返回 ToolMessage 列表。
+
+    不直接调用 ``ToolNode.invoke``：并行分析师的手动循环发生在图运行时之外，
+    新版 langgraph 的 ToolNode 需要图注入的 runtime config，否则会抛
+    ``Missing required config key 'N/A'``。这里按工具名直接调用，
+    单个工具失败也只返回错误结果，不会中断整轮分析。
+    """
+    tools_by_name = getattr(tool_node, "tools_by_name", {}) or {}
+    messages: list[ToolMessage] = []
+    for call in getattr(ai_message, "tool_calls", None) or []:
+        name = str(call.get("name") or "")
+        args = call.get("args") or {}
+        tool_call_id = str(call.get("id") or "")
+        tool = tools_by_name.get(name)
+        if tool is None:
+            content = f"工具 {name} 不存在，请改用已提供的工具。"
+            logger.warning("分析师请求了未注册的工具：%s", name)
+        else:
+            try:
+                output = tool.invoke(args)
+                content = output if isinstance(output, str) else str(output)
+            except Exception as exc:
+                content = f"工具执行失败：{type(exc).__name__}: {exc}"
+                logger.warning("工具 %s 执行失败：%s: %s", name, type(exc).__name__, exc)
+        messages.append(
+            ToolMessage(content=content, tool_call_id=tool_call_id, name=name)
+        )
+    return messages
+
+
+def _compact_tool_message(message):
+    """压缩过长的工具结果，避免模型把上下文/思考额度耗在原始 CSV 上。"""
+    if not isinstance(message, ToolMessage):
+        return message
+    name = str(getattr(message, "name", "") or "")
+    content = getattr(message, "content", "")
+    compacted = _compact_tool_output(name, content)
+    if compacted == content:
+        return message
+    return message.model_copy(update={"content": compacted})
+
+
+def _build_tool_digest(messages: list, limit: int = 16000) -> str:
+    """把本轮所有工具结果拼成一份紧凑材料，供收尾报告使用。"""
+    parts: list[str] = []
+    for message in messages:
+        if not isinstance(message, ToolMessage):
+            continue
+        name = str(getattr(message, "name", "") or "")
+        parts.append(
+            f"## 工具 {name} 返回\n"
+            f"{_compact_tool_output(name, getattr(message, 'content', ''))}"
+        )
+    digest = "\n\n".join(parts)
+    if len(digest) > limit:
+        digest = digest[:limit] + "\n（材料整体已截断）"
+    return digest
+
+
+# 需要预取核心数据的分析师：社媒与新闻。
+PREFETCH_ANALYSTS = {"social", "news"}
+PREFETCH_MAX_TOOL_ROUNDS = 3
+
+
+def _prefetch_specs(
+    analyst_type: str, ticker: str, trade_date: str
+) -> list[tuple[str, dict]]:
+    """定义 social/news 的核心数据包（按优先级排列）。"""
+    try:
+        end = date.fromisoformat(str(trade_date)[:10])
+    except (TypeError, ValueError):
+        end = date.today()
+    start = (end - timedelta(days=30)).isoformat()
+    end_text = end.isoformat()
+    has_tavily = bool(os.getenv("TAVILY_API_KEY"))
+
+    if analyst_type == "social":
+        specs: list[tuple[str, dict]] = [
+            (
+                "get_social_sentiment",
+                {"ticker": ticker, "name": "", "curr_date": end_text},
+            ),
+            (
+                "get_news",
+                {
+                    "ticker": ticker,
+                    "start_date": start,
+                    "end_date": end_text,
+                },
+            ),
+        ]
+        if has_tavily:
+            specs.append(
+                (
+                    "search_web",
+                    {
+                        "query": f"{ticker} 股票 舆情 讨论 情绪",
+                        "max_results": 5,
+                        "days": 7,
+                    },
+                )
+            )
+        return specs
+
+    if analyst_type == "news":
+        specs = [
+            (
+                "get_news",
+                {
+                    "ticker": ticker,
+                    "start_date": start,
+                    "end_date": end_text,
+                },
+            ),
+            (
+                "get_announcements",
+                {"ticker": ticker, "curr_date": end_text, "days": 30},
+            ),
+            (
+                "get_global_news",
+                {"curr_date": end_text, "look_back_days": 7, "limit": 5},
+            ),
+            ("get_macro_overview", {"curr_date": end_text}),
+            (
+                "get_northbound_flow",
+                {"curr_date": end_text, "look_back_days": 10},
+            ),
+        ]
+        if has_tavily:
+            specs.append(
+                (
+                    "search_stock_news",
+                    {
+                        "ticker": ticker,
+                        "curr_date": end_text,
+                        "look_back_days": 7,
+                        "max_results": 5,
+                    },
+                )
+            )
+        return specs
+
+    return []
+
+
+def _call_prefetch_tool(tool, args: dict) -> str:
+    output = tool.invoke(args)
+    return output if isinstance(output, str) else str(output)
+
+
+def _compact_prefetch(text: object, limit: int = 6000) -> str:
+    value = str(text or "").strip()
+    if len(value) > limit:
+        value = value[:limit] + f"\n（已截断，原文 {len(value)} 字）"
+    return value
+
+
+def _prefetch_analyst_material(analyst_type: str, state: dict, tool_node) -> str:
+    """在进入 LLM 工具循环前，并行预取 social/news 的核心数据。
+
+    这样模型一次拿到完整材料，通常 1-2 轮即可写报告，不再因为反复取数
+    撞到工具轮次上限；单个工具失败只标记缺失，不阻断整个分析。
+    """
+    ticker = str(state.get("company_of_interest") or "").strip()
+    trade_date = str(state.get("trade_date") or "").strip()
+    specs = _prefetch_specs(analyst_type, ticker, trade_date)
+    if not specs:
+        return ""
+
+    tools = getattr(tool_node, "tools_by_name", {}) or {}
+    results: dict[str, str] = {}
+    started = time.perf_counter()
+    executor = ThreadPoolExecutor(max_workers=min(3, len(specs)))
+    futures = {}
+    try:
+        for name, args in specs:
+            tool = tools.get(name)
+            if tool is None:
+                results[name] = f"（工具 {name} 不可用）"
+                continue
+            futures[executor.submit(_call_prefetch_tool, tool, args)] = name
+        try:
+            for future in as_completed(futures, timeout=120):
+                name = futures[future]
+                try:
+                    results[name] = future.result()
+                except Exception as exc:
+                    results[name] = (
+                        f"（{name} 预取失败：{type(exc).__name__}: {exc}）"
+                    )
+        except TimeoutError:
+            for name in futures.values():
+                results.setdefault(name, "（预取超时，未返回）")
+    finally:
+        executor.shutdown(wait=False, cancel_futures=True)
+
+    lines = [
+        f"## 系统预取的核心数据（{ticker} @ {trade_date}）",
+        "以下数据已经预先获取，禁止重复调用已成功的工具。"
+        "如果确实缺少某个主题/日期，最多再补充调用 1 次；"
+        "核心判断必须优先使用下面的材料。",
+    ]
+    succeeded = 0
+    for name, _args in specs:
+        value = str(results.get(name) or "")
+        if value and not value.startswith("（"):
+            succeeded += 1
+        lines.append(
+            f"\n### 工具 {name}\n{_compact_prefetch(value or '（未获取）')}"
+        )
+    if succeeded == 0:
+        logger.warning("分析师 %s 核心数据预取全部失败，回退到正常工具循环", analyst_type)
+        return ""
+    text = "\n".join(lines)
+    if len(text) > 24000:
+        text = text[:24000] + "\n（预取材料整体已截断）"
+    logger.info(
+        "分析师 %s 核心数据预取完成，耗时 %.1fs，工具 %s",
+        analyst_type,
+        time.perf_counter() - started,
+        ", ".join(name for name, _ in specs),
+    )
+    return text
+
+
 
 
 # =============================================================================
@@ -302,6 +567,7 @@ class GraphSetup:
         portfolio_manager_memory,              # 投资组合经理的情景记忆
         conditional_logic: ConditionalLogic,   # 条件路由逻辑
         pipeline: dict | None = None,          # 自定义图编排配置
+        research_thinking_llm: ChatOpenAI | None = None,  # 研究经理专用 LLM
     ):
         """
         初始化图搭建器。
@@ -367,6 +633,9 @@ class GraphSetup:
         # 这样 setup_graph 方法就能通过 self.xxx 访问这些依赖
         self.quick_thinking_llm = quick_thinking_llm
         self.deep_thinking_llm = deep_thinking_llm
+        # 研究经理可以独立于最终组合经理选择模型：
+        # 未显式传入时与 deep_thinking_llm 保持一致（保持旧行为）。
+        self.research_thinking_llm = research_thinking_llm or deep_thinking_llm
         self.tool_nodes = tool_nodes
         self.bull_memory = bull_memory
         self.bear_memory = bear_memory
@@ -625,7 +894,8 @@ class GraphSetup:
         #      due to strong revenue growth. Recommendation: BUY"
         #   → 更新 state["investment_debate_state"]["judge_decision"]
         research_manager_node = create_research_manager(
-            self.deep_thinking_llm, self.invest_judge_memory
+            self.research_thinking_llm,
+            self.invest_judge_memory,
         )
 
         # 创建交易员节点
@@ -666,6 +936,72 @@ class GraphSetup:
             self.deep_thinking_llm, self.portfolio_manager_memory
         )
 
+        # 风险三方并行：激进 / 保守 / 中性独立评估，最后交给组合经理综合。
+        # 与串行辩论相比少了两轮“互相反驳”，但三方视角都保留；
+        # 只用于 standard-fast，standard/deep 仍走完整串行辩论。
+        parallel_risk_enabled = (
+            bool((self.pipeline or {}).get("parallel_risk", False))
+            and enable_risk
+        )
+
+        def parallel_risk_node(state: dict, config: RunnableConfig | None = None):
+            roles = (
+                ("aggressive", aggressive_analyst),
+                ("conservative", conservative_analyst),
+                ("neutral", neutral_analyst),
+            )
+            started = time.perf_counter()
+            results: dict[str, dict] = {}
+            with ThreadPoolExecutor(max_workers=len(roles)) as pool:
+                futures = {
+                    pool.submit(node, copy.deepcopy(state)): role
+                    for role, node in roles
+                }
+                for future in as_completed(futures):
+                    role = futures[future]
+                    try:
+                        results[role] = future.result() or {}
+                    except Exception as exc:
+                        results[role] = {"error": exc}
+                        logger.warning(
+                            "并行风险 %s 评估失败：%s: %s",
+                            role,
+                            type(exc).__name__,
+                            exc,
+                        )
+            merged = copy.deepcopy(state.get("risk_debate_state") or {})
+            histories: list[str] = []
+            for role, _node in roles:
+                result = results.get(role) or {}
+                risk_state = result.get("risk_debate_state") or {}
+                history = str(
+                    risk_state.get(f"{role}_history") or ""
+                ).strip()
+                current = str(
+                    risk_state.get(f"current_{role}_response") or ""
+                ).strip()
+                if not history and result.get("error") is not None:
+                    error = result["error"]
+                    history = (
+                        f"[{role} 评估失败：{type(error).__name__}: {error}]"
+                    )
+                merged[f"{role}_history"] = history
+                merged[f"current_{role}_response"] = current or history
+                if history:
+                    histories.append(history)
+            merged["history"] = (
+                "【三方独立风险评估（并行，未交叉辩论）】\n"
+                + "\n".join(histories)
+            )
+            merged["latest_speaker"] = "Neutral"
+            merged["count"] = 3
+            merged["mode"] = "parallel"
+            logger.info(
+                "并行风险三方完成，耗时 %.1fs",
+                time.perf_counter() - started,
+            )
+            return {"risk_debate_state": merged}
+
         # 策略扫描节点：在分析师之前运行本次选中的策略组合
         strategy_scanner_node = create_strategy_scanner_node()
 
@@ -687,54 +1023,160 @@ class GraphSetup:
             parallel_workers = min(4, len(selected_analysts))
 
         def _run_analyst(
-            analyst_type: str, state: dict, config: dict | None = None
+            analyst_type: str, state: dict, config: RunnableConfig | None = None
         ) -> str:
             node = analyst_nodes[analyst_type]
             report_field = ANALYST_REPORT_FIELDS[analyst_type]
             local = dict(state)
             local["messages"] = list(state.get("messages") or [])
-            error = None
-            for _ in range(6):
+            prefetch_text = ""
+            if analyst_type in PREFETCH_ANALYSTS:
+                prefetch_text = _prefetch_analyst_material(
+                    analyst_type, state, tool_nodes[analyst_type]
+                )
+                if prefetch_text:
+                    # 不能额外插入 SystemMessage：Anthropic 要求 system 消息连续，
+                    # 分析师的提示词模板中已经有 system，再插一条会直接报
+                    # "Received multiple non-consecutive system messages"。
+                    # 把预取材料合并进第一条 HumanMessage 最稳妥。
+                    merged = False
+                    for index, message in enumerate(local["messages"]):
+                        if isinstance(message, HumanMessage):
+                            content = str(getattr(message, "content", "") or "")
+                            local["messages"][index] = message.model_copy(
+                                update={
+                                    "content": f"{content}\n\n{prefetch_text}"
+                                }
+                            )
+                            merged = True
+                            break
+                    if not merged:
+                        local["messages"].append(
+                            HumanMessage(content=prefetch_text)
+                        )
+            try:
+                max_rounds = int(
+                    os.getenv("TRADINGAGENTS_ANALYST_MAX_TOOL_ROUNDS", "6")
+                )
+            except ValueError:
+                max_rounds = 6
+            max_rounds = max(1, min(max_rounds, 48))
+            if prefetch_text:
+                max_rounds = min(max_rounds, PREFETCH_MAX_TOOL_ROUNDS)
+            error: Exception | None = None
+            for _ in range(max_rounds):
                 update = node(local) or {}
                 messages = update.get("messages") or []
                 if messages:
                     local["messages"].extend(messages)
                 for key, value in update.items():
-                    if key != "messages":
+                    if key == "messages":
+                        continue
+                    # 工具轮次里报告字段是空串，不能用空串覆盖上一轮已生成的报告
+                    if value or key not in local:
                         local[key] = value
                 ai_message = messages[-1] if messages else None
                 tool_calls = getattr(ai_message, "tool_calls", None) or []
                 if not tool_calls:
                     break
-                try:
-                    tool_update = tool_nodes[analyst_type].invoke(
-                        {"messages": [ai_message]},
-                        config=config,
-                    )
-                    local["messages"].extend(
-                        tool_update.get("messages") or []
-                    )
-                except Exception as exc:
-                    error = exc
-                    break
-            report = local.get(report_field, "")
+                tool_messages = _execute_tool_calls(
+                    tool_nodes[analyst_type], ai_message
+                )
+                local["messages"].extend(
+                    _compact_tool_message(message)
+                    for message in tool_messages
+                )
+            else:
+                logger.warning(
+                    "分析师 %s 达到工具轮次上限 %s，改用已有数据强制生成报告",
+                    analyst_type,
+                    max_rounds,
+                )
+
+            report = str(local.get(report_field, "") or "").strip()
             if report:
                 return report
-            last_message = (
-                local["messages"][-1] if local["messages"] else None
-            )
-            content = str(getattr(last_message, "content", "") or "").strip()
-            if content:
-                return content
-            if error is not None:
-                return (
-                    f"（{analyst_type} 工具调用失败："
-                    f"{type(error).__name__}: {error}）"
+
+            # 兜底：不再允许调用工具，要求模型基于已经拿到的数据直接产出结论。
+            # 使用"紧凑材料 + 全新两轮消息"，而不是把整段工具调用历史再喂一遍：
+            # 既避免 tool_result 后面直接接 user 消息的协议问题，也减少思考开销。
+            digest = _build_tool_digest(local["messages"])
+            if prefetch_text:
+                digest = (prefetch_text + "\n\n" + digest)[:24000]
+            role = ANALYST_ROLE_NAMES.get(analyst_type, analyst_type)
+            closing = HumanMessage(
+                content=(
+                    f"以下是本次取数得到的全部材料：\n\n{digest}\n\n"
+                    "请立即停止调用任何工具，基于以上材料直接输出"
+                    f"你作为{role}分析师的最终分析报告。\n"
+                    "要求：\n"
+                    "1. 明确列出关键数字与对应日期；缺失的数据如实写“未获取到”，"
+                    "并说明它对结论的影响，绝不编造。\n"
+                    "2. 给出明确结论（看多/中性/看空）与 2-4 条核心理由，"
+                    "并指出后续需要验证的信号。\n"
+                    "3. 使用中文 Markdown，结尾附一张关键要点表格。"
                 )
-            return f"（{analyst_type} 未返回报告）"
+            )
+            final_messages = [
+                SystemMessage(
+                    content=(
+                        f"你是一名严谨的 A 股{role}分析师。"
+                        "只基于给定材料写报告，禁止调用工具；"
+                        "材料不足时要明确说明缺口，不得编造数字。"
+                    )
+                ),
+                closing,
+            ]
+            for attempt in range(2):
+                try:
+                    final_message = self.quick_thinking_llm.invoke(
+                        final_messages
+                    )
+                    content = str(
+                        getattr(final_message, "content", "") or ""
+                    ).strip()
+                    if content:
+                        return content
+                except Exception as exc:
+                    error = error or exc
+                    logger.warning(
+                        "分析师 %s 收尾报告生成失败（第 %s 次）：%s: %s",
+                        analyst_type,
+                        attempt + 1,
+                        type(exc).__name__,
+                        exc,
+                    )
+                    if attempt == 0:
+                        time.sleep(1.0)
+                        continue
+                    break
+
+            # 收尾失败时不能把某个原始 ToolMessage 直接当成"报告"返回：
+            # 那会导致下游把一段原始搜索/公告文本误认为分析结论。
+            # 优先返回带明确标注的预取材料或工具摘要。
+            failure_note = (
+                f"（{analyst_type} 报告生成失败："
+                f"{type(error).__name__}: {error}）"
+                if error is not None
+                else f"（{analyst_type} 未返回报告）"
+            )
+            if prefetch_text:
+                return (
+                    failure_note
+                    + "\n\n以下为本次已获取的核心材料（未经模型综合，仅供参考）：\n\n"
+                    + prefetch_text[:16000]
+                )
+            digest = _build_tool_digest(local["messages"])
+            if digest:
+                return (
+                    failure_note
+                    + "\n\n以下为本次已获取的原始材料摘要（未经模型综合，仅供参考）：\n\n"
+                    + digest
+                )
+            return failure_note
 
         def parallel_analysts_node(
-            state: dict, config: dict | None = None
+            state: dict, config: RunnableConfig | None = None
         ) -> dict:
             reports: dict[str, str] = {}
             started = time.perf_counter()
@@ -825,9 +1267,12 @@ class GraphSetup:
             workflow.add_node("Trader", trader_node)
 
         if enable_risk:
-            workflow.add_node("Aggressive Analyst", aggressive_analyst)
-            workflow.add_node("Neutral Analyst", neutral_analyst)
-            workflow.add_node("Conservative Analyst", conservative_analyst)
+            if parallel_risk_enabled:
+                workflow.add_node("Parallel Risk", parallel_risk_node)
+            else:
+                workflow.add_node("Aggressive Analyst", aggressive_analyst)
+                workflow.add_node("Neutral Analyst", neutral_analyst)
+                workflow.add_node("Conservative Analyst", conservative_analyst)
 
         # 最终裁决节点始终保留，确保一定生成 final_trade_decision
         workflow.add_node("Portfolio Manager", portfolio_manager_node)
@@ -905,12 +1350,16 @@ class GraphSetup:
         # 交易员阶段（可选）
         if enable_trader:
             if enable_risk:
-                workflow.add_edge("Trader", "Aggressive Analyst")
+                if parallel_risk_enabled:
+                    workflow.add_edge("Trader", "Parallel Risk")
+                    workflow.add_edge("Parallel Risk", "Portfolio Manager")
+                else:
+                    workflow.add_edge("Trader", "Aggressive Analyst")
             else:
                 workflow.add_edge("Trader", "Portfolio Manager")
 
         # 三方风险辩论（可选，依赖交易员方案）
-        if enable_risk:
+        if enable_risk and not parallel_risk_enabled:
             workflow.add_conditional_edges(
                 "Aggressive Analyst",
                 self.conditional_logic.should_continue_risk_analysis,

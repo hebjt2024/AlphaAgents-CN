@@ -97,6 +97,44 @@ class PresetTests(unittest.TestCase):
         )
         self.assertFalse(cfg["enable_risk"])
 
+    def test_preset_strategy_keys(self):
+        from tradingagents.strategies import DEFAULT_STRATEGY_KEYS
+
+        core = list(DEFAULT_STRATEGY_KEYS)
+        self.assertEqual(
+            build_pipeline_config(preset="lite")["strategy_keys"], core
+        )
+        self.assertEqual(
+            build_pipeline_config(preset="standard")["strategy_keys"], core
+        )
+        self.assertEqual(
+            build_pipeline_config(preset="standard-fast")["strategy_keys"], core
+        )
+        deep = build_pipeline_config(preset="deep")["strategy_keys"]
+        self.assertGreater(len(deep), len(core))
+        self.assertTrue(set(core) <= set(deep))
+
+    def test_standard_fast_uses_quick_research_manager(self):
+        self.assertEqual(
+            build_pipeline_config(preset="standard-fast")["research_think"],
+            "quick",
+        )
+        self.assertEqual(
+            build_pipeline_config(preset="standard")["research_think"],
+            "deep",
+        )
+
+    def test_standard_fast_uses_parallel_risk(self):
+        self.assertTrue(
+            build_pipeline_config(preset="standard-fast")["parallel_risk"]
+        )
+        self.assertFalse(
+            build_pipeline_config(preset="standard")["parallel_risk"]
+        )
+        self.assertFalse(
+            build_pipeline_config(preset="deep")["parallel_risk"]
+        )
+
 
 class GraphCompileTests(unittest.TestCase):
     def test_lite_pipeline_compiles_without_optional_nodes(self):
@@ -128,6 +166,17 @@ class GraphCompileTests(unittest.TestCase):
             "Portfolio Manager",
         ):
             self.assertIn(name, nodes)
+
+    def test_standard_fast_compiles_with_parallel_risk(self):
+        cfg = build_pipeline_config(preset="standard-fast")
+        graph = _compile(cfg, cfg["analysts"])
+        nodes = set(graph.get_graph().nodes)
+        self.assertIn("Trader", nodes)
+        self.assertIn("Parallel Risk", nodes)
+        self.assertIn("Portfolio Manager", nodes)
+        self.assertNotIn("Aggressive Analyst", nodes)
+        self.assertNotIn("Conservative Analyst", nodes)
+        self.assertNotIn("Neutral Analyst", nodes)
 
     def test_parallel_analysts_enabled(self):
         cfg = build_pipeline_config(preset="standard")

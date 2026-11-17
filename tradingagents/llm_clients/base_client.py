@@ -444,41 +444,32 @@ def normalize_content(response):
     # 获取响应的内容
     # response.content 可能是：
     #   - 纯字符串（某些简单情况下）→ 不需要处理
-    #   - 结构化块列表（OpenAI Responses API 格式）→ 需要提取文本
+    #   - 结构化块列表（OpenAI Responses API / Anthropic 扩展思考）→ 需要提取文本
     content = response.content
 
-    # isinstance() 检查 content 是否是 list 类型
-    # 如果是列表，说明是结构化块格式，需要提取文本
-    # 例如 content = [{"type": "text", "text": "分析结果..."}, {"type": "reasoning", ...}]
     if isinstance(content, list):
-        # 列表推导式：遍历每个元素，提取文本内容
-        # 这是一种条件表达式（三元运算符）的列表推导式
-        # 逐元素处理逻辑：
-        #   - 如果是字典且 type 为 'text'，取出 'text' 字段的值
-        #   - 如果已经是字符串，直接使用
-        #   - 其他情况（如推理块），返回空字符串
-        texts = [
-            # 第一条件：如果是字典类型且 type 为 'text'
-            # isinstance(item, dict) 检查 item 是否是字典
-            # item.get("type") == "text" 检查 type 字段是否为 "text"
-            # 满足则取出 item.get("text", "") 的值（即文本内容）
-            item.get("text", "") if isinstance(item, dict) and item.get("type") == "text"
-            # 第二条件：如果已经是字符串，直接使用
-            # 例如 content = ["纯文本字符串", {"type": "text", "text": "..."}]
-            # 中的 "纯文本字符串" 部分
-            else item if isinstance(item, str)
-            # 第三条件：其他情况（如推理块 type="reasoning"），返回空字符串
-            # 这些块的内容不需要，用空字符串占位
-            else ""
-            # 遍历 content 列表中的每个元素
-            for item in content
-        ]
-        # join() 用换行符连接所有非空文本，t 是每个文本片段
-        # "\n".join(["a", "", "b"]) → "a\nb"（空字符串会被跳过吗？
-        # 实际上 join 不会跳过空字符串，但 t for t in texts if t 会过滤空字符串）
-        # 这里用了生成器表达式 (t for t in texts if t)：
-        #   只保留非空字符串（if t 在空字符串时为 False）
-        response.content = "\n".join(t for t in texts if t)
+        # 逐块提取文本。注意不同供应商/版本的结构并不统一：
+        #   - OpenAI：{"type": "text", "text": "..."}
+        #   - Anthropic 扩展思考：text 块可能只有 {"text": "..."}，没有 type
+        #   - 某些 SDK：块对象带 .text 属性
+        # 旧实现只认 {"type": "text"}，一旦模型返回"思考块 + 文本块"，
+        # 文本块会被丢弃，导致报告内容变成空字符串。
+        texts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                if item:
+                    texts.append(item)
+                continue
+            if isinstance(item, dict):
+                if item.get("type") == "text" or "text" in item:
+                    text = item.get("text", "")
+                    if isinstance(text, str) and text:
+                        texts.append(text)
+                continue
+            text = getattr(item, "text", None)
+            if isinstance(text, str) and text:
+                texts.append(text)
+        response.content = "\n".join(texts)
 
     # 返回处理后的 response 对象
     # 如果 content 原来就是字符串（不是 list），直接原样返回

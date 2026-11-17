@@ -85,6 +85,7 @@ from langchain_anthropic import ChatAnthropic
 # normalize_content：内容规范化函数，将结构化块列表转为纯字符串
 from .auth import resolve_api_key
 from .base_client import BaseLLMClient, normalize_content, observe_llm_call
+from .key_pool import KeyPool, RotatingChatModel, resolve_api_keys
 
 # 从当前包的 validators 模块导入模型验证函数
 # validate_model：检查模型名称对指定提供商是否有效
@@ -116,6 +117,31 @@ _PASSTHROUGH_KWARGS = (
 #: 8192 足以容纳一份完整的中文投资报告，且在 Claude / MiniMax 的
 #: Anthropic 兼容端点上都在模型自身的输出上限之内。
 DEFAULT_MAX_TOKENS = 8192
+
+# MiniMax 的 Anthropic 兼容端点强制开启"自适应思考"（不能关闭），
+# thinking token 与正文共享 max_tokens。实测复杂报告在 4096/8192 时会把
+# 额度全部花在思考上，正文为空。这里给 MiniMax 一个足够大的下限。
+MINIMAX_MIN_MAX_TOKENS = 32768
+
+
+def _is_reasoning_only(response) -> bool:
+    """判断响应是否只有思考块、没有正文（MiniMax 等自适应思考模型）。"""
+    content = getattr(response, "content", None)
+    if not isinstance(content, list) or not content:
+        return False
+    meta = getattr(response, "response_metadata", {}) or {}
+    stop_reason = str(meta.get("stop_reason") or "")
+    has_text = False
+    has_thinking = False
+    for block in content:
+        if isinstance(block, dict):
+            if block.get("type") == "thinking" or "thinking" in block:
+                has_thinking = True
+            if block.get("type") == "text" or block.get("text"):
+                has_text = True
+        elif getattr(block, "text", None) is not None:
+            has_text = True
+    return has_thinking and (not has_text or stop_reason == "max_tokens")
 
 
 # ============================================================================
@@ -196,7 +222,32 @@ class NormalizedChatAnthropic(ChatAnthropic):
             obs["response"] = response
         # normalize_content() 对返回的 AIMessage 进行内容规范化
         # 将结构化块列表 content 转换为纯字符串 content
-        return normalize_content(response)
+        normalized = normalize_content(response)
+        if str(normalized.content or "").strip():
+            return normalized
+
+        # 兼容 MiniMax 等"自适应思考"模型：思考 token 与正文共享 max_tokens，
+        # 复杂输入下可能把额度全部用在 thinking 上，正文为空（stop_reason=max_tokens）。
+        # 这里自动放大额度重试一次，避免把空字符串当成"模型没有观点"。
+        if not _is_reasoning_only(response):
+            return normalized
+        try:
+            current = int(getattr(self, "max_tokens", 0) or 0)
+        except (TypeError, ValueError):
+            current = 0
+        bumped = max(current * 2, 16384)
+        if bumped <= current:
+            return normalized
+        retry = self.model_copy(update={"max_tokens": bumped})
+        with observe_llm_call(
+            provider=self.observability_provider,
+            model=self.observability_model or self.model,
+            prompt_input=input,
+            stage="retry_empty_thinking",
+        ) as obs:
+            retry_response = ChatAnthropic.invoke(retry, input, config, **kwargs)
+            obs["response"] = retry_response
+        return normalize_content(retry_response)
 
 
 # ============================================================================
@@ -296,12 +347,23 @@ class AnthropicClient(BaseLLMClient):
                 # 如果存在，添加到 llm_kwargs 字典中
                 llm_kwargs[key] = self.kwargs[key]
 
-        # 显式解析 API Key：
-        # - 优先使用调用方传入的 api_key
-        # - 其次读取 ANTHROPIC_API_KEY / ANTHROPIC_AUTH_TOKEN
-        # - MiniMax 兼容端点额外支持 MINIMAX_API_KEY
-        # 这样即使用户只配置了 MINIMAX_API_KEY，也能正常鉴权。
-        if "api_key" not in llm_kwargs:
+        # MiniMax 强制自适应思考，输出额度必须足够大，否则正文会被思考吃光。
+        # 放在透传之后，确保即使 .env 写了较小的 LLM_MAX_TOKENS 也会被抬到安全下限。
+        if self.base_url and "minimax" in self.base_url.lower():
+            try:
+                configured = int(llm_kwargs.get("max_tokens") or 0)
+            except (TypeError, ValueError):
+                configured = 0
+            llm_kwargs["max_tokens"] = max(configured, MINIMAX_MIN_MAX_TOKENS)
+
+        # 解析 API Key：支持同一模型的多个 Key（逗号/分号/换行分隔）。
+        # 只有 1 个 Key 时完全保持原来的单 Key 行为；>=2 个时才启用轮询。
+        keys = resolve_api_keys(
+            "anthropic", self.base_url, self.kwargs.get("api_key")
+        )
+        if keys:
+            llm_kwargs["api_key"] = keys[0]
+        elif "api_key" not in llm_kwargs:
             api_key = resolve_api_key("anthropic", self.base_url)
             if api_key:
                 llm_kwargs["api_key"] = api_key
@@ -320,7 +382,10 @@ class AnthropicClient(BaseLLMClient):
             provider = "minimax"
         llm_kwargs["observability_provider"] = provider
         llm_kwargs["observability_model"] = self.model
-        return NormalizedChatAnthropic(**llm_kwargs)
+        base_llm = NormalizedChatAnthropic(**llm_kwargs)
+        if len(keys) > 1:
+            return RotatingChatModel(base_llm, KeyPool(keys))
+        return base_llm
 
     def validate_model(self) -> bool:
         """验证模型名称对 Anthropic 是否有效。

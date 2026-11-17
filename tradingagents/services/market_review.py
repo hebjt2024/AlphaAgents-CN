@@ -55,7 +55,12 @@ def _warning(prefix: str, exc: Exception) -> str:
 
 
 def _fetch_indices(ak) -> list[dict[str, Any]]:
-    frame = _call(ak.stock_zh_index_spot_sina)
+    index_func = getattr(ak, "index_zh_spot_sina", None) or getattr(
+        ak, "stock_zh_index_spot_sina", None
+    )
+    if index_func is None:
+        return []
+    frame = _call(index_func)
     if frame is None or frame.empty:
         return []
     result = []
@@ -151,7 +156,12 @@ def _fetch_sectors(ak) -> dict[str, Any]:
 
 
 def _fetch_fund_flow(ak) -> dict[str, Any]:
-    frame = _call(ak.stock_fund_flow_industry, symbol="即时")
+    flow_func = getattr(ak, "stock_fund_flow_industry_ths", None) or getattr(
+        ak, "stock_fund_flow_industry", None
+    )
+    if flow_func is None:
+        return {"top": [], "bottom": []}
+    frame = _call(flow_func, symbol="即时")
     if frame is None or frame.empty:
         return {"top": [], "bottom": []}
 

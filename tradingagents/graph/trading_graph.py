@@ -207,29 +207,17 @@ from tradingagents.agents import *
 
 # 代理状态数据类：定义图中传递的状态结构
 # 抽象工具函数：封装了各种数据获取操作（股票数据、新闻、基本面等）
-# 这些函数被包装成 ToolNode，供 LLM 代理调用
-# 详见上方"前置知识-概念 5：ToolNode 的内部机制"
-from tradingagents.agents.utils.agent_utils import (
-    get_balance_sheet,  # 获取资产负债表（资产、负债、股东权益）
-    get_capital_flow,  # 获取 A 股资金流向（主力/超大单/大单）
-    get_cashflow,  # 获取现金流量表（经营/投资/筹资活动现金流）
-    get_dragon_tiger,  # 获取龙虎榜数据（A 股）
-    # 运行时数据流示例：
-    #   → 返回 ToolMessage(content="RSI: 72.3, MACD: bullish crossover, Bollinger: upper band...")
-    get_fundamentals,  # 获取公司基本面数据（如市盈率、市净率、股息率等）
-    get_global_news,  # 获取全球宏观新闻（影响整体市场的宏观事件）
-    get_income_statement,  # 获取利润表（收入、成本、利润）
-    # 运行时数据流示例：
-    #   LLM 输出 tool_calls=[{"name": "get_stock_data", "args": {"ticker": "AAPL"}}]
-    #   → ToolNode 调用 get_stock_data(ticker="AAPL")
-    #   → 返回 ToolMessage(content="Date,Open,High,Low,Close,Volume\n2024-01-15,185.5,187.2,...")
-    get_indicators,  # 获取技术指标（如 RSI、MACD、布林带等）
-    get_insider_transactions,  # 获取内部人交易信息（高管买入/卖出自家股票的记录）
-    get_news,  # 获取个股新闻（与该公司相关的新闻报道）
-    get_northbound_flow,  # 获取北向资金（A 股宏观资金面）
-    get_stock_data,  # 获取股票价格数据（OHLCV：开盘价、最高价、最低价、收盘价、成交量）
-    search_stock_news,  # Tavily 个股新闻搜索
-    search_web,  # Tavily 通用联网搜索
+# ToolNode 的工具清单必须与分析师节点 bind_tools 的工具清单完全一致。
+# 之前两边各写一份，分析师新增了工具但 ToolNode 未同步，LLM 一调用就抛
+# "工具不存在"，整份报告只剩开头的引导语。这里直接复用分析师模块的常量，
+# 从结构上杜绝再次漂移。
+from tradingagents.agents.analysts.fundamentals_analyst import (
+    FUNDAMENTALS_ANALYST_TOOLS,
+)
+from tradingagents.agents.analysts.market_analyst import MARKET_ANALYST_TOOLS
+from tradingagents.agents.analysts.news_analyst import NEWS_ANALYST_TOOLS
+from tradingagents.agents.analysts.social_media_analyst import (
+    SOCIAL_ANALYST_TOOLS,
 )
 
 # 金融情景记忆系统：用于存储和检索历史决策经验
@@ -491,6 +479,15 @@ class TradingAgentsGraph:
         # 之后这些 LLM 对象会被传给各个代理节点，用于调用 LLM 生成回复
         self.deep_thinking_llm = deep_client.get_llm()
         self.quick_thinking_llm = quick_client.get_llm()
+        # 研究经理可以独立选择“快速/深度”模型：
+        # - standard-fast：研究经理用快速模型，最终组合经理仍用深模型；
+        # - standard/deep：研究经理与组合经理都用深模型。
+        research_mode = str(self.pipeline.get("research_think") or "deep").lower()
+        self.research_thinking_llm = (
+            self.quick_thinking_llm
+            if research_mode in ("quick", "fast", "flash")
+            else self.deep_thinking_llm
+        )
 
         # -----------------------------------------------------------------
         # 初始化记忆系统
@@ -572,6 +569,7 @@ class TradingAgentsGraph:
             self.portfolio_manager_memory,
             self.conditional_logic,
             pipeline=self.pipeline,
+            research_thinking_llm=self.research_thinking_llm,
         )
 
         # 传播器模块：负责创建初始状态和图执行参数
@@ -730,46 +728,12 @@ class TradingAgentsGraph:
             # 然后流程回到 Market Analyst，LLM 看到 ToolMessage 中的数据，继续分析
         """
         # 返回一个字典，键是分析师类型名，值是对应的 ToolNode
-        # ToolNode 的构造函数接收一个工具函数列表
+        # ToolNode 的构造函数接收一个工具函数列表（与分析师节点共用同一份）
         return {
-            "market": ToolNode(
-                [
-                    # 核心股票数据工具
-                    get_stock_data,      # 获取股票价格数据（OHLCV）
-                    # 技术指标工具
-                    get_indicators,      # 获取技术指标（如 RSI、MACD、布林带等）
-                    # A 股资金面工具
-                    get_capital_flow,    # 获取主力资金流向（A 股特有）
-                    get_dragon_tiger,    # 获取龙虎榜（A 股特有）
-                ]
-            ),
-            "social": ToolNode(
-                [
-                    # 新闻工具用于社交媒体情绪分析
-                    get_news,            # 获取个股相关新闻
-                    search_web,          # 联网补充最新舆情/事件
-                ]
-            ),
-            "news": ToolNode(
-                [
-                    # 新闻和内部人信息工具
-                    get_news,            # 获取个股相关新闻
-                    get_global_news,     # 获取全球宏观新闻
-                    get_insider_transactions,  # 获取内部人（高管）交易记录
-                    get_northbound_flow,  # 获取北向资金（A 股宏观资金面）
-                    search_web,          # 联网补充新闻/公告
-                    search_stock_news,   # 联网搜索个股新闻
-                ]
-            ),
-            "fundamentals": ToolNode(
-                [
-                    # 基本面分析工具
-                    get_fundamentals,    # 获取公司基本面概况
-                    get_balance_sheet,   # 获取资产负债表
-                    get_cashflow,        # 获取现金流量表
-                    get_income_statement,  # 获取利润表（损益表）
-                ]
-            ),
+            "market": ToolNode(MARKET_ANALYST_TOOLS),
+            "social": ToolNode(SOCIAL_ANALYST_TOOLS),
+            "news": ToolNode(NEWS_ANALYST_TOOLS),
+            "fundamentals": ToolNode(FUNDAMENTALS_ANALYST_TOOLS),
         }
 
     # -------------------------------------------------------------------------

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
@@ -27,10 +28,38 @@ def db_path() -> Path:
 def _connect():
     path = db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA synchronous=NORMAL")
+    conn = None
+    last_error: Exception | None = None
+    # Windows 绑定挂载 / Docker Desktop 上，WAL 初始化偶尔会和其它连接
+    # 的 checkpoint 撞车，报 "unable to open database file"。重试几次，
+    # 最后退回 DELETE 日志模式，避免一次瞬时冲突导致报告没落库。
+    for attempt in range(3):
+        try:
+            conn = sqlite3.connect(path, timeout=30)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            break
+        except sqlite3.OperationalError as exc:
+            last_error = exc
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
+            time.sleep(0.2 * (attempt + 1))
+    if conn is None:
+        # 最后尝试不带 WAL 的连接：宁可牺牲并发性能也要能写入。
+        conn = sqlite3.connect(path, timeout=30)
+        conn.row_factory = sqlite3.Row
+        try:
+            conn.execute("PRAGMA journal_mode=DELETE")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        except sqlite3.OperationalError:
+            if last_error is not None:
+                conn.close()
+                raise last_error from None
     try:
         yield conn
         conn.commit()

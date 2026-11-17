@@ -80,6 +80,13 @@ from tradingagents.agents.utils.agent_utils import (
 )
 from tradingagents.agents.utils.social_sentiment_tools import get_social_sentiment
 
+# 分析师可调用的工具集合：ToolNode 必须复用同一份列表。
+SOCIAL_ANALYST_TOOLS = [
+    get_news,
+    get_social_sentiment,
+    search_web,
+]
+
 # get_config：获取全局配置
 
 
@@ -163,13 +170,7 @@ def create_social_media_analyst(llm):
         #
         # 这体现了 Agent 的"自主性"——LLM 决定搜索什么、搜几次、用什么关键词。
         # ====================================================================
-        tools = [
-            get_news,
-            # 真实社媒热度：东财人气榜 / 概念热度 / 微博情绪 / 雪球（可选）
-            get_social_sentiment,
-            # 配置 TAVILY_API_KEY 后，可联网补充最新舆情/事件
-            search_web,
-        ]
+        tools = list(SOCIAL_ANALYST_TOOLS)
 
         # ====================================================================
         # 系统提示词（System Prompt）

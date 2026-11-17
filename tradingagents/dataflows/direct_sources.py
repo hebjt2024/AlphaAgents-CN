@@ -313,8 +313,9 @@ def get_em_dragon_tiger(
     rows = ((payload or {}).get("result") or {}).get("data") or []
     if not rows:
         return (
-            f"No dragon-tiger (LHB) data found for '{code}' in "
-            f"{start_dt.strftime('%Y-%m-%d')}~{end_dt.strftime('%Y-%m-%d')}"
+            f"[不适用] '{code}' 在 "
+            f"{start_dt.strftime('%Y-%m-%d')}~{end_dt.strftime('%Y-%m-%d')} "
+            "无龙虎榜记录（属于正常情况，不构成数据缺口，也不代表利空）"
         )
 
     summary: list[str] = []

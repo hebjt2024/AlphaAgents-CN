@@ -160,8 +160,13 @@ def _weibo_report() -> pd.DataFrame:
         return cached
     try:
         adapter._require_akshare()
+        weibo_func = adapter._ak_func(
+            "alternative_weibo_stock_report_js", "stock_js_weibo_report"
+        )
+        if weibo_func is None:
+            raise RuntimeError("当前 AkShare 版本没有微博舆情接口")
         frame = adapter.retry_with_backoff(
-            lambda: adapter.ak.stock_js_weibo_report(time_period="CNHOUR12"),
+            lambda: weibo_func(time_period="CNHOUR12"),
             max_retries=2,
             base_delay=1.0,
         )

@@ -6,7 +6,25 @@ Portfolio Manager（最终裁决）始终保留，确保一定输出 final_trade
 
 from __future__ import annotations
 
+from tradingagents.strategies.classic import DEFAULT_STRATEGY_KEYS
+
 ALL_ANALYSTS = ["market", "social", "news", "fundamentals"]
+
+# 标准/精简只保留“互不重复”的核心信号族：
+#   趋势（bull_trend / ma_golden_cross）、突破（volume_breakout）、
+#   回踩（shrink_pullback）、反转（bottom_volume）、箱体（box_oscillation）。
+# 同一 family 内再叠加 MACD 金叉、平台突破、RSI 反转等，聚合时只取该族最高分，
+# 边际信息有限，因此放到“深度”里作为补充视角。
+CORE_STRATEGY_KEYS = list(DEFAULT_STRATEGY_KEYS)
+
+DEEP_EXTRA_STRATEGY_KEYS = [
+    "macd_cross",
+    "platform_breakout",
+    "rsi_reversal",
+    "emotion_cycle",
+]
+
+DEEP_STRATEGY_KEYS = CORE_STRATEGY_KEYS + DEEP_EXTRA_STRATEGY_KEYS
 
 ANALYST_META = [
     {"key": "market", "label": "市场分析师", "description": "行情、技术指标、资金面"},
@@ -25,6 +43,9 @@ PIPELINE_PRESETS: dict[str, dict] = {
         "enable_risk": False,
         "max_debate_rounds": 1,
         "max_risk_discuss_rounds": 1,
+        "strategy_keys": list(CORE_STRATEGY_KEYS),
+        "research_think": "deep",
+        "parallel_risk": False,
     },
     "standard": {
         "label": "标准",
@@ -35,6 +56,22 @@ PIPELINE_PRESETS: dict[str, dict] = {
         "enable_risk": True,
         "max_debate_rounds": 1,
         "max_risk_discuss_rounds": 1,
+        "strategy_keys": list(CORE_STRATEGY_KEYS),
+        "research_think": "deep",
+        "parallel_risk": False,
+    },
+    "standard-fast": {
+        "label": "标准-快速",
+        "description": "完整分析师、辩论与风控；研究经理用快速模型，风险三方并行，最终裁决仍用深模型",
+        "analysts": list(ALL_ANALYSTS),
+        "enable_debate": True,
+        "enable_trader": True,
+        "enable_risk": True,
+        "max_debate_rounds": 1,
+        "max_risk_discuss_rounds": 1,
+        "strategy_keys": list(CORE_STRATEGY_KEYS),
+        "research_think": "quick",
+        "parallel_risk": True,
     },
     "deep": {
         "label": "深度",
@@ -45,6 +82,9 @@ PIPELINE_PRESETS: dict[str, dict] = {
         "enable_risk": True,
         "max_debate_rounds": 2,
         "max_risk_discuss_rounds": 2,
+        "strategy_keys": list(DEEP_STRATEGY_KEYS),
+        "research_think": "deep",
+        "parallel_risk": False,
     },
 }
 
@@ -59,6 +99,9 @@ def get_preset(name: str) -> dict:
         "enable_risk": preset["enable_risk"],
         "max_debate_rounds": preset["max_debate_rounds"],
         "max_risk_discuss_rounds": preset["max_risk_discuss_rounds"],
+        "strategy_keys": list(preset["strategy_keys"]),
+        "research_think": preset.get("research_think", "deep"),
+        "parallel_risk": bool(preset.get("parallel_risk", False)),
     }
 
 

@@ -218,6 +218,19 @@ def _require_akshare():
     return ak
 
 
+def _ak_func(*names: str):
+    """返回第一个存在的 AkShare 接口，兼容接口改名/移除。
+
+    AkShare 的模块级 ``__getattr__`` 会对被移除的接口抛 AttributeError，
+    使用 ``getattr(..., None)`` 可以安全跳过旧名字。
+    """
+    for name in names:
+        func = getattr(ak, name, None)
+        if func is not None:
+            return func
+    return None
+
+
 def _throttle_request():
     """
     请求节流控制，避免快速连续请求触发东方财富 API 限流。
@@ -903,9 +916,12 @@ def get_stock_hist_with_fallback(
     # 第 1 级：东方财富（主数据源）
     # ------------------------------------------------------------------
     df = None
+    hist_func = _ak_func("stock_zh_a_hist_em", "stock_zh_a_hist")
     try:
+        if hist_func is None:
+            raise RuntimeError("当前 AkShare 版本没有东方财富日线接口")
         df = retry_with_backoff(
-            lambda: ak.stock_zh_a_hist(
+            lambda: hist_func(
                 symbol=code,
                 period="daily",
                 start_date=start_ak,
@@ -942,9 +958,12 @@ def get_stock_hist_with_fallback(
     # ------------------------------------------------------------------
     sina_symbol = _to_sina_symbol(code)
     df_sina = None
+    sina_daily = _ak_func("stock_zh_a_hist_sina", "stock_zh_a_daily")
     try:
+        if sina_daily is None:
+            raise RuntimeError("当前 AkShare 版本没有新浪日线接口")
         df_sina = retry_with_backoff(
-            lambda: ak.stock_zh_a_daily(
+            lambda: sina_daily(
                 symbol=sina_symbol,
                 start_date=start_ak,
                 end_date=end_ak,
@@ -1703,6 +1722,7 @@ def _fetch_financial_statement_ths(
     freq: str,
     curr_date: str,
     max_periods: int = 8,
+    sina_indicator: str | None = None,
 ) -> str:
     """
     通用财务报表获取函数：从同花顺数据源（通过 akshare 的 stock_financial_*_ths
@@ -1732,11 +1752,28 @@ def _fetch_financial_statement_ths(
     # - "按报告期"：返回所有季报，报告期列为日期字符串（如 "2025-12-31"）
     indicator = "按年度" if freq.lower() == "annual" else "按报告期"
 
-    df = retry_with_backoff(
-        lambda: ths_func(symbol=code, indicator=indicator),
-        max_retries=AKSHARE_MAX_RETRIES,
-        base_delay=AKSHARE_BASE_DELAY,
-    )
+    if ths_func is not None:
+        source_label = "同花顺数据源"
+        df = retry_with_backoff(
+            lambda: ths_func(symbol=code, indicator=indicator),
+            max_retries=AKSHARE_MAX_RETRIES,
+            base_delay=AKSHARE_BASE_DELAY,
+        )
+    else:
+        # AkShare 1.20.41+ 移除了 stock_financial_*_ths，改用新浪三大报表。
+        # 新浪接口同样返回“报告期”列，后续过滤/排序逻辑可以复用。
+        if not sina_indicator:
+            raise RuntimeError(f"No {statement_name.lower()} data source available")
+        sina_func = getattr(ak, "stock_financial_report_sina", None)
+        if sina_func is None:
+            raise RuntimeError(f"No {statement_name.lower()} data source available")
+        source_label = "新浪财经"
+        symbol = _to_sina_symbol(code)
+        df = retry_with_backoff(
+            lambda: sina_func(symbol=symbol, indicator=sina_indicator),
+            max_retries=AKSHARE_MAX_RETRIES,
+            base_delay=AKSHARE_BASE_DELAY,
+        )
 
     if df is None or df.empty:
         return f"No {statement_name.lower()} data found for '{code}'"
@@ -1770,7 +1807,7 @@ def _fetch_financial_statement_ths(
 
     header = f"# {statement_name} data for {code} ({freq})\n"
     header += f"# Data retrieved on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
-    header += "# Source: AkShare (同花顺数据源)\n"
+    header += f"# Source: AkShare ({source_label})\n"
     header += f"# Reports: {len(df)} periods\n\n"
 
     return header + csv_string
@@ -1796,10 +1833,11 @@ def get_akshare_balance_sheet(
         code = normalize_symbol(ticker)
         return _fetch_financial_statement_ths(
             code=code,
-            ths_func=ak.stock_financial_debt_ths,
+            ths_func=getattr(ak, "stock_financial_debt_ths", None),
             statement_name="Balance Sheet",
             freq=freq,
             curr_date=curr_date,
+            sina_indicator="资产负债表",
         )
     except Exception:
         raise
@@ -1826,10 +1864,11 @@ def get_akshare_cashflow(
         code = normalize_symbol(ticker)
         return _fetch_financial_statement_ths(
             code=code,
-            ths_func=ak.stock_financial_cash_ths,
+            ths_func=getattr(ak, "stock_financial_cash_ths", None),
             statement_name="Cash Flow",
             freq=freq,
             curr_date=curr_date,
+            sina_indicator="现金流量表",
         )
     except Exception:
         raise
@@ -1856,10 +1895,11 @@ def get_akshare_income_statement(
         code = normalize_symbol(ticker)
         return _fetch_financial_statement_ths(
             code=code,
-            ths_func=ak.stock_financial_benefit_ths,
+            ths_func=getattr(ak, "stock_financial_benefit_ths", None),
             statement_name="Income Statement",
             freq=freq,
             curr_date=curr_date,
+            sina_indicator="利润表",
         )
     except Exception:
         raise
@@ -1966,9 +2006,22 @@ def get_akshare_capital_flow(
 
     # 主数据源：个股资金流（沪深）
     if exchange in ("sh", "sz"):
+        flow_func = _ak_func(
+            "stock_fund_flow_individual_hist_em", "stock_individual_fund_flow"
+        )
+
+        def _call_flow():
+            if flow_func is None:
+                raise RuntimeError("当前 AkShare 版本没有个股资金流接口")
+            try:
+                return flow_func(symbol=code, market=exchange)
+            except TypeError:
+                # 旧版接口参数名是 stock
+                return flow_func(stock=code, market=exchange)
+
         try:
             df = retry_with_backoff(
-                lambda: ak.stock_individual_fund_flow(stock=code, market=exchange),
+                _call_flow,
                 max_retries=2,
                 base_delay=AKSHARE_BASE_DELAY,
             )
@@ -1982,9 +2035,15 @@ def get_akshare_capital_flow(
 
     # 兜底：全市场资金流排行（覆盖北交所 / 个股接口异常）
     if df is None or df.empty:
+        rank_func = _ak_func(
+            "stock_fund_flow_individual_rank_em",
+            "stock_individual_fund_flow_rank",
+        )
         try:
+            if rank_func is None:
+                raise RuntimeError("当前 AkShare 版本没有资金流排行接口")
             rank = retry_with_backoff(
-                lambda: ak.stock_individual_fund_flow_rank(indicator="今日"),
+                lambda: rank_func(indicator="今日"),
                 max_retries=1,
                 base_delay=AKSHARE_BASE_DELAY,
             )
@@ -2272,18 +2331,22 @@ def get_akshare_dragon_tiger(
             _LHB_CACHE[cache_key] = (now, raw)
 
     if raw is None or raw.empty:
-        return f"No dragon-tiger (LHB) data found for '{ticker}' in {start}~{end}"
+        return (
+            f"{NOT_APPLICABLE_MARKER} '{ticker}' 在 {start}~{end} 无龙虎榜记录"
+            "（属于正常情况，不构成数据缺口，也不代表利空）"
+        )
 
     df = raw.copy()
     code_col = _find_code_column(df)
     if not code_col:
-        return "龙虎榜数据格式不符合预期（缺少代码列）"
+        return "龙虎榜数据格式不符合预期，缺少代码列"
 
     matched = df[df[code_col].astype(str).str.zfill(6) == code]
     if matched.empty:
         return (
-            f"No dragon-tiger (LHB) data found for '{code}' in "
-            f"{start_dt.strftime('%Y-%m-%d')}~{end_dt.strftime('%Y-%m-%d')}"
+            f"{NOT_APPLICABLE_MARKER} '{code}' 在 "
+            f"{start_dt.strftime('%Y-%m-%d')}~{end_dt.strftime('%Y-%m-%d')} "
+            "无龙虎榜记录（属于正常情况，不构成数据缺口，也不代表利空）"
         )
 
     matched = matched.copy()
@@ -2452,8 +2515,19 @@ def get_akshare_global_news(
         try:
             # 使用重试机制获取央视新闻联播（宏观政策新闻的重要来源）
             # 启用超时机制，因为news_cctv可能需要较长时间下载数据
+            cctv_func = _ak_func("alternative_news_cctv", "news_cctv")
+            if cctv_func is None:
+                raise RuntimeError("当前 AkShare 版本没有央视新闻接口")
+
+            def _call_cctv():
+                try:
+                    return cctv_func()
+                except TypeError:
+                    # 新版接口按日期单日抓取
+                    return cctv_func(date=curr_dt.strftime("%Y%m%d"))
+
             cctv_news = retry_with_backoff(
-                lambda: ak.news_cctv(),
+                _call_cctv,
                 max_retries=2,  # 减少重试次数，避免长时间等待
                 base_delay=AKSHARE_BASE_DELAY,
                 timeout=60,  # 设置较长的超时时间（60秒）
@@ -2486,10 +2560,15 @@ def get_akshare_global_news(
         if not news_str:
             # 如果央视新闻获取失败，尝试获取财联社电报
             try:
+                cls_func = _ak_func(
+                    "stock_news_global_cls", "stock_info_global_cls"
+                )
+                if cls_func is None:
+                    raise RuntimeError("当前 AkShare 版本没有财联社电报接口")
                 # 使用重试机制获取财联社电报
                 # 启用超时机制
                 cls_telegraph = retry_with_backoff(
-                    lambda: ak.stock_info_global_cls(),
+                    lambda: cls_func(),
                     max_retries=2,  # 减少重试次数
                     base_delay=AKSHARE_BASE_DELAY,
                     timeout=30,  # 设置超时时间（30秒）

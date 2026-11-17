@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from datetime import date
 from typing import Any
@@ -102,6 +103,66 @@ def _yearly_item(
     }
 
 
+def _first_attr(*names: str):
+    """返回第一个存在的 AkShare 接口；兼容接口改名/移除。"""
+    for name in names:
+        func = getattr(adapter.ak, name, None)
+        if func is not None:
+            return func
+    return None
+
+
+def _to_month(value: Any) -> pd.Timestamp:
+    """解析 AkShare 的“2026年10月份”格式。"""
+    text = str(value or "")
+    match = re.search(r"(\d{4})\D+(\d{1,2})", text)
+    if not match:
+        return pd.NaT
+    year, month = int(match.group(1)), int(match.group(2))
+    if not 1 <= month <= 12:
+        return pd.NaT
+    return pd.Timestamp(year=year, month=month, day=1)
+
+
+def _month_item(
+    frame: pd.DataFrame, label: str, column: str, unit: str
+) -> dict[str, Any] | None:
+    """新版 AkShare 月度接口：月份列 + 指定数值列，按月份升序取最新。"""
+    if frame is None or frame.empty or column not in frame.columns:
+        return None
+    data = frame.copy()
+    data["_date"] = data.get("月份").map(_to_month) if "月份" in data else pd.NaT
+    if data["_date"].isna().all():
+        data["_date"] = pd.to_datetime(data.get("月份"), errors="coerce")
+    data = data.dropna(subset=["_date"]).sort_values("_date")
+    if data.empty:
+        return None
+    row = data.iloc[-1]
+    value = _num(row.get(column))
+    if value is None:
+        return None
+    previous = _num(data.iloc[-2].get(column)) if len(data) > 1 else None
+    change = (
+        round(value - previous, 4)
+        if value is not None and previous is not None
+        else None
+    )
+    return {
+        "key": label,
+        "label": label,
+        "value": value,
+        "previous": previous,
+        "change": change,
+        "date": row["_date"].strftime("%Y-%m-%d"),
+        "unit": unit,
+        "status": "上升"
+        if change and change > 0
+        else "下降"
+        if change and change < 0
+        else "持平",
+    }
+
+
 def _historical_guard(curr_date: str | None) -> dict[str, Any] | None:
     """宏观/两融/轮动/ETF 只有实时快照，历史分析日必须显式拒绝。"""
     if curr_date and str(curr_date)[:10] != date.today().isoformat():
@@ -125,25 +186,69 @@ def get_macro_indicators(curr_date: str | None = None) -> dict[str, Any]:
     warnings: list[str] = []
     items: list[dict[str, Any]] = []
 
-    for label, func, unit in (
-        ("制造业 PMI", adapter.ak.macro_china_pmi_yearly, "点"),
-        ("CPI 同比", adapter.ak.macro_china_cpi_yearly, "%"),
-        ("PPI 同比", adapter.ak.macro_china_ppi_yearly, "%"),
-        ("M2 同比", adapter.ak.macro_china_m2_yearly, "%"),
-    ):
+    # AkShare 1.20.42+ 把 macro_china_*_yearly 系列陆续移除/改名，
+    # 这里同时兼容新接口（月度表）与旧接口（今值/前值表）。
+    monthly_specs = (
+        (
+            "制造业 PMI",
+            "制造业-指数",
+            "点",
+            ("macro_china_pmi", "macro_china_pmi_yearly"),
+        ),
+        (
+            "CPI 同比",
+            "全国-同比增长",
+            "%",
+            ("macro_china_cpi", "macro_china_cpi_yearly"),
+        ),
+        (
+            "PPI 同比",
+            "当月同比增长",
+            "%",
+            ("macro_china_ppi", "macro_china_ppi_yearly"),
+        ),
+        (
+            "M2 同比",
+            "货币和准货币(M2)-同比增长",
+            "%",
+            ("macro_china_money_supply_em", "macro_china_m2_yearly"),
+        ),
+    )
+    for label, column, unit, names in monthly_specs:
+        func = _first_attr(*names)
+        if func is None:
+            warnings.append(f"{label}：当前 AkShare 版本没有可用接口")
+            continue
         frame = _call(func, name=label, warnings=warnings)
-        item = _yearly_item(frame, label, unit)
+        if frame is not None and not frame.empty and "月份" in frame.columns:
+            item = _month_item(frame, label, column, unit)
+        else:
+            item = _yearly_item(frame, label, unit)
         if item:
             items.append(item)
 
-    lpr = _call(adapter.ak.macro_china_lpr, name="LPR", warnings=warnings)
+    lpr_func = _first_attr("interest_rate_lpr_em", "macro_china_lpr")
+    lpr = (
+        _call(lpr_func, name="LPR", warnings=warnings)
+        if lpr_func is not None
+        else pd.DataFrame()
+    )
     if lpr is not None and not lpr.empty:
         data = lpr.copy()
-        data["TRADE_DATE"] = pd.to_datetime(data.get("TRADE_DATE"), errors="coerce")
+        data["TRADE_DATE"] = pd.to_datetime(
+            data.get("TRADE_DATE", data.get("日期")), errors="coerce"
+        )
         data = data.dropna(subset=["TRADE_DATE"]).sort_values("TRADE_DATE")
         row = data.iloc[-1]
-        for column, label in (("LPR1Y", "LPR 1 年"), ("LPR5Y", "LPR 5 年")):
-            value = _num(row.get(column))
+        for columns, label in (
+            (("1年期LPR", "LPR1Y"), "LPR 1 年"),
+            (("5年期以上LPR", "LPR5Y"), "LPR 5 年"),
+        ):
+            value = None
+            for column in columns:
+                value = _num(row.get(column))
+                if value is not None:
+                    break
             if value is not None:
                 items.append(
                     {
@@ -158,7 +263,12 @@ def get_macro_indicators(curr_date: str | None = None) -> dict[str, Any]:
                     }
                 )
 
-    shibor = _call(adapter.ak.macro_china_shibor_all, name="Shibor", warnings=warnings)
+    shibor_func = _first_attr("interest_rate_shibor_js", "macro_china_shibor_all")
+    shibor = (
+        _call(shibor_func, name="Shibor", warnings=warnings)
+        if shibor_func is not None
+        else pd.DataFrame()
+    )
     if shibor is not None and not shibor.empty:
         data = shibor.copy()
         data["日期"] = pd.to_datetime(data.get("日期"), errors="coerce")
@@ -180,10 +290,15 @@ def get_macro_indicators(curr_date: str | None = None) -> dict[str, Any]:
                     }
                 )
 
-    bonds = _call(
-        lambda: adapter.ak.bond_zh_us_rate(start_date="20200101"),
-        name="中美国债收益率",
-        warnings=warnings,
+    bond_func = _first_attr("bond_zh_us_yield_em", "bond_zh_us_rate")
+    bonds = (
+        _call(
+            lambda: bond_func(start_date="20200101"),
+            name="中美国债收益率",
+            warnings=warnings,
+        )
+        if bond_func is not None
+        else pd.DataFrame()
     )
     if bonds is not None and not bonds.empty:
         data = bonds.copy()
@@ -267,10 +382,15 @@ def get_margin_snapshot(
         return cached
     warnings: list[str] = []
     frames = []
-    for label, func in (
-        ("沪市", adapter.ak.macro_china_market_margin_sh),
-        ("深市", adapter.ak.macro_china_market_margin_sz),
-    ):
+    margin_specs = (
+        ("沪市", ("stock_margin_sse_js", "macro_china_market_margin_sh")),
+        ("深市", ("stock_margin_szse_js", "macro_china_market_margin_sz")),
+    )
+    for label, names in margin_specs:
+        func = _first_attr(*names)
+        if func is None:
+            warnings.append(f"{label}两融：当前 AkShare 版本没有可用接口")
+            continue
         frame = _call(func, name=f"{label}两融", warnings=warnings)
         if frame is None or frame.empty:
             continue
@@ -343,10 +463,14 @@ def get_margin_snapshot(
 
 
 def _rotation_frame(indicator: str, warnings: list[str]) -> pd.DataFrame:
+    func = _first_attr(
+        "stock_fund_flow_sector_rank_em", "stock_sector_fund_flow_rank"
+    )
+    if func is None:
+        warnings.append("行业资金流：当前 AkShare 版本没有可用接口")
+        return pd.DataFrame()
     frame = _call(
-        lambda: adapter.ak.stock_sector_fund_flow_rank(
-            indicator=indicator, sector_type="行业资金流"
-        ),
+        lambda: func(indicator=indicator, sector_type="行业资金流"),
         name=f"行业资金流（{indicator}）",
         warnings=warnings,
     )
