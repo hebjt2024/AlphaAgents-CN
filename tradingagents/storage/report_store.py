@@ -30,14 +30,14 @@ def _connect():
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = None
     last_error: Exception | None = None
-    # Windows 绑定挂载 / Docker Desktop 上，WAL 初始化偶尔会和其它连接
-    # 的 checkpoint 撞车，报 "unable to open database file"。重试几次，
-    # 最后退回 DELETE 日志模式，避免一次瞬时冲突导致报告没落库。
+    # Windows 绑定挂载（G:\ -> /app/data）上 SQLite 的 WAL/-shm 会随机报
+    # "disk I/O error"，甚至导致普通读接口失败。这里统一用 DELETE 日志模式，
+    # 牺牲一点并发性能换取稳定；小范围自用完全够用。
     for attempt in range(3):
         try:
             conn = sqlite3.connect(path, timeout=30)
             conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA journal_mode=DELETE")
             conn.execute("PRAGMA synchronous=NORMAL")
             break
         except sqlite3.OperationalError as exc:
@@ -50,16 +50,7 @@ def _connect():
                 conn = None
             time.sleep(0.2 * (attempt + 1))
     if conn is None:
-        # 最后尝试不带 WAL 的连接：宁可牺牲并发性能也要能写入。
-        conn = sqlite3.connect(path, timeout=30)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=DELETE")
-            conn.execute("PRAGMA synchronous=NORMAL")
-        except sqlite3.OperationalError:
-            if last_error is not None:
-                conn.close()
-                raise last_error from None
+        raise last_error from None
     try:
         yield conn
         conn.commit()

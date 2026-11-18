@@ -45,7 +45,10 @@ services:
     environment:
       TZ: Asia/Shanghai
       # 容器内数据库路径（对应下面挂载的 ./data）
-      TA_DB_PATH: /app/data/tradingagents.db
+      # 数据库路径：Windows 绑定挂载上 WAL/-shm 会随机 disk I/O error，
+      # 因此使用已转为 DELETE 日志模式的新库文件。
+      TA_DB_PATH: /app/data/tradingagents_new.db
+      TA_MARKET_DB: /app/data/market_new.db
       # 容器内必须监听 0.0.0.0，宿主机再通过 PORT 暴露
       WEBUI_HOST: 0.0.0.0
       WEBUI_PORT: "8000"

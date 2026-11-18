@@ -60,7 +60,9 @@ def _connect():
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path, timeout=30)
     conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
+    # 与 report_store 一致：Windows 绑定挂载上 WAL/-shm 会随机报
+    # "disk I/O error"，改用 DELETE 日志模式保证稳定（自用/小范围够用）。
+    conn.execute("PRAGMA journal_mode=DELETE")
     conn.execute("PRAGMA synchronous=NORMAL")
     try:
         yield conn
