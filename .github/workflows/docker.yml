@@ -140,8 +140,10 @@ jobs:
             BUILD_DATE=${{ fromJSON(steps.meta.outputs.json).labels['org.opencontainers.image.created'] }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          provenance: true
-          sbom: true
+          # 阿里云 ACR 不支持 OCI 证明清单（application/vnd.oci.empty.v1+json），
+          # 开启 provenance/sbom 会导致 push 被拒，故关闭（GHCR 同样不带 attestation）。
+          provenance: false
+          sbom: false
 
       - name: 输出镜像摘要
         run: |
