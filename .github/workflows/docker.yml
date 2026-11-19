@@ -57,6 +57,7 @@ jobs:
   build:
     name: 构建镜像（多架构）
     runs-on: ubuntu-latest
+    environment: aliyun-container
     outputs:
       pushed: ${{ steps.gate.outputs.push }}
       version: ${{ steps.meta.outputs.version }}
