@@ -476,7 +476,9 @@ def create_fundamentals_analyst(llm):
         # 然后把工具结果返回给这个 Agent，再执行一次。
         # 如果 tool_calls 为空，说明 LLM 已经有足够信息，生成了最终报告。
         # ====================================================================
-        result = chain.invoke(state["messages"])
+        from tradingagents.llm_clients import invoke_stream
+
+        result = invoke_stream(chain, state["messages"])
 
         report = ""
 

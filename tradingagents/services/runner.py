@@ -22,17 +22,34 @@ def run_analysis(
     """执行一次完整分析并持久化、可选推送通知。"""
     from tradingagents.default_config import DEFAULT_CONFIG
     from tradingagents.graph.trading_graph import TradingAgentsGraph
+    from tradingagents.storage.audit_store import append_audit_event
 
     cfg = (config or DEFAULT_CONFIG).copy()
 
-    with ANALYSIS_LOCK:
-        graph = TradingAgentsGraph(config=cfg)
-        final_state, decision = graph.propagate(ticker, trade_date, horizon)
+    try:
+        with ANALYSIS_LOCK:
+            graph = TradingAgentsGraph(config=cfg)
+            final_state, decision = graph.propagate(ticker, trade_date, horizon)
+    except Exception as exc:
+        append_audit_event(
+            action=f"分析失败：{ticker}",
+            detail={
+                "source": source,
+                "trade_date": trade_date,
+                "error": f"{type(exc).__name__}: {exc}",
+            },
+            status=500,
+        )
+        raise
 
     from tradingagents.services.decision_plan import (
         build_decision_plan,
         compare_decisions,
         format_decision_plan,
+    )
+    from tradingagents.services.decision_validation import (
+        get_stored_decision,
+        validate_investment_conclusion,
     )
     from tradingagents.services.decision_schema import (
         format_structured_decision,
@@ -58,6 +75,16 @@ def run_analysis(
     preliminary_plan = build_decision_plan(strategy_result, preliminary)
     decision_diff = compare_decisions(
         preliminary, decision, preliminary_plan, decision_plan
+    )
+
+    # 投资结论校验（决策对齐）：汇总最终决策与各来源的矛盾、与上一次结论的方向翻转。
+    # 结果随 report meta 持久化，供 WebUI / CLI 展示。
+    decision_validation = validate_investment_conclusion(
+        decision=decision,
+        decision_plan=decision_plan,
+        structured_decision=structured_decision,
+        decision_diff=decision_diff,
+        stored_decision=get_stored_decision(ticker),
     )
 
     # 持仓建议：只有当账户里确实持有该标的时才生成。
@@ -115,6 +142,7 @@ def run_analysis(
             "decision_structured": structured_decision,
             "position_advice": position_advice,
             "plain_summary": plain_summary,
+            "decision_validation": decision_validation,
         },
     )
 
@@ -131,6 +159,19 @@ def run_analysis(
         )
         notify_result = send_notification(title, text)
 
+    append_audit_event(
+        action=f"分析：{ticker}",
+        detail={
+            "source": source,
+            "trade_date": trade_date,
+            "horizon": horizon,
+            "owner": owner,
+            "decision": decision,
+            "report_id": report_id,
+            "validation_level": decision_validation.get("level"),
+        },
+        status=200,
+    )
     return {
         "report_id": report_id,
         "ticker": ticker,
@@ -141,6 +182,7 @@ def run_analysis(
         "decision_structured": structured_decision,
         "position_advice": position_advice,
         "plain_summary": plain_summary,
+        "decision_validation": decision_validation,
         "final_state": final_state,
         "notification": notify_result,
     }

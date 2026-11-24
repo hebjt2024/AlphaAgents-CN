@@ -788,7 +788,9 @@ MACD 相关：
         # 如果 LLM 请求了工具调用，实际的工具执行由 LangGraph 的 ToolNode 负责，
         # 不在这个函数内完成。这个函数只负责"启动"分析过程。
         # ====================================================================
-        result = chain.invoke(state["messages"])
+        from tradingagents.llm_clients import invoke_stream
+
+        result = invoke_stream(chain, state["messages"])
 
         # 初始化报告字符串为空
         # 这个变量将存储最终的市场分析报告

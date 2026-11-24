@@ -75,29 +75,10 @@ def _init_users() -> None:
             ON sessions(username)
             """
         )
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS audit_logs (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                username TEXT,
-                role TEXT,
-                action TEXT NOT NULL,
-                method TEXT,
-                path TEXT,
-                status INTEGER,
-                ip TEXT,
-                request_id TEXT,
-                detail_json TEXT,
-                created_at TEXT NOT NULL
-            )
-            """
-        )
-        conn.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_audit_logs_time
-            ON audit_logs(created_at DESC)
-            """
-        )
+        # NOTE：audit_logs 表与索引由 tradingagents.storage.audit_store 拥有
+        # （见 append_audit_event / list_audit_events）；核心业务（如分析运行）
+        # 也通过它写入，这里不再重复建表。
+
 
 
 def _now() -> str:
@@ -393,58 +374,33 @@ def audit_log(
     request_id: str = "",
     detail: dict[str, Any] | None = None,
 ) -> None:
-    try:
-        _init_users()
-        with _connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO audit_logs
-                    (username, role, action, method, path, status, ip,
-                     request_id, detail_json, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    username or "",
-                    role or "",
-                    str(action)[:200],
-                    str(method)[:10],
-                    str(path)[:500],
-                    status,
-                    str(ip)[:200],
-                    str(request_id)[:100],
-                    json.dumps(detail or {}, ensure_ascii=False),
-                    _now(),
-                ),
-            )
-    except Exception:  # 审计失败绝不影响业务
-        logger.warning("审计日志写入失败", exc_info=True)
+    """记录审计事件（落地到 SQLite，失败绝不影响业务）。
+
+    现由 :mod:`tradingagents.storage.audit_store` 拥有表结构与写入；
+    此处保留原签名以兼容既有调用方（middleware / server）。
+    """
+    from tradingagents.storage.audit_store import append_audit_event
+
+    append_audit_event(
+        username=username,
+        role=role,
+        action=action,
+        method=method,
+        path=path,
+        status=status,
+        ip=ip,
+        request_id=request_id,
+        detail=detail,
+    )
 
 
 def list_audit_logs(
     limit: int = 100, *, username: str | None = None
 ) -> list[dict[str, Any]]:
-    _init_users()
-    clauses = []
-    params: list[Any] = []
-    if username:
-        clauses.append("username = ?")
-        params.append(str(username))
-    where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    params.append(max(1, min(int(limit), 1000)))
-    with _connect() as conn:
-        rows = conn.execute(
-            f"SELECT * FROM audit_logs {where} ORDER BY created_at DESC, id DESC LIMIT ?",
-            params,
-        ).fetchall()
-    result = []
-    for row in rows:
-        item = dict(row)
-        try:
-            item["detail"] = json.loads(item.pop("detail_json", "{}") or "{}")
-        except Exception:
-            item["detail"] = {}
-        result.append(item)
-    return result
+    """读取审计事件（现由 storage.audit_store 拥有）。"""
+    from tradingagents.storage.audit_store import list_audit_events
+
+    return list_audit_events(max(1, min(int(limit), 1000)), username=username)
 
 
 def ensure_bootstrap_admin() -> dict[str, Any] | None:

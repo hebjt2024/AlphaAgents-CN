@@ -307,7 +307,9 @@ def create_bull_researcher(llm, memory):
         # 这种直接调用方式适用于不需要工具调用的场景，
         # 比 ChatPromptTemplate + | 管道 + bind_tools 更简单直接。
         # ====================================================================
-        response = llm.invoke(prompt)
+        from tradingagents.llm_clients import invoke_stream
+
+        response = invoke_stream(llm, prompt)
 
         # 为论点添加发言者标签，便于在辩论历史中追踪
         # 这样辩论历史中可以清楚区分谁说了什么：

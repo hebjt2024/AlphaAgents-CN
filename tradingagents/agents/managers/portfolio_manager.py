@@ -360,7 +360,9 @@ JSON 必须与正文评级一致；若正文没有把握，`confidence` 应低�
         # 这种直接调用方式适用于不需要工具调用的场景，
         # 比 bind_tools 更简单直接。
         # ====================================================================
-        response = llm.invoke(prompt)
+        from tradingagents.llm_clients import invoke_stream
+
+        response = invoke_stream(llm, prompt)
 
         # ====================================================================
         # 更新风险辩论状态

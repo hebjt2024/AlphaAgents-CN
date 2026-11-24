@@ -310,7 +310,9 @@ def create_research_manager(llm, memory):
         #   研究经理不需要调用工具——所有数据（报告+辩论历史）已在提示词中。
         #   它的任务是"评估+决策"，不需要工具，直接调用更简单。
         # ====================================================================
-        response = llm.invoke(prompt)
+        from tradingagents.llm_clients import invoke_stream
+
+        response = invoke_stream(llm, prompt)
 
         # ====================================================================
         # 更新投资辩论状态

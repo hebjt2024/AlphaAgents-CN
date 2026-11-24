@@ -146,7 +146,7 @@ class DisclosureServiceTests(unittest.TestCase):
         from tradingagents.dataflows.disclosure import get_announcements
 
         with patch(
-            "akshare.stock.research.stock_notice._stock_notice_report",
+            "akshare.stock_fundamental.stock_notice._stock_notice_report",
             return_value=_announcements(),
         ):
             result = get_announcements("600519", curr_date="2026-11-15")

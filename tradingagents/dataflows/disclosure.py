@@ -196,7 +196,13 @@ def get_announcements(
 
     try:
         adapter._require_akshare()
-        from akshare.stock.research.stock_notice import _stock_notice_report
+        try:
+            # akshare ≥1.18.64 路径（旧版本使用 akshare.stock.research.stock_notice）
+            from akshare.stock_fundamental.stock_notice import (
+                _stock_notice_report,
+            )
+        except ImportError:
+            from akshare.stock.research.stock_notice import _stock_notice_report
 
         frame = adapter.retry_with_backoff(
             lambda: _stock_notice_report(

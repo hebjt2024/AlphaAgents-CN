@@ -62,6 +62,16 @@ from .base_client import BaseLLMClient
 # .factory 表示从当前包导入 factory.py 模块
 from .factory import create_llm_client
 
+# 从当前包导入流式调用辅助：token 广播 + 透明累积为最终消息
+# invoke_stream(runnable, input)：优先流式执行，失败回退 invoke
+# add_stream_sink / remove_stream_sink / emit_token：登记流式 token sink
+from .streaming import (
+    add_stream_sink,
+    emit_token,
+    invoke_stream,
+    remove_stream_sink,
+)
+
 # __all__ 定义了 "from tradingagents.llm_clients import *" 时导出的名称
 # 这是一种"白名单"机制，控制包的公开 API
 # 只有 BaseLLMClient 和 create_llm_client 会被 import * 导入
@@ -70,4 +80,11 @@ from .factory import create_llm_client
 #   1. 简化用户导入：只需 from tradingagents.llm_clients import create_llm_client
 #   2. 隐藏实现细节：用户不需要知道内部有哪些客户端类
 #   3. 降低耦合：内部实现变化不影响使用 __all__ 导出的接口
-__all__ = ["BaseLLMClient", "create_llm_client"]
+__all__ = [
+    "BaseLLMClient",
+    "create_llm_client",
+    "invoke_stream",
+    "add_stream_sink",
+    "remove_stream_sink",
+    "emit_token",
+]

@@ -256,7 +256,9 @@ def create_risk_conservative(llm):
         # llm.invoke(prompt) 将提示词发送给 LLM 并返回推理结果。
         # response.content 是 LLM 生成的文本回复（保守方论点）。
         # ====================================================================
-        response = llm.invoke(prompt)
+        from tradingagents.llm_clients import invoke_stream
+
+        response = invoke_stream(llm, prompt)
 
         # 为论点添加发言者标签，方便在辩论历史中区分不同角色
         # 辩论历史中的格式：

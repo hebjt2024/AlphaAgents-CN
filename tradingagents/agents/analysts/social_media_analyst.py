@@ -406,7 +406,9 @@ def create_social_media_analyst(llm):
         # 如果不为空 → LLM 想调用工具，LangGraph 路由到 ToolNode 执行
         # 如果为空 → LLM 已完成分析，生成了最终报告
         # ====================================================================
-        result = chain.invoke(state["messages"])
+        from tradingagents.llm_clients import invoke_stream
+
+        result = invoke_stream(chain, state["messages"])
 
         report = ""
 

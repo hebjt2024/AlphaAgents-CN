@@ -293,7 +293,9 @@ def create_bear_researcher(llm, memory):
         #   熊市研究员不需要调用工具获取数据——所有数据已在提示词中。
         #   它的任务是"分析+辩论"，不需要工具，直接调用更简单高效。
         # ====================================================================
-        response = llm.invoke(prompt)
+        from tradingagents.llm_clients import invoke_stream
+
+        response = invoke_stream(llm, prompt)
 
         # 为论点添加发言者标签，方便在辩论历史中区分不同角色
         # 这样辩论历史中可以清楚区分谁说了什么：

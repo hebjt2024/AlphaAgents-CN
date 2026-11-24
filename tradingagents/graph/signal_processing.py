@@ -389,7 +389,9 @@ class SignalProcessor:
         #   .content 访问 AIMessage 的 content 属性，获取回复的文本内容
         # 这是方法链式调用：先调用 invoke，再访问返回值的 content 属性
         try:
-            result = self.llm.invoke(messages).content
+            from tradingagents.llm_clients import invoke_stream
+
+            result = invoke_stream(self.llm, messages).content
         except Exception as exc:  # 提取失败不应让整轮分析崩掉
             logger.warning("决策信号提取失败，回退为 HOLD：%s", exc)
             return "HOLD"

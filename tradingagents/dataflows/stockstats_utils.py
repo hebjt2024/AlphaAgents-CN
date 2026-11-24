@@ -737,6 +737,15 @@ class StockstatsUtils:
             # 运行时示例：matching_rows["rsi"].values → array([55.23])
             #             [0] → 55.23
             indicator_value = matching_rows[indicator].values[0]
+            # stockstats 的 RSI 对首行固定写入哨兵 50.0（stockstats._rsi：
+            # ``rsi[0] = 50.0``），且数据行数不足以计算 RSI(14) 时，匹配行的
+            # 值也是 50.0 —— 这不是真实的中性读数。数据不足以计算时按缺失返回
+            # N/A（与下面的 pd.isna 分支语义一致，避免把哨兵值当真实指标）。
+            if indicator == "rsi":
+                from stockstats import _dft_windows
+
+                if len(df) < (_dft_windows.get("rsi") or 14):
+                    return "N/A: 指标值缺失（数据不足或该日无有效行情）"
             # WHY（FIX 2）：这里必须显式检查 NaN。
             # 批量路径（y_finance._get_stock_stats_bulk）已经把 NaN 转成 "N/A"，
             # 但单日路径历史上直接把原始值返回，NaN 会被 Python 格式化成
