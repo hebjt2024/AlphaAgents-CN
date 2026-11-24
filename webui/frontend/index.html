@@ -378,13 +378,13 @@
   .result-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
   .report { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: rgba(7,11,20,.25); }
   .report-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; cursor: pointer; user-select: none; }
-  .report-head h4 { font-size: 12px; color: var(--text-2); }
+  .report-head h4 { font-size: 13px; color: var(--text-2); }
   .report-head .chev { color: var(--text-3); font-size: 10px; transition: .2s; }
   .report.collapsed .chev { transform: rotate(-90deg); }
-  .report-body { padding: 0 14px 14px; font-size: 12px; color: var(--text-2); }
+  .report-body { padding: 0 14px 14px; font-size: 13px; color: var(--text-2); }
   .report.collapsed .report-body { display: none; }
   .final-text { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: rgba(79,140,255,.04); }
-  .final-text .md { font-size: 13px; color: var(--text-2); }
+  .final-text .md { font-size: 14px; color: var(--text-2); }
 
   /* 人话结论卡：把行话结论翻译成普通人看得懂的样子 */
   .plain-card { border: 1px solid rgba(79,140,255,.35); border-radius: 14px; padding: 14px 16px; background: linear-gradient(180deg, rgba(79,140,255,.10), rgba(79,140,255,.02)); }
@@ -403,6 +403,45 @@
   .plain-terms summary { cursor: pointer; }
   .plain-terms ul { margin: 6px 0 0; padding-left: 18px; }
   .plain-note { margin-top: 12px; font-size: 11px; color: var(--text-3); line-height: 1.6; }
+
+  /* 报告正文美化：表格 / 标题 / 引用 / 加粗，突出关键内容 */
+  .md table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 12.5px; }
+  .md th { background: rgba(79,140,255,.10); color: var(--text-1); font-weight: 700; padding: 6px 8px; border-bottom: 1px solid rgba(79,140,255,.30); text-align: left; }
+  .md td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  .md tbody tr:nth-child(even) td { background: rgba(148,163,184,.03); }
+  .md tbody tr:hover td { background: rgba(79,140,255,.05); }
+  .md h1, .md h2, .md h3 { color: var(--text-1); border-left: 3px solid var(--accent); padding-left: 8px; margin: 14px 0 8px; }
+  .md strong { color: var(--text-1); }
+  .md blockquote { margin: 10px 0; padding: 8px 10px; border-left: 3px solid rgba(79,140,255,.45); background: rgba(79,140,255,.05); border-radius: 6px; color: var(--text-2); }
+  .md code { background: rgba(148,163,184,.10); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+
+  /* 关键指标速览（报告中心详情） */
+  .metric-strip { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 8px; margin: 10px 0 4px; }
+  .metric-card { border: 1px solid rgba(79,140,255,.30); border-radius: 10px; padding: 8px 10px; background: linear-gradient(180deg, rgba(79,140,255,.10), rgba(79,140,255,.02)); }
+  .metric-card .k { font-size: 11px; color: var(--text-2); font-weight: 700; }
+  .metric-card .v { font-size: 16px; font-weight: 800; font-variant-numeric: tabular-nums; color: var(--text-1); }
+  .metric-card .p { font-size: 10px; color: var(--text-3); margin-top: 2px; line-height: 1.4; }
+  /* 报告中心折叠页签：标签醒目、正文从属于标签 */
+  .report-section { border: 1px solid var(--border); border-radius: 10px; margin: 8px 0; overflow: hidden; background: rgba(7,11,20,.25); }
+  .report-section > summary { display: flex; align-items: center; gap: 8px; padding: 10px 14px; font-size: 15px; font-weight: 800; color: var(--text-1); background: rgba(79,140,255,.10); border-left: 3px solid var(--accent); cursor: pointer; list-style: none; user-select: none; }
+  .report-section > summary::-webkit-details-marker { display: none; }
+  .report-section > summary::before { content: '▶'; font-size: 10px; color: var(--accent); transition: transform .2s; }
+  .report-section[open] > summary::before { transform: rotate(90deg); }
+  .report-section > summary:hover { background: rgba(79,140,255,.16); }
+  .report-section > .md { padding: 6px 14px 14px; font-size: 13px; }
+  .report-section .md h1, .report-section .md h2, .report-section .md h3 { font-size: 14px; margin: 12px 0 6px; }
+  .plain-details { border-style: dashed; border-color: rgba(79,140,255,.35); background: rgba(79,140,255,.04); }
+
+  /* 浅色主题：报告文字/背景对比度修正 */
+  body.light .report-section { background: #ffffff; border-color: rgba(15, 23, 42, 0.12); }
+  body.light .report-section > summary { background: rgba(37, 99, 235, 0.08); }
+  body.light .report-section > summary:hover { background: rgba(37, 99, 235, 0.14); }
+  body.light .md th { background: rgba(37, 99, 235, 0.06); border-bottom-color: rgba(37, 99, 235, 0.25); }
+  body.light .md tbody tr:nth-child(even) td { background: rgba(15, 23, 42, 0.03); }
+  body.light .md tbody tr:hover td { background: rgba(37, 99, 235, 0.05); }
+  body.light .md blockquote { background: rgba(37, 99, 235, 0.04); }
+  body.light .md code { background: rgba(15, 23, 42, 0.06); }
+  body.light .plain-details { background: rgba(37, 99, 235, 0.03); }
 
   /* Tools panels */
   .tools-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
@@ -4609,6 +4648,19 @@ function renderReportsTable() {
     </tr>`;
   }).join('');
 }
+function reportMetricsHtml(r) {
+  const meta = r.meta || {};
+  const plan = (meta.decision_plan && typeof meta.decision_plan === 'object') ? meta.decision_plan : {};
+  const ps = (meta.plain_summary && typeof meta.plain_summary === 'object') ? meta.plain_summary : {};
+  const items = [];
+  if (plan.score !== undefined && plan.score !== null) items.push({ k: '综合参考分', v: `${plan.score} / 100`, p: '' });
+  if (plan.confidence !== undefined && plan.confidence !== null) items.push({ k: '置信度', v: `${plan.confidence}%`, p: '' });
+  if (plan.risk_reward !== undefined && plan.risk_reward !== null) items.push({ k: '风险收益比', v: `${plan.risk_reward}`, p: '' });
+  if (plan.position_pct !== undefined && plan.position_pct !== null) items.push({ k: '建议仓位', v: `${Math.round((plan.position_pct || 0) * 100)}%`, p: '' });
+  (ps.numbers || []).slice(0, 6).forEach(n => items.push({ k: n.label || '', v: n.value || '', p: n.plain || '' }));
+  if (!items.length) return '';
+  return `<div class="metric-strip">${items.map(i => `<div class="metric-card"><div class="k">${escapeHtml(String(i.k))}</div><div class="v">${escapeHtml(String(i.v))}</div>${i.p ? `<div class="p">${escapeHtml(String(i.p))}</div>` : ''}</div>`).join('')}</div>`;
+}
 async function openReport(id) {
   try {
     const data = await apiFetch(`/api/reports/${id}`);
@@ -4616,7 +4668,6 @@ async function openReport(id) {
     const r = data.report;
     $('modalTitle').textContent = `${r.ticker} · ${r.trade_date}`;
     const sections = [
-      ['plain_summary', '人话结论'],
       ['final_trade_decision', '最终决策'], ['decision_structured', '结构化决策块'],
       ['decision_plan', '决策卡'],
       ['market_report', '市场分析'], ['strategy_report', '策略信号'],
@@ -4626,10 +4677,17 @@ async function openReport(id) {
       ['trader_investment_plan', '交易员方案'],
     ];
     let html = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="pill ${decisionClass(r.decision)}">${escapeHtml(r.decision || '未知')}</span><span class="muted">${escapeHtml(r.created_at || '')}</span><span class="muted">来源 ${escapeHtml(r.source || '')}</span></div>`;
+    // 关键指标速览：先看结论与关键数字，再看正文
+    html += reportMetricsHtml(r);
     sections.forEach(([key, title]) => {
       const text = (r.reports || {})[key];
-      if (text) html += `<details open><summary style="cursor:pointer;color:var(--accent);font-size:13px;margin:8px 0;">${title}</summary><div class="md">${renderMarkdown(text)}</div></details>`;
+      if (text) html += `<details open class="report-section"><summary>${title}</summary><div class="md">${renderMarkdown(text)}</div></details>`;
     });
+    // 人话结论放最后：作为可选的通俗解释，默认折叠
+    const plainMd = (r.reports || {}).plain_summary;
+    if (plainMd) {
+      html += `<details class="report-section plain-details"><summary>🗣 人话结论（通俗解释）</summary><div class="md">${renderMarkdown(plainMd)}</div></details>`;
+    }
     $('modalBody').innerHTML = html;
     $('modal').classList.add('show');
   } catch (e) { showToast('报告加载失败: ' + e, 'err'); }
