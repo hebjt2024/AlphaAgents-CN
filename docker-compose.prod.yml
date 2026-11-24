@@ -1,27 +1,53 @@
 # =============================================================================
-# 生产部署覆盖文件：只拉取"已推送的镜像"，绝不在服务器上构建
+# 生产部署覆盖文件（与 docker-compose.yml 合并使用）：只拉取"已推送的镜像"，
+# 绝不在服务器上构建。
 #
 # 用法（服务器上）：
-#   export IMAGE_REPO=ghcr.io/your-name/alphaagents-cn
-#   export IMAGE_TAG=1.0.0
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml pull
 #   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 #
-# 说明：
-#   - `build: !reset null` 需要 Docker Compose v2.24+（旧版本请改用：
-#     `docker compose --pull always --no-build up -d`，同样不会本地构建）。
-#   - IMAGE_REPO 必填（用 :? 强制检查，避免误把本地 alphaagents-cn 当生产镜像）。
-#   - pull_policy: always 保证每次启动前先拉取最新标签，避免"机器上是旧镜像"。
+# 必须在 shell 环境中设置：
+#   IMAGE_REPO   必填（:? 强制检查，避免误把本地 alphaagents-cn 当生产镜像）
+#   IMAGE_TAG    镜像标签，默认 latest
+#   PORT         宿主机端口，默认 8000
+# 建议在 .env 中设置 WEBUI_API_KEY（开启面板鉴权，避免任何人访问即可消耗 LLM 额度）。
 # =============================================================================
 services:
   alphaagents:
     image: ${IMAGE_REPO:?请设置 IMAGE_REPO，例如 ghcr.io/your-name/alphaagents-cn}:${IMAGE_TAG:-latest}
-    build: !reset null
+    build: !reset null   # 生产绝不本地构建（需 Compose v2.24+；旧版用 --pull always --no-build）
     pull_policy: always
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "${PORT:-8000}:8000"
+    env_file:
+      - .env
     environment:
-      # 生产环境建议开鉴权，避免任何人访问面板即可消耗 LLM 额度
-      # 在 .env 中设置 WEBUI_API_KEY=<强随机字符串>
+      TZ: Asia/Shanghai
+      # 容器内数据库路径（挂载 ./data）。Windows 绑定挂载上 WAL 会随机 I/O error，
+      # 因此使用 *_new.db（DELETE 日志模式）。
+      TA_DB_PATH: /app/data/tradingagents_new.db
+      TA_MARKET_DB: /app/data/market_new.db
       WEBUI_HOST: 0.0.0.0
+      WEBUI_PORT: "8000"
+    volumes:
+      - ./data:/app/data
+      - ./eval_results:/app/eval_results
+      - ./logs:/app/logs
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          sys.exit(0 if urllib.request.urlopen("http://127.0.0.1:8000/readyz", timeout=3).status == 200 else 1)
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
     deploy:
       resources:
         limits:
