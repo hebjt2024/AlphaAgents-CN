@@ -222,6 +222,8 @@ api_router = APIRouter(
 auth_router = APIRouter()
 
 active_connections: set[WebSocket] = set()
+#: WebSocket -> 认证后的用户信息，用于任务消息的 owner 隔离。
+websocket_users: dict[WebSocket, dict[str, Any]] = {}
 _main_loop: asyncio.AbstractEventLoop | None = None
 
 analysis_status = {
@@ -230,6 +232,7 @@ analysis_status = {
     "date": "",
     "start_time": None,
     "job_id": "",
+    "owner": "",
 }
 
 # 分析任务取消事件：run_analysis_sync 在每次 graph.stream 迭代前检查此标志，
@@ -649,6 +652,38 @@ class TradeCalendarResponse(EnvelopeResponse):
 # 线程安全广播
 # ============================================================================
 
+def _as_user_dict(user: Any) -> dict[str, Any]:
+    """把 FastAPI 依赖 / 直接调用传入的 user 统一成 dict。"""
+    return user if isinstance(user, dict) else {}
+
+
+def _username_of(user: Any) -> str:
+    return str(_as_user_dict(user).get("username") or "")
+
+
+def _can_access_owner(user: Any, owner: str | None) -> bool:
+    """用户是否可以访问某个 owner 的任务。
+
+    - 管理员 / 单用户模式：全部可见；
+    - 普通用户：只能访问 ``owner`` 等于自己的任务。
+    """
+    if _is_admin_user(user):
+        return True
+    username = _username_of(user)
+    return bool(username) and str(owner or "") == username
+
+
+def _ws_can_receive(websocket: WebSocket, owner: str | None) -> bool:
+    """判断某个 WebSocket 是否可以收到该 owner 的任务消息。
+
+    ``owner`` 为 ``None``（非任务消息）时放行，保持系统级通知可达。
+    """
+    if owner is None:
+        return True
+    user = websocket_users.get(websocket) or {}
+    return _can_access_owner(user, owner)
+
+
 def broadcast_threadsafe(message: dict):
     """从后台线程安全地向所有 WebSocket 客户端广播消息"""
     if _main_loop is None:
@@ -657,14 +692,25 @@ def broadcast_threadsafe(message: dict):
 
 
 async def _broadcast_async(message: dict):
-    """异步广播消息到所有 WebSocket 客户端"""
+    """异步广播消息到所有 WebSocket 客户端（按任务 owner 隔离）。"""
+    message = dict(message)
+    owner = message.pop("_ws_owner", None)
+    job_id = message.get("job_id")
+    if job_id is None and isinstance(message.get("data"), dict):
+        job_id = message["data"].get("job_id")
+    if job_id is not None:
+        message["job_id"] = job_id
     disconnected = set()
-    for ws in active_connections:
+    for ws in list(active_connections):
+        if not _ws_can_receive(ws, owner):
+            continue
         try:
             await ws.send_json(message)
         except Exception:
             disconnected.add(ws)
     active_connections.difference_update(disconnected)
+    for ws in disconnected:
+        websocket_users.pop(ws, None)
 
 
 # ============================================================================
@@ -677,27 +723,53 @@ async def websocket_endpoint(websocket: WebSocket):
 
     # 浏览器无法为 WebSocket 自定义请求头，因此用查询参数传递 API 密钥 / 会话 token。
     config = load_config()
-    if config.auth_enabled:
-        provided = websocket.query_params.get("api_key") or ""
-        valid = False
-        if config.api_key and provided and secrets.compare_digest(
-            provided.encode("utf-8"), config.api_key.encode("utf-8")
-        ):
-            valid = True
-        if not valid and config.multi_user and provided:
-            from webui.backend.users import get_session_user
+    provided = websocket.query_params.get("api_key") or ""
+    session_user: dict[str, Any] | None = None
+    if config.multi_user and provided:
+        from webui.backend.users import get_session_user
 
-            valid = bool(get_session_user(provided))
-        if not valid:
-            await websocket.close(code=1008, reason="invalid api key")
-            return
+        session_user = get_session_user(provided)
+    api_key_ok = bool(
+        config.api_key
+        and provided
+        and secrets.compare_digest(
+            provided.encode("utf-8"), config.api_key.encode("utf-8")
+        )
+    )
+    if config.auth_enabled and not api_key_ok and not session_user:
+        await websocket.close(code=1008, reason="invalid api key")
+        return
+
+    # 记录连接对应的用户，供逐条消息做 owner 隔离。
+    if api_key_ok:
+        ws_user: dict[str, Any] = {
+            "username": "api-key",
+            "role": "admin",
+            "display_name": "API Key",
+        }
+    elif session_user:
+        ws_user = session_user
+    else:
+        ws_user = {"username": "local", "role": "admin", "display_name": "本机用户"}
 
     await websocket.accept()
+    websocket_users[websocket] = ws_user
     active_connections.add(websocket)
     try:
+        status = dict(analysis_status)
+        if not _ws_can_receive(websocket, status.get("owner")):
+            # 非 owner 不泄露他人任务的 company / job_id / start_time。
+            status = {
+                "running": False,
+                "company": "",
+                "date": "",
+                "start_time": None,
+                "job_id": "",
+                "owner": _username_of(ws_user),
+            }
         await websocket.send_json({
             "type": "status",
-            "data": analysis_status,
+            "data": status,
         })
         while True:
             data = await websocket.receive_text()
@@ -707,6 +779,7 @@ async def websocket_endpoint(websocket: WebSocket):
         pass
     finally:
         active_connections.discard(websocket)
+        websocket_users.pop(websocket, None)
 
 
 # ============================================================================
@@ -935,49 +1008,65 @@ REPORT_FIELD_TITLES = {
 # ============================================================================
 
 def _analysis_job_handler(job_id: str, payload: dict, cancel_event) -> dict:
-    """任务队列的"分析"处理器。
-
-    队列负责调度与取消；真正的分析逻辑仍在 :func:`run_analysis_sync`，
-    两者通过 ``cancel_event`` 打通 —— 队列取消会置位该事件，
-    分析循环在下一个 graph 分块边界退出。
-    """
+    """任务队列的“分析”处理器，原样传递 per-job 取消事件与异常。"""
     request_data = dict(payload.get("request") or {})
     request = AnalyzeRequest(**request_data)
-    # 让队列的取消事件与分析内部的取消事件联动
-    if cancel_event is not None:
-        _bridge_cancel_event(cancel_event)
-    # 让队列拿到完整分析结果，而不是只有 {"success": true, "job_id": ...}。
-    # 这样 /api/jobs/{id}/result 在页面刷新/重连后仍能取回报告。
-    result = run_analysis_sync(request, job_id, owner=str(payload.get("owner") or ""))
+    result = run_analysis_sync(
+        request,
+        job_id,
+        owner=str(payload.get("owner") or ""),
+        cancel_event=cancel_event,
+    )
     if isinstance(result, dict):
         return result
     return {"success": True, "job_id": job_id}
 
 
-def _bridge_cancel_event(cancel_event) -> None:
-    """把队列的取消事件桥接到分析内部使用的事件。
-
-    队列在另一个线程里取消任务时，置位它自己的 ``threading.Event``；
-    分析循环读的是模块级的 ``analysis_cancel_event``。这里起一个轻量
-    守护线程把前者翻译成后者，避免轮询。
-    """
-
-    def _relay() -> None:
-        while not cancel_event.wait(0.25):
-            continue
-        analysis_cancel_event.set()
-
-    threading.Thread(target=_relay, daemon=True, name="cancel-relay").start()
+def _run_metrics_snapshot(ta, final_state: dict) -> dict:
+    """从共享图对象或最终状态提取符合前端合同的运行指标。"""
+    value = getattr(ta, "last_run_metrics", None)
+    if value is None and isinstance(final_state, dict):
+        value = final_state.get("run_metrics")
+    if hasattr(value, "to_dict"):
+        value = value.to_dict()
+    if not isinstance(value, dict):
+        value = {}
+    totals = value.get("totals")
+    totals = dict(totals) if isinstance(totals, dict) else {}
+    totals.setdefault("call_count", 0)
+    totals.setdefault("total_tokens", 0)
+    totals.setdefault("estimated_cost", 0.0)
+    value["totals"] = totals
+    value.setdefault("duration_ms", 0.0)
+    value.setdefault("currency", "AUTO")
+    return value
 
 
 def run_analysis_sync(
-    request: AnalyzeRequest, job_id: str = "", owner: str = ""
+    request: AnalyzeRequest,
+    job_id: str = "",
+    owner: str = "",
+    cancel_event=None,
 ):
     global analysis_status
 
     from tradingagents.runtime import ANALYSIS_LOCK
 
-    # 与定时任务互斥，避免同时读写/覆盖
+    active_cancel_event = cancel_event if cancel_event is not None else analysis_cancel_event
+    owns_cancel_event = cancel_event is None
+
+    def emit(message: dict) -> None:
+        """统一给任务消息注入 job_id（顶层 + data）与 owner，供隔离与恢复。"""
+        payload = dict(message)
+        data = payload.get("data")
+        data = dict(data) if isinstance(data, dict) else {}
+        if job_id:
+            payload["job_id"] = job_id
+            data["job_id"] = job_id
+        payload["data"] = data
+        payload["_ws_owner"] = owner
+        broadcast_threadsafe(payload)
+
     ANALYSIS_LOCK.acquire()
     try:
         try:
@@ -990,6 +1079,7 @@ def run_analysis_sync(
             "date": request.date,
             "start_time": datetime.now().isoformat(),
             "job_id": job_id,
+            "owner": owner,
         }
 
         # 自定义图编排：合并预设与用户勾选
@@ -1014,7 +1104,7 @@ def run_analysis_sync(
                 key for key in strategy_keys if key in valid_strategy_keys
             ] or list(DEFAULT_STRATEGY_KEYS)
 
-        broadcast_threadsafe({
+        emit({
             "type": "analysis_start",
             "data": {
                 "company": request.company,
@@ -1033,6 +1123,7 @@ def run_analysis_sync(
         )
         config["pipeline"] = pipeline_cfg
         config["strategy_keys"] = strategy_keys
+        config["run_source"] = "webui"
 
         # 预设模式下使用预设的辩论轮次；自定义模式下尊重用户滑块
         if request.pipeline_preset in PIPELINE_PRESETS:
@@ -1044,7 +1135,7 @@ def run_analysis_sync(
             config["max_debate_rounds"] = request.max_debate_rounds
             config["max_risk_discuss_rounds"] = request.max_risk_discuss_rounds
 
-        broadcast_threadsafe({
+        emit({
             "type": "progress",
             "data": {
                 "node": "初始化",
@@ -1058,48 +1149,24 @@ def run_analysis_sync(
             config=config,
         )
 
-        init_agent_state = ta.propagator.create_initial_state(
-            request.company, request.date, request.horizon
-        )
-        # 注意：不使用 propagator.get_graph_args() 的默认 stream_mode="values"，
-        # 因为 values 模式下 chunk 不含节点名，会导致前端只能显示"处理中"。
-        # 改用多模式 ["values", "updates"]：
-        #   - "updates" chunk 形如 {"Market Analyst": {...update...}}，直接拿到节点名
-        #   - "values"   chunk 是完整 state 快照，用于检测报告字段填充与最终汇总
-        # LangGraph 多模式下，每次迭代返回元组 (mode, payload)。
-        stream_args = {
-            "stream_mode": ["values", "updates"],
-            "config": {"recursion_limit": ta.propagator.max_recur_limit},
-        }
-
         final_state = {}
         last_node = ""
-        # 记录上一次各报告字段的值，用于检测"字段被新填充/更新"的时机
         prev_report_values = {k: "" for k in REPORT_FIELD_TITLES.keys()}
-        # 缓存最近一次 updates 中的节点名，供同一轮 values chunk 复用
-        # （LangGraph 多模式通常先发 updates 再发 values，但顺序不保证，故双向容错）
         pending_node_name = ""
         pending_node_update = None
 
-        for mode, payload in ta.graph.stream(init_agent_state, **stream_args):
-            # 用户点击"停止分析"后，优雅退出循环（不再处理后续 chunk）
-            if analysis_cancel_event.is_set():
-                broadcast_threadsafe({
-                    "type": "progress",
-                    "data": {"message": "用户已取消分析任务"},
-                })
-                break
+        def on_chunk(mode, payload):
+            nonlocal final_state, last_node, pending_node_name, pending_node_update
 
-            # ---------- 模式 1：updates —— 拿节点名 + 该节点产生的增量消息 ----------
             if mode == "updates":
                 if not isinstance(payload, dict) or not payload:
-                    continue
+                    return
                 # payload 形如 {"Market Analyst": {"messages": [...], "market_report": "..."}}
                 # 通常只有一个节点，取第一个
                 node_name, update = next(iter(payload.items()))
                 # 跳过 LangGraph 内部元数据键（如 __interrupt__）
                 if node_name.startswith("__"):
-                    continue
+                    return
                 pending_node_name = node_name
                 pending_node_update = update if isinstance(update, dict) else {}
                 display_name = node_display_name(node_name)
@@ -1108,7 +1175,7 @@ def run_analysis_sync(
                 # 节点切换通知
                 if node_name != last_node:
                     last_node = node_name
-                    broadcast_threadsafe({
+                    emit({
                         "type": "node_change",
                         "data": {
                             "node": node_name,
@@ -1126,7 +1193,7 @@ def run_analysis_sync(
                     cur_val = raw_val.strip() if isinstance(raw_val, str) else ""
                     prev_val = prev_report_values.get(field, "")
                     if cur_val and cur_val != prev_val:
-                        broadcast_threadsafe({
+                        emit({
                             "type": "report_ready",
                             "data": {
                                 "field": field,
@@ -1170,7 +1237,7 @@ def run_analysis_sync(
                                     break
                         if not formatted.get("text", "").strip() and not formatted.get("tool_calls"):
                             continue
-                    broadcast_threadsafe({
+                    emit({
                         "type": "message",
                         "data": {
                             "node": node_name,
@@ -1184,12 +1251,11 @@ def run_analysis_sync(
                             "msg_type": type(msg).__name__,
                         },
                     })
-                continue
+                return
 
-            # ---------- 模式 2：values —— 拿完整 state 快照 ----------
             if mode == "values":
                 if not isinstance(payload, dict):
-                    continue
+                    return
                 # 更新最终状态（最后一次 values 即为最终 state）
                 final_state = payload
                 # 补充检测：有些节点（如 Research Manager / Portfolio Manager）可能在
@@ -1199,7 +1265,7 @@ def run_analysis_sync(
                     cur_val = raw.strip() if isinstance(raw, str) else ""
                     prev_val = prev_report_values.get(field, "")
                     if cur_val and cur_val != prev_val:
-                        broadcast_threadsafe({
+                        emit({
                             "type": "report_ready",
                             "data": {
                                 "field": field,
@@ -1209,10 +1275,13 @@ def run_analysis_sync(
                             },
                         })
                         prev_report_values[field] = cur_val
-                continue
 
-        decision = ta.process_signal(
-            final_state.get("final_trade_decision", "无法确定")
+        final_state, decision = ta.stream_analysis(
+            request.company,
+            request.date,
+            request.horizon,
+            on_chunk=on_chunk,
+            cancel_event=active_cancel_event,
         )
 
         from tradingagents.services.decision_plan import (
@@ -1223,6 +1292,14 @@ def run_analysis_sync(
         from tradingagents.services.decision_schema import (
             format_structured_decision,
             parse_structured_decision,
+        )
+        from tradingagents.services.decision_validation import (
+            BLOCKED_DECISION_TEXT,
+            apply_evidence_gate,
+            assess_analysis_evidence,
+            build_neutral_decision_plan,
+            get_stored_decision,
+            validate_investment_conclusion,
         )
         from tradingagents.services.fast_preview import preliminary_decision
         from tradingagents.services.plain_language import (
@@ -1237,18 +1314,70 @@ def run_analysis_sync(
                 final_state.get("final_trade_decision", ""), decision
             )
         )
+        model_decision = final_state.get("model_decision") or decision
+        final_state["model_decision"] = model_decision
+        final_state.setdefault(
+            "model_decision_text", final_state.get("final_trade_decision", "")
+        )
+
+        # 证据门禁 fail-closed：缺失时重新评估，评估异常一律按 blocked 处理。
+        evidence_assessment = final_state.get("evidence_assessment")
+        if not isinstance(evidence_assessment, dict) or not evidence_assessment:
+            try:
+                evidence_assessment = assess_analysis_evidence(
+                    final_state, model_decision, decision
+                )
+            except Exception:
+                logger.warning("证据评估失败，按 blocked 处理", exc_info=True)
+                evidence_assessment = {
+                    "level": "blocked",
+                    "allow_directional": False,
+                    "summary": "证据评估异常，暂不形成方向判断，暂缓交易",
+                    "items": [],
+                    "warnings": ["证据评估异常"],
+                }
+
+        blocked = (
+            evidence_assessment.get("level") == "blocked"
+            or evidence_assessment.get("allow_directional") is False
+        )
+        if blocked:
+            final_state, decision, structured_decision = apply_evidence_gate(
+                final_state, "HOLD", structured_decision, evidence_assessment
+            )
+
+        gated_decision_text = final_state.get("final_trade_decision", "")
+        if blocked and not gated_decision_text:
+            gated_decision_text = BLOCKED_DECISION_TEXT
+
+        run_metrics = _run_metrics_snapshot(ta, final_state)
 
         account = f"默认账户@{owner}" if owner else "默认账户"
         strategy_result = final_state.get("strategy_result")
-        decision_plan = build_decision_plan(strategy_result, decision)
 
         # 规则初判与 LLM 最终决策的差异（两者来源独立，分歧值得显式呈现）
         preliminary = preliminary_decision(
             (strategy_result or {}).get("summary") or {}
         )
-        preliminary_plan = build_decision_plan(strategy_result, preliminary)
+        if blocked:
+            # blocked 时两侧计划都用中性计划，避免泄露方向性评分/共识/止损/目标。
+            decision = "HOLD"
+            preliminary = "HOLD"
+            decision_plan = build_neutral_decision_plan()
+            preliminary_plan = build_neutral_decision_plan()
+        else:
+            decision_plan = build_decision_plan(strategy_result, decision)
+            preliminary_plan = build_decision_plan(strategy_result, preliminary)
         decision_diff = compare_decisions(
             preliminary, decision, preliminary_plan, decision_plan
+        )
+
+        decision_validation = validate_investment_conclusion(
+            decision=decision,
+            decision_plan=decision_plan,
+            structured_decision=structured_decision,
+            decision_diff=decision_diff,
+            stored_decision=get_stored_decision(request.company),
         )
 
         # 组合级校验：把决策卡放到当前账户语境下重新评估，
@@ -1271,19 +1400,20 @@ def run_analysis_sync(
         except Exception as exc:
             portfolio_evaluation = {"error": str(exc)}
 
-        # 持仓建议：仅当账户持有该标的时生成（分析回答"买不买"，
-        # 持仓者真正关心的是"卖不卖"）。
+        # 持仓建议：仅当账户持有该标的且证据门禁放行时生成（分析回答"买不买"，
+        # 持仓者真正关心的是"卖不卖"；blocked 时不得给出任何方向性建议）。
         position_advice = None
-        try:
-            from tradingagents.services.position_advisor import (
-                advice_for_analysis,
-            )
+        if not blocked:
+            try:
+                from tradingagents.services.position_advisor import (
+                    advice_for_analysis,
+                )
 
-            position_advice = advice_for_analysis(
-                request.company, decision_plan, account=account, owner=owner
-            )
-        except Exception:
-            logger.debug("持仓建议生成失败", exc_info=True)
+                position_advice = advice_for_analysis(
+                    request.company, decision_plan, account=account, owner=owner
+                )
+            except Exception:
+                logger.debug("持仓建议生成失败", exc_info=True)
 
         # 人话层：把行话与数字翻译成普通人能读的结论卡，
         # 并给全文的行话就地加括号解释（不改动 JSON 代码块）。
@@ -1292,19 +1422,24 @@ def run_analysis_sync(
             decision=decision,
             plan=decision_plan,
             structured=structured_decision,
-            decision_text=final_state.get("final_trade_decision", ""),
+            decision_text=gated_decision_text,
             position_advice=position_advice,
+            evidence=evidence_assessment,
         )
-        # 展示层去掉给程序读的 JSON 块（结构化决策卡已用人话展示过同样的信息）
-        decision_text_plain = explain_terms(
-            strip_structured_block(final_state.get("final_trade_decision", ""))
-        )
-        # 可选：LLM 白话改写（默认关闭）。失败时保留规则层的行话解释版本。
-        rewritten = ta.rewrite_in_plain_language(
-            final_state.get("final_trade_decision", "")
-        )
-        if rewritten:
-            decision_text_plain = rewritten
+        if blocked:
+            # 门禁未通过时给出 HITL 提示，使用证据摘要，不保留方向性改写。
+            decision_text_plain = (
+                "核心数据不足，暂不形成方向判断，暂缓交易。\n\n"
+                + str(evidence_assessment.get("summary") or "")
+            )
+        else:
+            # 白话改写由 graph 在 metrics 生命周期内写入；
+            # server 不再二次调用 LLM 改写，缺失时退回规则层解释。
+            decision_text_plain = final_state.get("decision_text_plain") or ""
+            if not decision_text_plain:
+                decision_text_plain = explain_terms(
+                    strip_structured_block(gated_decision_text)
+                )
 
         # 完整 reports 字段：保持与 AgentState 字段名一致，前端按 key 渲染对应卡片
         # 注意：investment_plan 是研究经理的推荐，trader_investment_plan 是交易员的执行方案
@@ -1317,7 +1452,7 @@ def run_analysis_sync(
             "fundamentals_report": final_state.get("fundamentals_report", ""),
             "investment_plan": final_state.get("investment_plan", ""),
             "trader_investment_plan": final_state.get("trader_investment_plan", ""),
-            "final_trade_decision": final_state.get("final_trade_decision", ""),
+            "final_trade_decision": gated_decision_text,
             "decision_plan": format_decision_plan(decision_plan),
             "decision_structured": format_structured_decision(structured_decision),
         }
@@ -1325,13 +1460,13 @@ def run_analysis_sync(
             reports["position_advice"] = position_advice["markdown"]
 
         report_id = None
-        if not analysis_cancel_event.is_set():
+        if not active_cancel_event.is_set():
             try:
                 report_id = save_report(
                     ticker=request.company,
                     trade_date=request.date,
                     decision=decision,
-                    decision_text=final_state.get("final_trade_decision", ""),
+                    decision_text=gated_decision_text,
                     reports=reports,
                     source="webui",
                     owner=owner,
@@ -1346,6 +1481,12 @@ def run_analysis_sync(
                         "decision_plan": decision_plan,
                         "decision_diff": decision_diff,
                         "decision_structured": structured_decision,
+                        "model_decision": model_decision,
+                        "model_decision_text": final_state.get("model_decision_text")
+                        or gated_decision_text,
+                        "evidence_assessment": evidence_assessment,
+                        "decision_validation": decision_validation,
+                        "run_metrics": run_metrics,
                         "portfolio_evaluation": portfolio_evaluation,
                         "position_advice": position_advice,
                         "plain_summary": plain_summary,
@@ -1355,16 +1496,18 @@ def run_analysis_sync(
                 raise
             except Exception as exc:
                 logger.warning("报告持久化失败", exc_info=True)
-                broadcast_threadsafe({
+                emit({
                     "type": "progress",
                     "data": {"message": f"报告持久化失败: {exc}"},
                 })
 
-        cancelled = analysis_cancel_event.is_set()
+        cancelled = active_cancel_event.is_set()
         complete_data = {
             "decision": decision,
-            "decision_text": final_state.get("final_trade_decision", ""),
+            "decision_text": gated_decision_text,
             "decision_text_plain": decision_text_plain,
+            "model_decision_text": final_state.get("model_decision_text")
+            or gated_decision_text,
             "reports": reports,
             "company": request.company,
             "date": request.date,
@@ -1374,6 +1517,10 @@ def run_analysis_sync(
             "decision_plan": decision_plan,
             "decision_diff": decision_diff,
             "decision_structured": structured_decision,
+            "model_decision": model_decision,
+            "evidence_assessment": evidence_assessment,
+            "decision_validation": decision_validation,
+            "run_metrics": run_metrics,
             "portfolio_evaluation": portfolio_evaluation,
             "position_advice": position_advice,
             "plain_summary": plain_summary,
@@ -1387,7 +1534,7 @@ def run_analysis_sync(
             )
         except Exception:
             pass
-        broadcast_threadsafe({
+        emit({
             "type": "analysis_complete",
             "data": complete_data,
         })
@@ -1418,20 +1565,21 @@ def run_analysis_sync(
             fail_job(job_id, error_msg)
         except Exception:
             pass
-        broadcast_threadsafe({
+        emit({
             "type": "error",
             "data": {
                 "message": error_msg,
                 "traceback": traceback_str,
             },
         })
+        raise
     finally:
-        was_cancelled = analysis_cancel_event.is_set()
+        was_cancelled = active_cancel_event.is_set()
         analysis_status["running"] = False
         analysis_status["cancelled"] = was_cancelled
-        # 清除取消标志，为下次分析做准备
-        analysis_cancel_event.clear()
-        broadcast_threadsafe({
+        if owns_cancel_event:
+            analysis_cancel_event.clear()
+        emit({
             "type": "status",
             "data": analysis_status,
         })
@@ -1752,6 +1900,7 @@ async def start_analysis(
     _user: dict = Depends(current_user),
     _risk: None = Depends(require_risk_ack),
 ):
+    _user = _as_user_dict(_user)
     # 允许用户在不重启服务的情况下新建/修改 .env 中缺失的密钥
     load_dotenv()
     try:
@@ -1798,13 +1947,21 @@ async def start_analysis(
         handlers={"analysis": _analysis_job_handler},
     )
     if queue.active_count() + queue.pending_count() >= MAX_PENDING_ANALYSES:
+        current_job_id = str(analysis_status.get("job_id") or "")
+        if (
+            current_job_id
+            and not _is_admin_user(_user)
+            and str(analysis_status.get("owner") or "")
+            != str((_user or {}).get("username") or "")
+        ):
+            current_job_id = ""
         return {
             **error_payload(
                 f"分析队列已满（运行 {queue.active_count()} 个，"
                 f"排队 {queue.pending_count()} 个），请等待完成后再试",
                 code="conflict",
             ),
-            "job_id": analysis_status.get("job_id", ""),
+            "job_id": current_job_id,
         }
 
     # 启动前校验 API Key，避免把底层鉴权异常直接抛到前端
@@ -1823,6 +1980,14 @@ async def start_analysis(
     owner = ""
     if load_config().multi_user and not _is_admin_user(_user):
         owner = (_user or {}).get("username") or ""
+    # 完整 pipeline 配置随任务一起持久化，页面刷新后可直接恢复前端选择。
+    pipeline_cfg = build_pipeline_config(
+        analysts=request.analysts,
+        enable_debate=request.enable_debate,
+        enable_trader=request.enable_trader,
+        enable_risk=request.enable_risk,
+        preset=request.pipeline_preset,
+    )
     job_id = queue.submit(
         payload={"request": request.model_dump(), "owner": owner},
         kind="analysis",
@@ -1833,6 +1998,7 @@ async def start_analysis(
             "analysts": request.analysts,
             "strategies": request.strategies,
             "llm_provider": request.llm_provider,
+            "pipeline": pipeline_cfg,
         },
     )
 
@@ -1845,8 +2011,19 @@ async def start_analysis(
 
 
 @api_router.get("/status", tags=["分析"], summary="查询当前分析任务状态")
-async def get_status():
+async def get_status(user: dict = Depends(current_user)):
+    user = _as_user_dict(user)
     status = dict(analysis_status)
+    # 非 owner 看不到别人的运行任务（company/job_id/start_time 一律清空）。
+    if not _can_access_owner(user, status.get("owner")):
+        status = {
+            "running": False,
+            "company": "",
+            "date": "",
+            "start_time": None,
+            "job_id": "",
+            "owner": _username_of(user),
+        }
     queue = get_job_queue()
     if queue is not None:
         status["queue_active"] = queue.active_count()
@@ -1861,17 +2038,42 @@ async def get_status():
     summary="请求停止当前分析任务",
     response_model=SuccessMessageResponse,
 )
-async def stop_analysis():
+async def stop_analysis(user: dict = Depends(current_user)):
     """
     请求停止当前正在运行的分析任务。
-    设置取消事件标志，run_analysis_sync 在下一次 graph.stream 迭代时检测到后优雅退出。
+    优先通过任务队列取消当前 job；直接调用兼容路径才使用全局事件。
     注意：这是协作式取消，不能立即中断正在进行的 LLM 调用或工具调用，
     只能在节点之间切换时生效。
     """
+    user = _as_user_dict(user)
     if not analysis_status["running"]:
         return error_payload("当前没有正在运行的分析任务")
-    analysis_cancel_event.set()
+    # 非 owner 视同没有属于自己的运行任务，避免泄露他人任务存在性。
+    if not _can_access_owner(user, analysis_status.get("owner")):
+        return error_payload("当前没有正在运行的分析任务", code="not_found")
+    queue = get_job_queue()
+    job_id = str(analysis_status.get("job_id") or "")
+    if queue is not None and job_id:
+        queue.cancel(job_id)
+    else:
+        analysis_cancel_event.set()
     return {"success": True, "message": "已发送停止信号，任务将在当前节点完成后终止"}
+
+
+def _job_owner(job: dict[str, Any] | None) -> str:
+    """从任务记录的 ``meta.payload.owner`` 提取归属用户。"""
+    meta = (job or {}).get("meta")
+    meta = meta if isinstance(meta, dict) else {}
+    payload = meta.get("payload")
+    payload = payload if isinstance(payload, dict) else {}
+    return str(payload.get("owner") or "")
+
+
+def _job_access_denied(user: Any, job: dict[str, Any] | None) -> bool:
+    """非管理员访问他人任务时返回 True（统一按 not_found 处理）。"""
+    if _is_admin_user(user):
+        return False
+    return _job_owner(job) != _username_of(user)
 
 
 @api_router.get(
@@ -1880,26 +2082,34 @@ async def stop_analysis():
     summary="查询分析任务列表",
     response_model=ItemListResponse,
 )
-async def api_list_jobs(limit: int = 20, offset: int = 0):
+async def api_list_jobs(
+    limit: int = 20,
+    offset: int = 0,
+    user: dict = Depends(current_user),
+):
     """最近的分析任务列表（不含完整报告，结果请查 /result）。"""
+    user = _as_user_dict(user)
+    owner = None if _is_admin_user(user) else _username_of(user)
     return {
         "success": True,
-        "items": await run_in_threadpool(list_jobs, limit, offset),
+        "items": await run_in_threadpool(list_jobs, limit, offset, owner),
     }
 
 
 @api_router.get("/jobs/{job_id}", tags=["任务"], summary="查询分析任务详情")
-async def api_get_job(job_id: str):
+async def api_get_job(job_id: str, user: dict = Depends(current_user)):
+    user = _as_user_dict(user)
     job = await run_in_threadpool(get_job, job_id, False)
-    if not job:
+    if not job or _job_access_denied(user, job):
         return error_payload("任务不存在", code="not_found")
     return {"success": True, "job": job}
 
 
 @api_router.get("/jobs/{job_id}/result", tags=["任务"], summary="查询分析任务结果")
-async def api_get_job_result(job_id: str):
+async def api_get_job_result(job_id: str, user: dict = Depends(current_user)):
+    user = _as_user_dict(user)
     job = await run_in_threadpool(get_job, job_id, True)
-    if not job:
+    if not job or _job_access_denied(user, job):
         return error_payload("任务不存在", code="not_found")
     if job["status"] in ("completed", "cancelled") and job.get("result"):
         return {
@@ -1922,21 +2132,29 @@ async def api_get_job_result(job_id: str):
 
 
 @api_router.post("/jobs/{job_id}/cancel", tags=["任务"], summary="取消分析任务")
-async def api_cancel_job(job_id: str):
+async def api_cancel_job(job_id: str, user: dict = Depends(current_user)):
+    user = _as_user_dict(user)
     job = await run_in_threadpool(get_job, job_id, False)
-    if not job:
+    if not job or _job_access_denied(user, job):
         return error_payload("任务不存在", code="not_found")
     if job["status"] not in ("queued", "running"):
         return {
             **error_payload("任务已结束，无法取消"),
             "status": job["status"],
         }
-    if analysis_status.get("job_id") != job_id:
+    queue = get_job_queue()
+    if queue is not None:
+        cancelled = queue.cancel(job_id)
+    elif analysis_status.get("job_id") == job_id:
+        analysis_cancel_event.set()
+        cancelled = True
+    else:
+        cancelled = False
+    if not cancelled:
         return {
-            **error_payload("该任务尚未成为当前运行任务，暂不支持取消"),
+            **error_payload("该任务尚未进入可取消状态"),
             "status": job["status"],
         }
-    analysis_cancel_event.set()
     return {
         "success": True,
         "job_id": job_id,
@@ -1950,9 +2168,10 @@ async def api_cancel_job(job_id: str):
     summary="删除分析任务",
     response_model=SuccessMessageResponse,
 )
-async def api_delete_job(job_id: str):
+async def api_delete_job(job_id: str, user: dict = Depends(current_user)):
+    user = _as_user_dict(user)
     job = await run_in_threadpool(get_job, job_id, False)
-    if not job:
+    if not job or _job_access_denied(user, job):
         return error_payload("任务不存在", code="not_found")
     if job["status"] == "running":
         return error_payload("运行中的任务不能删除")

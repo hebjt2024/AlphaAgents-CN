@@ -37,12 +37,62 @@ _ALIASES = {
     "减持": "UNDERWEIGHT",
     "卖出": "SELL",
     "清仓": "SELL",
+    "强烈买入": "BUY",
+    "强烈卖出": "SELL",
+    "超配买入": "OVERWEIGHT",
     "buy": "BUY",
     "overweight": "OVERWEIGHT",
     "hold": "HOLD",
     "underweight": "UNDERWEIGHT",
     "sell": "SELL",
 }
+
+_DECISION_TOKEN_RE = re.compile(
+    r"(?<![A-Za-z])(?:OVERWEIGHT|UNDERWEIGHT|BUY|SELL|HOLD)(?![A-Za-z])"
+    r"|强烈买入|强烈卖出|超配买入|买入|增持|超配|持有|中性|观望|低配|减持|卖出|清仓",
+    re.IGNORECASE,
+)
+_NEGATION_RE = re.compile(
+    r"不建议|不要|避免|暂不|不宜|不能|不得|无需|别买|别卖|别追|别碰|"
+    r"do\s+not|don['’]t|avoid|not\s+recommend",
+    re.IGNORECASE,
+)
+_NEUTRAL_DECISION_RE = re.compile(r"暂不形成方向判断|不形成方向判断|暂缓交易|核心数据不足")
+_EXPLICIT_LINE_RE = re.compile(
+    r"最终决策|最终结论|交易决策|投资结论|结论|评级|rating|"
+    r"final\s+decision|final\s+rating|recommendation",
+    re.IGNORECASE,
+)
+
+
+def _decision_from_explicit_text(text: str) -> str:
+    """解析显式结论，否定买入/卖出时返回 HOLD。"""
+    value = str(text or "")
+    if not value.strip():
+        return ""
+    if _NEUTRAL_DECISION_RE.search(value):
+        return "HOLD"
+    negated = False
+    for match in _DECISION_TOKEN_RE.finditer(value):
+        prefix = value[max(0, match.start() - 16) : match.start()]
+        if _NEGATION_RE.search(prefix):
+            negated = True
+            continue
+        token = match.group(0)
+        return _ALIASES.get(token.lower()) or token.upper()
+    return "HOLD" if negated else ""
+
+
+def extract_explicit_decision_line(text: str) -> str:
+    """从“最终决策/结论/评级”等显式语句提取结论，尊重否定语义。"""
+    for line in str(text or "").splitlines():
+        match = _EXPLICIT_LINE_RE.search(line)
+        if match is None:
+            continue
+        decision = _decision_from_explicit_text(line[match.end() :])
+        if decision:
+            return decision
+    return ""
 
 
 def normalize_decision(value: Any) -> str:
@@ -128,8 +178,7 @@ def extract_rating_decision(text: str) -> str:
     # 评级小节里取**第一个**决策词：作者写下评级时的措辞才是结论，
     # 后面跟着的通常是解释（例如"持有（Hold）表示……"）。
     block = "\n".join(section)
-    decision = _first_decision_in(block)
-    return decision
+    return _decision_from_explicit_text(block)
 
 
 def _first_decision_in(text: str) -> str:
@@ -210,6 +259,7 @@ def parse_structured_decision(
     #   fallback       → 调用方传入的兜底值
     decision = ""
     source = ""
+    json_decision = ""
     if payload:
         raw_value = str(
             payload.get("decision")
@@ -221,13 +271,24 @@ def parse_structured_decision(
         # （"BUY|OVERWEIGHT|HOLD|UNDERWEIGHT|SELL"），这不是有效结论。
         if "|" in raw_value:
             raw_value = ""
-        decision = normalize_decision(raw_value)
+        json_decision = _decision_from_explicit_text(raw_value)
+    rating_decision = extract_rating_decision(raw)
+    if json_decision and rating_decision and json_decision != rating_decision:
+        decision = "HOLD"
+        source = "conflicted_explicit"
+        warnings.append(
+            f"JSON 决策 {json_decision} 与评级小节 {rating_decision} 冲突，"
+            "已回退 HOLD，需人工复核"
+        )
+    elif json_decision:
+        decision = json_decision
         source = "json"
-    if not decision:
-        # JSON 缺失时先读"评级（Rating）"小节：正文里的"卖出"等用词
-        # 常常只是描述（T+1、减仓条件），不能当成最终结论。
-        decision = extract_rating_decision(raw)
+    elif rating_decision:
+        decision = rating_decision
         source = "rating_section"
+    else:
+        decision = extract_explicit_decision_line(raw)
+        source = "explicit_text" if decision else ""
     if not decision:
         decision = normalize_decision(raw)
         source = "text"
@@ -273,13 +334,14 @@ def parse_structured_decision(
     return {
         "decision": decision,
         "decision_source": source,
+        "source": source,
         "confidence": confidence,
         "summary": summary,
         "key_points": key_points,
         "citations": citations,
         "risk_flags": risk_flags,
         "structured": bool(payload),
-        "valid": decision in ALLOWED_DECISIONS,
+        "valid": source != "conflicted_explicit" and decision in ALLOWED_DECISIONS,
         "warnings": warnings,
         "raw_decision_text": raw,
     }
@@ -314,6 +376,7 @@ def format_structured_decision(value: dict[str, Any]) -> str:
 
 __all__ = [
     "ALLOWED_DECISIONS",
+    "extract_explicit_decision_line",
     "parse_structured_decision",
     "format_structured_decision",
     "normalize_decision",

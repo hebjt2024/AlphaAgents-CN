@@ -45,6 +45,7 @@ from typing import Any
 
 from tradingagents.storage.job_store import (
     TERMINAL_JOB_STATUSES,
+    cancel_requested_queued_jobs,
     claim_job,
     claim_next_job,
     create_job,
@@ -263,7 +264,13 @@ class JobQueue:
         if removed:
             mark_job_cancelled(job_id, "任务在开始前被取消")
         else:
-            request_cancel(job_id)
+            job = get_job(job_id, include_result=False)
+            if job is not None and job.get("status") == "queued":
+                # 已落库但不在本进程等待队列里（例如跨进程提交）：
+                # 直接标记取消，避免留下永远 queued + cancel_requested 的僵尸行。
+                mark_job_cancelled(job_id, "任务在开始前被取消")
+            else:
+                request_cancel(job_id)
         return True
 
     def is_cancelled(self, job_id: str) -> bool:
@@ -389,7 +396,8 @@ class JobQueue:
             job_id, meta, kind = item
             try:
                 if not claim_job(job_id):
-                    # 已被其它 worker/进程认领
+                    if is_cancel_requested(job_id):
+                        mark_job_cancelled(job_id, "任务在认领前被取消")
                     continue
                 self._run_job(job_id, meta, kind)
             except Exception:  # pragma: no cover - 兜底，避免 worker 静默退出
@@ -407,6 +415,8 @@ class JobQueue:
         try:
             if handler is None:
                 raise RuntimeError(f"没有注册任务类型 '{kind}' 的处理器")
+            if is_cancel_requested(job_id):
+                event.set()
             if event.is_set():
                 raise JobCancelled("任务在开始前被取消")
             result = handler(job_id, payload, event)
@@ -452,6 +462,11 @@ class JobQueue:
                 self.reap_stale()
             except Exception:  # pragma: no cover
                 logger.exception("回收僵尸任务失败")
+            try:
+                # 跨进程取消后停在 queued 的任务需要有人清理成 cancelled。
+                cancel_requested_queued_jobs(scope=self.scope)
+            except Exception:  # pragma: no cover
+                logger.exception("清理已取消的排队任务失败")
             time.sleep(self.heartbeat_interval)
 
 

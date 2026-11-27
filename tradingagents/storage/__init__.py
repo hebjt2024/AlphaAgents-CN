@@ -1,7 +1,6 @@
 """AlphaAgents-CN 本地持久化层。"""
 
 from .alert_store import (
-
     ack_alert_event,
     ack_all_alert_events,
     add_alert_rule,
@@ -14,6 +13,11 @@ from .alert_store import (
     mark_alert_notified,
     record_alert_event,
     update_alert_rule,
+)
+from .audit_store import (
+    append_audit_event,
+    init_audit_db,
+    list_audit_events,
 )
 from .briefing_store import (
     delete_briefing,
@@ -74,12 +78,6 @@ from .report_store import (
     init_db,
     list_reports,
     save_report,
-)
-
-from .audit_store import (
-    append_audit_event,
-    init_audit_db,
-    list_audit_events,
 )
 from .run_log_store import (
     aggregate_run_logs,

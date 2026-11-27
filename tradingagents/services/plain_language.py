@@ -425,6 +425,7 @@ def build_plain_summary(
     structured: dict | None = None,
     decision_text: str = "",
     position_advice: dict | None = None,
+    evidence: dict | None = None,
 ) -> dict[str, Any]:
     """生成"人话结论卡"。
 
@@ -442,6 +443,9 @@ def build_plain_summary(
         组合经理的最终报告原文，用于提取理由与术语。
     position_advice:
         持仓建议（有持仓时才有），用于回答"我手里这只怎么办"。
+    evidence:
+        :func:`assess_analysis_evidence` 的证据门禁结果；blocked 时隐藏所有
+        方向性动作，并明确暂缓交易。
 
     返回
     ----
@@ -475,6 +479,7 @@ def build_plain_summary(
     # 误传进来。白话层绝不能因此崩溃 —— 显示层出错会直接毁掉整份结果。
     plan = plan if isinstance(plan, dict) else {}
     structured = structured if isinstance(structured, dict) else {}
+    evidence = evidence if isinstance(evidence, dict) else {}
     decision_text = decision_text if isinstance(decision_text, str) else ""
     decision_key = _decision(decision)
     meta = DECISION_PLAIN[decision_key]
@@ -625,11 +630,46 @@ def build_plain_summary(
         else:
             action_holding = f"{action}（维持 { _num(advice.get('current_qty')):.0f} 股不变）"
 
+    reliability = (
+        str(evidence.get("summary") or "").strip()
+        if evidence
+        else (
+            "结论包含完整的结构化数据（评级/置信度/理由/引用）"
+            if structured.get("structured")
+            else "结论未包含结构化数据（可能是模型回复被截断），请以正文评级为准"
+        )
+    )
+    decision_label = meta["label"]
+    tone = meta["tone"]
+    confidence_note = _explain_confidence(
+        confidence, bool(structured.get("structured"))
+    )
+    score_note = _explain_score(score) if plan.get("score") is not None else ""
+    if evidence.get("level") == "blocked" or evidence.get("allow_directional") is False:
+        decision_key = "HOLD"
+        ticker_name = str(ticker or "").strip()
+        subject = f"{ticker_name} " if ticker_name else ""
+        headline = f"结论：{subject}核心数据不足，暂不形成方向判断，暂缓交易。"
+        decision_label = "暂缓交易"
+        tone = "中性"
+        action = "核心数据不足，暂不形成方向判断，请暂缓交易"
+        action_holding = ""
+        do_list = [
+            "暂缓所有方向性交易操作",
+            "补齐核心行情与策略数据后重新分析",
+        ]
+        why = [reliability]
+        risks = [str(item) for item in evidence.get("warnings") or [] if item]
+        numbers = []
+        terms = []
+        score_note = ""
+        confidence_note = "核心证据不足，无法评估方向性结论的把握程度"
+
     return {
         "ticker": ticker,
         "decision": decision_key,
-        "decision_label": meta["label"],
-        "tone": meta["tone"],
+        "decision_label": decision_label,
+        "tone": tone,
         "headline": headline,
         "action": action,
         "action_holding": action_holding,
@@ -637,14 +677,10 @@ def build_plain_summary(
         "why": why[:5],
         "risks": risks[:5],
         "numbers": numbers,
-        "score_note": _explain_score(score) if plan.get("score") is not None else "",
-        "confidence_note": _explain_confidence(confidence, bool(structured.get("structured"))),
+        "score_note": score_note,
+        "confidence_note": confidence_note,
         "terms": terms,
-        "reliability": (
-            "结论包含完整的结构化数据（评级/置信度/理由/引用）"
-            if structured.get("structured")
-            else "结论未包含结构化数据（可能是模型回复被截断），请以正文评级为准"
-        ),
+        "reliability": reliability,
         "disclaimer": "以上为规则化整理的通俗解读，不构成投资建议。",
     }
 

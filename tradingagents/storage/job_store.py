@@ -214,14 +214,18 @@ def mark_job_running(job_id: str) -> None:
 def finish_job(
     job_id: str, result: dict[str, Any], status: str = "completed"
 ) -> None:
+    """仅允许 running -> terminal，已有终态不会被迟到结果覆盖。"""
     if not job_id:
         return
+    if status not in TERMINAL_JOB_STATUSES:
+        raise ValueError(f"非法任务终态：{status}")
     _init_jobs()
     now = datetime.now().isoformat(timespec="seconds")
     with _connect() as conn:
         conn.execute(
             "UPDATE jobs SET status = ?, finished_at = ?, result_json = ?, "
-            "heartbeat_at = ?, updated_at = ?, error = '' WHERE id = ?",
+            "heartbeat_at = ?, updated_at = ?, error = '' "
+            "WHERE id = ? AND status = 'running'",
             (
                 status,
                 now,
@@ -242,7 +246,7 @@ def mark_job_failed(job_id: str, error: str) -> None:
     with _connect() as conn:
         conn.execute(
             "UPDATE jobs SET status = 'failed', finished_at = ?, updated_at = ?, "
-            "error = ? WHERE id = ?",
+            "error = ? WHERE id = ? AND status IN ('queued', 'running')",
             (
                 now,
                 now,
@@ -266,7 +270,7 @@ def mark_job_cancelled(job_id: str, reason: str = "") -> None:
     with _connect() as conn:
         conn.execute(
             "UPDATE jobs SET status = 'cancelled', finished_at = ?, updated_at = ?, "
-            "error = ? WHERE id = ?",
+            "error = ? WHERE id = ? AND status IN ('queued', 'running')",
             (now, now, str(reason)[:1000], job_id),
         )
 
@@ -322,19 +326,24 @@ def get_job(job_id: str, include_result: bool = True) -> dict[str, Any] | None:
     return _row_to_dict(row, include_result=include_result) if row else None
 
 
-def list_jobs(limit: int = 20, offset: int = 0) -> list[dict[str, Any]]:
+def list_jobs(
+    limit: int = 20,
+    offset: int = 0,
+    owner: str | None = None,
+) -> list[dict[str, Any]]:
+    """列出任务，owner 非 None 时按 meta.payload.owner 精确过滤。"""
     _init_jobs()
     limit = max(1, min(int(limit), 200))
     offset = max(0, int(offset))
+    sql = "SELECT * FROM jobs"
+    params: list[Any] = []
+    if owner is not None:
+        sql += " WHERE json_extract(meta_json, '$.payload.owner') = ?"
+        params.append(str(owner))
+    sql += " ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?"
+    params.extend((limit, offset))
     with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT * FROM jobs
-            ORDER BY created_at DESC, rowid DESC
-            LIMIT ? OFFSET ?
-            """,
-            (limit, offset),
-        ).fetchall()
+        rows = conn.execute(sql, params).fetchall()
     return [_row_to_dict(row, include_result=False) for row in rows]
 
 
@@ -486,7 +495,10 @@ def list_queued_jobs(limit: int = 100, scope: str | None = None) -> list[dict[st
     """
     _init_jobs()
     limit = max(1, min(int(limit), 1000))
-    sql = "SELECT * FROM jobs WHERE status = 'queued'"
+    sql = (
+        "SELECT * FROM jobs WHERE status = 'queued' "
+        "AND COALESCE(cancel_requested, 0) = 0"
+    )
     params: list[Any] = []
     if scope:
         sql += " AND scope = ?"
@@ -522,7 +534,8 @@ def claim_job(job_id: str) -> bool:
         cursor = conn.execute(
             "UPDATE jobs SET status = 'running', started_at = ?, heartbeat_at = ?, "
             "updated_at = ?, attempts = attempts + 1 "
-            "WHERE id = ? AND status = 'queued'",
+            "WHERE id = ? AND status = 'queued' "
+            "AND COALESCE(cancel_requested, 0) = 0",
             (now, now, now, job_id),
         )
         return cursor.rowcount > 0
@@ -535,7 +548,10 @@ def claim_next_job(max_attempts: int = 5, scope: str | None = None) -> dict[str,
     """
     _init_jobs()
     now = datetime.now().isoformat(timespec="seconds")
-    sql = "SELECT * FROM jobs WHERE status = 'queued'"
+    sql = (
+        "SELECT * FROM jobs WHERE status = 'queued' "
+        "AND COALESCE(cancel_requested, 0) = 0"
+    )
     params: list[Any] = []
     if scope:
         sql += " AND scope = ?"
@@ -549,7 +565,8 @@ def claim_next_job(max_attempts: int = 5, scope: str | None = None) -> dict[str,
             cursor = conn.execute(
                 "UPDATE jobs SET status = 'running', started_at = ?, heartbeat_at = ?, "
                 "updated_at = ?, attempts = attempts + 1 "
-                "WHERE id = ? AND status = 'queued'",
+                "WHERE id = ? AND status = 'queued' "
+                "AND COALESCE(cancel_requested, 0) = 0",
                 (now, now, now, row["id"]),
             )
             if cursor.rowcount > 0:
@@ -558,6 +575,37 @@ def claim_next_job(max_attempts: int = 5, scope: str | None = None) -> dict[str,
                 ).fetchone()
                 return _row_to_dict(claimed, include_result=True)
     return None
+
+
+def cancel_requested_queued_jobs(scope: str | None = None) -> list[str]:
+    """把已请求取消但仍停在 queued 的任务标记为 cancelled。
+
+    认领查询会排除 ``cancel_requested``，所以跨进程取消后这些行不会被任何
+    worker 认领；必须有人把它们从等待区清理掉，否则会永远留在 queued。
+    """
+    _init_jobs()
+    now = datetime.now().isoformat(timespec="seconds")
+    sql = (
+        "SELECT id FROM jobs WHERE status = 'queued' "
+        "AND COALESCE(cancel_requested, 0) = 1"
+    )
+    params: list[Any] = []
+    if scope:
+        sql += " AND scope = ?"
+        params.append(scope)
+    with _connect() as conn:
+        rows = conn.execute(sql, params).fetchall()
+        cancelled = [row["id"] for row in rows]
+        if cancelled:
+            conn.executemany(
+                "UPDATE jobs SET status = 'cancelled', finished_at = ?, "
+                "updated_at = ?, error = ? WHERE id = ? AND status = 'queued'",
+                [
+                    (now, now, "任务在开始前被取消", job_id)
+                    for job_id in cancelled
+                ],
+            )
+    return cancelled
 
 
 def reap_stale_jobs(

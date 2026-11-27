@@ -25,12 +25,21 @@ class RunAnalysisAuditTests(unittest.TestCase):
     def _final_state(self) -> dict:
         return {
             "final_trade_decision": "BUY",
+            "trade_date": "2026-11-24",
+            "analysis_completed": True,
             "market_report": "",
             "fundamentals_report": "",
             "news_report": "",
             "sentiment_report": "",
-            "strategy_report": "",
+            "strategy_report": "策略扫描成功",
             "trader_investment_plan": "",
+            "strategy_result": {
+                "success": True,
+                "as_of": "2026-11-24",
+                "price": {"close": 100.0},
+                "summary": {},
+                "signals": [],
+            },
         }
 
     def test_success_appends_audit_event(self):

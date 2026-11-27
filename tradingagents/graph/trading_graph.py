@@ -179,6 +179,7 @@
 import json  # JSON 序列化/反序列化，用于保存日志。
 import logging  # 日志：记录记忆读写等非关键路径的异常。
 import os  # 操作系统接口，用于创建目录、拼接路径等。
+from collections.abc import Callable
 
 # json.dump(字典, 文件) 把 Python 字典保存为 JSON 文件。
 # json.load(文件) 把 JSON 文件读回 Python 字典。
@@ -252,9 +253,9 @@ from tradingagents.llm_clients import create_llm_client
 # 运行指标（token / 成本 / 逐阶段耗时）。
 # WHY：此前系统没有任何 LLM 用量与耗时口径，用户无法知道一次分析花了
 # 多少钱、慢在哪一环。
+from tradingagents.runtime import set_current_trade_date
 from tradingagents.services.observability import (
     RunMetrics,
-    clear_current_metrics,
     set_current_metrics,
 )
 
@@ -411,6 +412,7 @@ class TradingAgentsGraph:
                 self.pipeline.get("analysts")
                 or ["market", "social", "news", "fundamentals"]
             )
+        self.selected_analysts = list(selected_analysts)
 
         # Python 语法说明：callbacks or []
         # 同样的短路求值：如果 callbacks 为 None，则用空列表 []。
@@ -594,6 +596,7 @@ class TradingAgentsGraph:
         # 状态跟踪变量
         # -----------------------------------------------------------------
         self.curr_state = None       # 当前（最近一次）图执行的最终状态。
+        self.last_run_metrics = None
                                      # 用于后续反思：reflect_and_remember 会读取 self.curr_state
         self.ticker = None           # 当前分析的股票代码（如 "AAPL"）
                                      # 用于日志文件路径命名
@@ -739,7 +742,13 @@ class TradingAgentsGraph:
     # -------------------------------------------------------------------------
     # 核心方法：执行图流程
     # -------------------------------------------------------------------------
-    def propagate(self, company_name, trade_date, horizon: str = "medium"):
+    def propagate(
+        self,
+        company_name,
+        trade_date,
+        horizon: str = "medium",
+        cancel_event=None,
+    ):
         """
         对特定公司在特定交易日运行完整的交易代理图。
 
@@ -848,149 +857,294 @@ flowchart TD
 ```
 以上是可视化的流程图：propagate 调用链。
         """
-        # 记录当前分析的股票代码
+        return self._run_analysis(
+            company_name,
+            trade_date,
+            horizon,
+            stream=False,
+            cancel_event=cancel_event,
+        )
+
+    def stream_analysis(
+        self,
+        company_name: str,
+        trade_date: str,
+        horizon: str = "medium",
+        on_chunk: Callable[[str, dict[str, Any]], None] | None = None,
+        cancel_event=None,
+    ) -> tuple[dict[str, Any], str]:
+        """以 values/updates 双模式流式执行分析，并共享 propagate 的收尾逻辑。
+
+        每个 ``(mode, payload)`` 会交给 ``on_chunk``。取消时保留最后收到的
+        values 状态，但最终方向性决策强制降级为 HOLD，且不标记分析成功。
+        """
+        return self._run_analysis(
+            company_name,
+            trade_date,
+            horizon,
+            stream=True,
+            on_chunk=on_chunk,
+            cancel_event=cancel_event,
+        )
+
+    def _run_analysis(
+        self,
+        company_name: str,
+        trade_date: str,
+        horizon: str,
+        *,
+        stream: bool,
+        on_chunk: Callable[[str, dict[str, Any]], None] | None = None,
+        cancel_event=None,
+    ) -> tuple[dict[str, Any], str]:
+        """执行一次分析，统一管理上下文、指标、最终状态与持久化。"""
         self.ticker = company_name
-
-        # -----------------------------------------------------------------
-        # 步骤 0：开启本次运行的指标采集（token / 成本 / 逐阶段耗时）
-        #
-        # 此前系统没有任何 LLM 用量与耗时口径，用户无法知道一次分析花了
-        # 多少钱、慢在哪里。这里建立 run 级指标对象，并在 finally 中落库。
-        #
-        # 注意：必须与 LLM 调用发生在**同一线程**（ContextVar 不跨线程），
-        # 因此 set_current_metrics 要在调用图的线程内完成 —— 本函数正是在
-        # 该线程内被调用的。
-        # -----------------------------------------------------------------
-        from tradingagents.runtime import set_current_trade_date
-
-        # 工具层据此过滤未来数据（公告披露日、研报日期、宏观发布日等）。
-        set_current_trade_date(str(trade_date))
+        previous_trade_date = set_current_trade_date(str(trade_date))
         metrics = RunMetrics(
             ticker=str(company_name),
             trade_date=str(trade_date),
             source=str(self.config.get("run_source") or "unknown"),
             horizon=str(horizon),
         )
-        set_current_metrics(metrics)
-
-        # -----------------------------------------------------------------
-        # 步骤 1：创建初始状态
-        # Propagator.create_initial_state() 返回一个字典，包含：
-        #   - messages：初始消息列表（以 human 角色发送公司名）
-        #   - company_of_interest：目标公司
-        #   - trade_date：交易日期
-        #   - investment_debate_state：投资辩论初始状态（空的）
-        #   - risk_debate_state：风险辩论初始状态（空的）
-        #   - 各种报告字段（初始为空字符串）
-        # -----------------------------------------------------------------
-        init_agent_state = self.propagator.create_initial_state(
-            company_name, trade_date, horizon
-        )
-
-        # 获取图执行参数（如 recursion_limit 防止无限循环）
-        # args = {"stream_mode": "values", "config": {"recursion_limit": 100}}
-        # recursion_limit 详见上方"前置知识-概念 6：RecursionLimit"
-        args = self.propagator.get_graph_args()
-
-        # -----------------------------------------------------------------
-        # 步骤 2：执行图
-        # 有两种模式：
-        #   - debug 模式：使用 stream() 逐块获取输出，可观察每个节点的执行
-        #   - 正常模式：使用 invoke() 一次性执行完毕，只返回最终状态
-        #
-        # 详见上方"前置知识-概念 3：invoke() vs stream() 的区别"
-        # -----------------------------------------------------------------
+        previous_metrics = set_current_metrics(metrics)
+        self.last_run_metrics = None
+        final_state = {
+            "company_of_interest": company_name,
+            "trade_date": str(trade_date),
+        }
+        cancelled = False
+        execution_error: BaseException | None = None
         try:
-            if self.debug:
-                # 调试模式：逐块执行图
-                # graph.stream() 返回一个生成器（generator），每次 yield 一个节点的输出
-                # 生成器是 Python 的一种"惰性序列"——它不会一次性生成所有结果，
-                # 而是每次迭代时才计算下一个值，适合处理大量数据或流式输出
-                trace = []  # 用于记录所有节点的输出
-                # for chunk in ... 会逐块迭代 stream() 的输��
-                # 每次迭代，chunk 是当前节点执行后的状态快照
-                for chunk in self.graph.stream(init_agent_state, **args):
-                    # 如果当前 chunk 没有消息，跳过（某些节点可能不产生消息）
-                    if len(chunk["messages"]) == 0:
-                        pass
-                    else:
-                        # pretty_print() 以可读格式打印最后一条消息
-                        # chunk["messages"][-1] 取消息列表的最后一条（最新消息）
-                        chunk["messages"][-1].pretty_print()
-                        # 将当前 chunk 添加到跟踪列表
-                        trace.append(chunk)
-
-                # 最终状态是跟踪列表中的最后一个元素
-                # 因为 stream() 每次输出一个节点执行后的状态，
-                # 最后一个输出就是图执行完毕后的最终状态
-                final_state = trace[-1] if trace else init_agent_state
-            else:
-                # 正常模式：一次调用完成整个图执行
-                # graph.invoke() 返回图的最终状态
-                # invoke 会自动从 START 开始，按边的定义执行所有节点，直到 END
-                # **args 展开为 stream_mode="values", config={"recursion_limit": 100}
-                final_state = self.graph.invoke(init_agent_state, **args)
-        finally:
-            # 无论成功、异常还是被取消，都要收尾指标并落库
-            metrics.finish()
-            clear_current_metrics()
             try:
-                save_run_log(metrics.to_dict())
-            except Exception:  # 落库失败不能影响分析结果
-                logger.debug("运行指标落库失败", exc_info=True)
+                init_agent_state = self.propagator.create_initial_state(
+                    company_name, trade_date, horizon
+                )
+                final_state = init_agent_state
+                args = self.propagator.get_graph_args()
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+                elif stream:
+                    args["stream_mode"] = ["values", "updates"]
+                    for mode, payload in self.graph.stream(init_agent_state, **args):
+                        if cancel_event is not None and cancel_event.is_set():
+                            cancelled = True
+                            break
+                        if mode == "values" and isinstance(payload, dict):
+                            final_state = payload
+                        if on_chunk is not None:
+                            on_chunk(mode, payload)
+                    cancelled = cancelled or (
+                        cancel_event is not None and cancel_event.is_set()
+                    )
+                elif self.debug:
+                    for chunk in self.graph.stream(init_agent_state, **args):
+                        if cancel_event is not None and cancel_event.is_set():
+                            cancelled = True
+                            break
+                        final_state = chunk
+                        messages = chunk.get("messages") or []
+                        if messages:
+                            messages[-1].pretty_print()
+                    cancelled = cancelled or (
+                        cancel_event is not None and cancel_event.is_set()
+                    )
+                else:
+                    final_state = self.graph.invoke(init_agent_state, **args)
+                if cancel_event is not None and cancel_event.is_set():
+                    cancelled = True
+            except BaseException as exc:
+                execution_error = exc
 
-        # -----------------------------------------------------------------
-        # 步骤 3：保存当前状态（用于后续反思）
-        # -----------------------------------------------------------------
-        self.curr_state = final_state
+            try:
+                final_state, decision = self._finalize_analysis(
+                    final_state,
+                    completed=execution_error is None and not cancelled,
+                    cancelled=cancelled,
+                    error=execution_error,
+                )
+            except BaseException:
+                if execution_error is None:
+                    raise
+                logger.exception("分析异常后的最终状态收尾失败")
+            if execution_error is not None:
+                raise execution_error
+            return final_state, decision
+        finally:
+            try:
+                metrics.finish()
+                self.last_run_metrics = metrics.to_dict()
+                if not isinstance(final_state, dict):
+                    final_state = {}
+                final_state["run_metrics"] = self.last_run_metrics
+                try:
+                    save_run_log(self.last_run_metrics)
+                except Exception:
+                    logger.debug("运行指标落库失败", exc_info=True)
+            finally:
+                set_current_metrics(previous_metrics)
+                set_current_trade_date(previous_trade_date)
 
-        # -----------------------------------------------------------------
-        # 步骤 4：记录日志
-        # 将最终状态保存到 JSON 文件，便于后续分析
-        # -----------------------------------------------------------------
-        self._log_state(trade_date, final_state)
-
-        # -----------------------------------------------------------------
-        # 步骤 4.5：写入角色记忆（规则化，零 LLM 调用）
-        # 把"当时的市场状况 + 本次决策"存进各角色记忆并落库，
-        # 使下一次分析时 get_memories() 能检索到内容，
-        # 提示词中的 past_memory_str 不再是空串。
-        # -----------------------------------------------------------------
-        self.remember_analysis(final_state)
-
-        # -----------------------------------------------------------------
-        # 步骤 5：返回最终状态和处理后的交易信号
-        # process_signal() 从完整信号文本中提取出简洁的决策词
-        # 例如："Based on comprehensive analysis, BUY AAPL..." → "BUY"
-        # -----------------------------------------------------------------
-        # 正常流程由 Portfolio Manager 写入 final_trade_decision；
-        # 若用户自定义流程或节点异常导致该字段为空，则回退到交易员/研究经理方案，
-        # 避免直接索引 KeyError 或空信号。
-        decision_text = (
-            final_state.get("final_trade_decision")
-            or final_state.get("trader_investment_plan")
-            or final_state.get("investment_plan")
-            or "HOLD"
-        )
-        final_state["final_trade_decision"] = decision_text
-        # 结构化决策：prompt 要求组合经理在末尾输出 JSON 块。解析失败时
-        # 不影响原有信号提取；解析成功时把置信度/论点/引用/风险标记带出去。
+    def resolve_final_decision(
+        self,
+        decision_text: str,
+        structured: dict[str, Any] | None = None,
+        *,
+        allow_llm_fallback: bool = True,
+    ) -> tuple[str, dict[str, Any]]:
+        """解析唯一模型决策，合法 JSON/评级优先，模糊正文最多调用一次 LLM。"""
         from tradingagents.services.decision_schema import (
+            extract_explicit_decision_line,
+            normalize_decision,
             parse_structured_decision,
         )
 
-        structured = parse_structured_decision(decision_text)
-        signal = self.process_signal(decision_text)
-        if (
-            structured.get("structured")
-            and structured.get("valid")
-            and signal == "HOLD"
-            and structured.get("decision") not in (None, "HOLD")
-        ):
-            # 文本提取失败退化成 HOLD，但 JSON 明确给出方向时，以 JSON 为准。
-            signal = structured["decision"]
-        final_state["decision_structured"] = structured
-        return final_state, signal
+        raw = str(decision_text or "")
+        # 无论调用方是否传入既有 structured，都用原文重新做一次规范解析。
+        # WHY：结构化块可能由其它路径构造，若直接信任它就会绕过 JSON 与评级
+        # 小节的冲突检测，导致报告同时出现两个相反结论却仍给出方向性决策。
+        canonical = parse_structured_decision(raw, "HOLD")
+        parsed = dict(canonical)
+        if isinstance(structured, dict) and structured:
+            for key, value in structured.items():
+                if key in ("decision", "decision_source", "source", "valid", "warnings"):
+                    continue
+                if value not in (None, "", [], {}):
+                    parsed[key] = value
+            warnings = list(canonical.get("warnings") or [])
+            for warning in structured.get("warnings") or []:
+                if warning not in warnings:
+                    warnings.append(warning)
+            parsed["warnings"] = warnings
+        source = str(parsed.get("decision_source") or parsed.get("source") or "")
+        model_decision = str(parsed.get("decision") or "").upper()
+        if source == "conflicted_explicit":
+            parsed["decision"] = "HOLD"
+            parsed["valid"] = False
+            return "HOLD", parsed
+        if source in ("json", "rating_section", "explicit_text") and parsed.get("valid"):
+            return model_decision, parsed
+        explicit = extract_explicit_decision_line(raw)
+        if explicit:
+            parsed["decision"] = explicit
+            parsed["decision_source"] = "explicit_text"
+            parsed["source"] = "explicit_text"
+            parsed["valid"] = True
+            return explicit, parsed
+        if not raw.strip() or not allow_llm_fallback:
+            parsed["decision"] = "HOLD"
+            parsed["decision_source"] = "incomplete_analysis" if raw.strip() else "fallback"
+            parsed["source"] = parsed["decision_source"]
+            parsed["valid"] = True
+            return "HOLD", parsed
+
+        fallback = normalize_decision(self.process_signal(raw)) or "HOLD"
+        model_decision = fallback
+        parsed["decision_source"] = "llm_fallback"
+        parsed["decision"] = model_decision
+        parsed["source"] = parsed["decision_source"]
+        parsed["valid"] = model_decision in ("BUY", "OVERWEIGHT", "HOLD", "UNDERWEIGHT", "SELL")
+        return model_decision, parsed
+
+    @staticmethod
+    def _explicit_text_decision(text: str) -> str:
+        """从非评级小节的显式结论语句中提取决策词。"""
+        from tradingagents.services.decision_schema import extract_explicit_decision_line
+
+        return extract_explicit_decision_line(text)
+
+    def _finalize_analysis(
+        self,
+        final_state: dict[str, Any],
+        *,
+        completed: bool,
+        cancelled: bool,
+        error: BaseException | None,
+    ) -> tuple[dict[str, Any], str]:
+        """完成决策解析、证据门禁、状态日志与记忆写入。"""
+        from tradingagents.services.decision_validation import (
+            apply_evidence_gate,
+            assess_analysis_evidence,
+        )
+
+        state = final_state if isinstance(final_state, dict) else {}
+        state.setdefault("company_of_interest", self.ticker or "")
+        state.setdefault("trade_date", "")
+        state.setdefault("market_report", "")
+        state.setdefault("sentiment_report", "")
+        state.setdefault("news_report", "")
+        state.setdefault("fundamentals_report", "")
+        state.setdefault("investment_debate_state", {})
+        state.setdefault("risk_debate_state", {})
+        state.setdefault("trader_investment_plan", "")
+        state.setdefault("investment_plan", "")
+        state["analysis_completed"] = bool(completed)
+        state["analysis_cancelled"] = bool(cancelled)
+        state["analysis_error"] = f"{type(error).__name__}: {error}" if error else ""
+        decision_text = (
+            state.get("final_trade_decision")
+            or state.get("trader_investment_plan")
+            or state.get("investment_plan")
+            or "HOLD"
+        )
+        state["model_decision_text"] = str(decision_text or "")
+        state["final_trade_decision"] = decision_text
+        model_decision, structured = self.resolve_final_decision(
+            decision_text,
+            state.get("decision_structured"),
+            allow_llm_fallback=completed,
+        )
+        required_reports = tuple(getattr(self, "selected_analysts", ()) or ())
+        state["decision_structured"] = structured
+        state["model_decision"] = model_decision
+        evidence = assess_analysis_evidence(
+            state,
+            model_decision,
+            model_decision,
+            required_reports=required_reports,
+        )
+        decision = model_decision
+        if not evidence.get("allow_directional", True):
+            decision = "HOLD"
+            evidence = assess_analysis_evidence(
+                state,
+                model_decision,
+                decision,
+                required_reports=required_reports,
+            )
+        state, decision, structured = apply_evidence_gate(
+            state,
+            decision,
+            structured,
+            evidence,
+        )
+        if self.config.get("plain_language_rewrite"):
+            try:
+                rewritten = self.rewrite_in_plain_language(
+                    state.get("final_trade_decision", "")
+                )
+            except Exception:
+                logger.warning("白话改写失败", exc_info=True)
+                rewritten = ""
+            if rewritten:
+                state["decision_text_plain"] = rewritten
+                state["plain_language_rewrite"] = rewritten
+        self.curr_state = state
+        try:
+            self._log_state(state.get("trade_date", ""), state)
+        except Exception:
+            logger.warning("分析状态日志写入失败", exc_info=True)
+        memory_state = state
+        if not completed or cancelled or not evidence.get("allow_directional", True):
+            memory_state = dict(state)
+            memory_state["final_trade_decision"] = "HOLD（核心数据不足或分析未完成，暂缓交易）"
+            memory_state["risk_debate_state"] = {}
+            memory_state["investment_debate_state"] = {}
+            memory_state["trader_investment_plan"] = ""
+        try:
+            self.remember_analysis(memory_state)
+        except Exception:
+            logger.warning("记忆写入失败", exc_info=True)
+        return state, decision
 
     # -------------------------------------------------------------------------
     # 私有方法：记录状态日志
@@ -1040,34 +1194,48 @@ flowchart TD
         # 构建日志字典，从 final_state 中提取关键字段
         # self.log_states_dict[str(trade_date)] 用日期字符串作为键
         # 这样多次调用 propagate 后，log_states_dict 会累积多个日期的状态
+        investment = final_state.get("investment_debate_state") or {}
+        risk = final_state.get("risk_debate_state") or {}
         self.log_states_dict[str(trade_date)] = {
-            "company_of_interest": final_state["company_of_interest"],
-            "trade_date": final_state["trade_date"],
-            "market_report": final_state["market_report"],
-            "sentiment_report": final_state["sentiment_report"],
-            "news_report": final_state["news_report"],
-            "fundamentals_report": final_state["fundamentals_report"],
+            "company_of_interest": final_state.get("company_of_interest", ""),
+            "trade_date": final_state.get("trade_date", trade_date),
+            "market_report": final_state.get("market_report", ""),
+            "strategy_report": final_state.get("strategy_report", ""),
+            "strategy_result": final_state.get("strategy_result", {}),
+            "sentiment_report": final_state.get("sentiment_report", ""),
+            "news_report": final_state.get("news_report", ""),
+            "fundamentals_report": final_state.get("fundamentals_report", ""),
             "investment_debate_state": {
-                "bull_history": final_state["investment_debate_state"]["bull_history"],
-                "bear_history": final_state["investment_debate_state"]["bear_history"],
-                "history": final_state["investment_debate_state"]["history"],
-                "current_response": final_state["investment_debate_state"][
-                    "current_response"
-                ],
-                "judge_decision": final_state["investment_debate_state"][
-                    "judge_decision"
-                ],
+                key: investment.get(key, "")
+                for key in (
+                    "bull_history",
+                    "bear_history",
+                    "history",
+                    "current_response",
+                    "judge_decision",
+                )
             },
-            "trader_investment_decision": final_state["trader_investment_plan"],
+            "trader_investment_decision": final_state.get("trader_investment_plan", ""),
             "risk_debate_state": {
-                "aggressive_history": final_state["risk_debate_state"]["aggressive_history"],
-                "conservative_history": final_state["risk_debate_state"]["conservative_history"],
-                "neutral_history": final_state["risk_debate_state"]["neutral_history"],
-                "history": final_state["risk_debate_state"]["history"],
-                "judge_decision": final_state["risk_debate_state"]["judge_decision"],
+                key: risk.get(key, "")
+                for key in (
+                    "aggressive_history",
+                    "conservative_history",
+                    "neutral_history",
+                    "history",
+                    "judge_decision",
+                )
             },
-            "investment_plan": final_state["investment_plan"],
-            "final_trade_decision": final_state["final_trade_decision"],
+            "investment_plan": final_state.get("investment_plan", ""),
+            "final_trade_decision": final_state.get("final_trade_decision", ""),
+            "model_decision": final_state.get("model_decision", ""),
+            "model_decision_text": final_state.get("model_decision_text", ""),
+            "decision": final_state.get("decision", ""),
+            "decision_structured": final_state.get("decision_structured", {}),
+            "evidence_assessment": final_state.get("evidence_assessment", {}),
+            "analysis_completed": final_state.get("analysis_completed", False),
+            "analysis_cancelled": final_state.get("analysis_cancelled", False),
+            "analysis_error": final_state.get("analysis_error", ""),
         }
 
         # 创建日志目录（如果不存在）
@@ -1089,7 +1257,7 @@ flowchart TD
             "w",
             encoding="utf-8",
         ) as f:
-            json.dump(self.log_states_dict, f, indent=4)
+            json.dump(self.log_states_dict, f, indent=4, default=str)
 
     # -------------------------------------------------------------------------
     # 记忆管理：加载 / 写入 / 落库

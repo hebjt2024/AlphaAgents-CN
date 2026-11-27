@@ -376,15 +376,32 @@
   .plan-reasons { margin-top: 10px; font-size: 11px; color: var(--text-3); padding-left: 16px; }
   .plan-reasons li { margin: 2px 0; }
   .result-body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
-  .report { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: rgba(7,11,20,.25); }
-  .report-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 11px 14px; cursor: pointer; user-select: none; }
-  .report-head h4 { font-size: 13px; color: var(--text-2); }
-  .report-head .chev { color: var(--text-3); font-size: 10px; transition: .2s; }
-  .report.collapsed .chev { transform: rotate(-90deg); }
-  .report-body { padding: 0 14px 14px; font-size: 13px; color: var(--text-2); }
-  .report.collapsed .report-body { display: none; }
-  .final-text { border: 1px solid var(--border); border-radius: 12px; padding: 14px; background: rgba(79,140,255,.04); }
-  .final-text .md { font-size: 14px; color: var(--text-2); }
+  .trust-card { border: 1px solid var(--border-strong); border-radius: 14px; padding: 14px; background: rgba(148,163,184,.035); }
+  .trust-title { font-size: 14px; margin-bottom: 10px; color: var(--text); }
+  .trust-banner { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px; margin-bottom: 10px; border: 1px solid var(--border-strong); border-left-width: 4px; border-radius: 10px; background: rgba(148,163,184,.05); }
+  .trust-banner strong { flex: 0 0 auto; color: var(--text); }
+  .trust-banner.ok { border-left-color: var(--green); background: var(--green-bg); }
+  .trust-banner.warning { border-left-color: var(--yellow); background: var(--yellow-bg); }
+  .trust-banner.blocked, .trust-banner.contradicted { border-left-color: var(--red); background: var(--red-bg); }
+  .trust-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .trust-block { min-width: 0; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: rgba(7,11,20,.18); }
+  .trust-block h4 { font-size: 12px; color: var(--text); margin-bottom: 6px; }
+  .trust-block p { font-size: 12px; color: var(--text-2); }
+  .trust-block.trust-warning { border-left: 3px solid var(--yellow); }
+  .trust-list { margin: 0; padding-left: 18px; font-size: 12px; color: var(--text-2); }
+  .trust-list li { margin: 4px 0; overflow-wrap: anywhere; }
+  .trust-evidence-item { list-style: none; margin-left: -18px; border-top: 1px dashed var(--border); padding-top: 6px; }
+  .trust-evidence-item:first-child { border-top: 0; padding-top: 0; }
+  .trust-evidence-item strong { color: var(--text); margin-right: 6px; }
+  .trust-evidence-item .detail { margin-top: 3px; }
+  .trust-status { display: inline-block; border: 1px solid var(--border-strong); border-radius: 999px; padding: 0 6px; font-size: 10px; font-weight: 700; color: var(--text-2); }
+  .trust-status.ok { color: var(--green); border-color: rgba(34,197,94,.35); }
+  .trust-status.warning { color: var(--yellow); border-color: rgba(245,158,11,.35); }
+  .trust-status.missing, .trust-status.blocked { color: var(--red); border-color: rgba(239,68,68,.4); }
+  .trust-as-of { color: var(--text-3); font-size: 11px; margin-top: 3px; }
+  .trust-metrics { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+  .trust-metric { border: 1px solid var(--border); border-radius: 8px; padding: 5px 9px; font-size: 11px; color: var(--text-2); background: rgba(148,163,184,.04); }
+  .trust-metric b { color: var(--text); margin-right: 5px; }
 
   /* 人话结论卡：把行话结论翻译成普通人看得懂的样子 */
   .plain-card { border: 1px solid rgba(79,140,255,.35); border-radius: 14px; padding: 14px 16px; background: linear-gradient(180deg, rgba(79,140,255,.10), rgba(79,140,255,.02)); }
@@ -428,7 +445,9 @@
   .report-section > summary::before { content: '▶'; font-size: 10px; color: var(--accent); transition: transform .2s; }
   .report-section[open] > summary::before { transform: rotate(90deg); }
   .report-section > summary:hover { background: rgba(79,140,255,.16); }
-  .report-section > .md { padding: 6px 14px 14px; font-size: 13px; }
+  .report-section > .md, .report-section > .report-section-body { padding: 6px 14px 14px; font-size: 13px; }
+  .report-section > summary:focus-visible, .plain-terms summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .report-section.blocked-raw > summary { border-left-color: var(--red); }
   .report-section .md h1, .report-section .md h2, .report-section .md h3 { font-size: 14px; margin: 12px 0 6px; }
   .plain-details { border-style: dashed; border-color: rgba(79,140,255,.35); background: rgba(79,140,255,.04); }
 
@@ -508,7 +527,7 @@
   .stat .k { font-size: 11px; color: var(--text-3); }
   .stat .v { font-size: 22px; font-weight: 800; margin-top: 4px; }
   .stat .s { font-size: 11px; color: var(--text-3); margin-top: 2px; }
-  .table-wrap { border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--panel-2); }
+  .table-wrap { border: 1px solid var(--border); border-radius: 14px; overflow-x: auto; background: var(--panel-2); }
   table.data { width: 100%; border-collapse: collapse; font-size: 12px; }
   table.data th { text-align: left; padding: 11px 14px; color: var(--text-3); font-weight: 600; background: rgba(148,163,184,.05); border-bottom: 1px solid var(--border); }
   table.data td { padding: 11px 14px; border-bottom: 1px solid rgba(148,163,184,.08); color: var(--text-2); }
@@ -644,6 +663,10 @@
     .hero-price { font-size: 24px; }
     .kline-wrap { height: 340px; }
     .tabs { overflow-x: auto; white-space: nowrap; }
+    .trust-grid { grid-template-columns: 1fr; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
   }
 </style>
 </head>
@@ -1193,13 +1216,13 @@
 
           <!-- 工作区：进度 / 日志 / 结果 -->
           <div class="card workspace-card">
-            <div class="tabs">
-              <button class="tab-btn active" data-tab="progress" onclick="switchTab('progress')">研判进度 <span class="tab-badge" id="progressBadge">0/6</span></button>
-              <button class="tab-btn" data-tab="logs" onclick="switchTab('logs')">实时日志 <span class="tab-badge" id="logBadge" style="display:none;">0</span></button>
-              <button class="tab-btn" data-tab="result" onclick="switchTab('result')">分析结果</button>
+            <div class="tabs" role="tablist" aria-label="分析工作区">
+              <button class="tab-btn active" id="tab-btn-progress" role="tab" aria-selected="true" aria-controls="tab-progress" tabindex="0" data-tab="progress" onclick="switchTab('progress')">研判进度 <span class="tab-badge" id="progressBadge">0/6</span></button>
+              <button class="tab-btn" id="tab-btn-logs" role="tab" aria-selected="false" aria-controls="tab-logs" tabindex="-1" data-tab="logs" onclick="switchTab('logs')">实时日志 <span class="tab-badge" id="logBadge" style="display:none;">0</span></button>
+              <button class="tab-btn" id="tab-btn-result" role="tab" aria-selected="false" aria-controls="tab-result" tabindex="-1" data-tab="result" onclick="switchTab('result')">分析结果</button>
             </div>
 
-            <div class="tab-panel active" id="tab-progress">
+            <div class="tab-panel active" role="tabpanel" aria-labelledby="tab-btn-progress" id="tab-progress">
               <div class="chart-head">
                 <div>
                   <div class="chart-title">多智能体协同研判</div>
@@ -1218,7 +1241,7 @@
               <div class="phase-grid" id="phaseGrid"></div>
             </div>
 
-            <div class="tab-panel" id="tab-logs">
+            <div class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-logs" id="tab-logs">
               <div class="log-card">
                 <div class="log-head">
                   <span class="title">实时日志</span>
@@ -1236,7 +1259,7 @@
               </div>
             </div>
 
-            <div class="tab-panel" id="tab-result">
+            <div class="tab-panel" role="tabpanel" aria-labelledby="tab-btn-result" id="tab-result">
               <div class="result-head" id="resultHead" style="display:none;border-bottom:1px solid var(--border);">
                 <div class="decision hold" id="decisionBadge">⚖️ 持有 HOLD</div>
                 <div style="display:flex;gap:8px;">
@@ -1798,6 +1821,11 @@ const state = {
   heartbeatTimer: null,
   connected: false,
   running: false,
+  activeJob: '',
+  restoredJobId: '',
+  jobStatus: '',
+  jobPollTimer: null,
+  jobPollInFlight: false,
   autoScroll: true,
   logFilter: 'all',
   msgCount: 0,
@@ -1809,6 +1837,7 @@ const state = {
   reports: [],
   briefings: [],
   lastResult: null,
+  modalReport: null,
   plainText: false,
   presets: {},
   defaults: null,
@@ -1924,7 +1953,7 @@ async function initAuth() {
     state.multiUser = !!config.multi_user;
     if (!state.multiUser) return;
     const token = window.Core.getApiKey();
-    if (!token) { showLogin(); return; }
+    if (!token) { clearActiveJob(); showLogin(); return; }
     try {
       const me = await apiFetch('/api/auth/me');
       if (me.success && me.user) {
@@ -1933,9 +1962,11 @@ async function initAuth() {
         if (!me.user.risk_ack_at) showRiskAck();
         else $('authModal').classList.remove('show');
       } else {
+        clearActiveJob();
         showLogin();
       }
     } catch (e) {
+      clearActiveJob();
       window.Core.setApiKey('');
       showLogin();
     }
@@ -1972,6 +2003,7 @@ async function loginUser() {
       body: JSON.stringify({ username, password }),
     });
     if (!data.success || !data.token) throw new Error(data.message || '登录失败');
+    clearActiveJob();
     window.Core.setApiKey(data.token);
     location.reload();
   } catch (e) {
@@ -1993,6 +2025,7 @@ async function ackRisk() {
 }
 async function logoutUser() {
   try { await apiFetch('/api/auth/logout', { method: 'POST' }); } catch (e) { /* ignore */ }
+  clearActiveJob();
   window.Core.setApiKey('');
   location.reload();
 }
@@ -2029,6 +2062,7 @@ function connectWS() {
     setConn('on', '已连接');
     startHeartbeat();
     refreshStartBtn();
+    resumeActiveJob();
   };
   state.ws.onclose = () => {
     state.connected = false;
@@ -2068,6 +2102,17 @@ function refreshStartBtn() {
 
 /* ================= 消息处理 ================= */
 function handleMessage(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  const jobId = msg.job_id || (msg.data && msg.data.job_id) || '';
+  if (state.activeJob && jobId !== state.activeJob) return;
+  if (msg.type === 'status') {
+    if (!state.activeJob) {
+      resumeActiveJob();
+      if (!state.activeJob || (jobId && jobId !== state.activeJob)) return;
+    }
+  } else if (!state.activeJob || !jobId || jobId !== state.activeJob) {
+    return;
+  }
   switch (msg.type) {
     case 'status':
       if (msg.data && msg.data.running) {
@@ -2080,6 +2125,7 @@ function handleMessage(msg) {
       }
       break;
     case 'analysis_start':
+      if (state.activeJob) ensureJobPolling();
       state.running = true;
       state.startTime = Date.now();
       state.nodeStatus = {};
@@ -2120,32 +2166,16 @@ function handleMessage(msg) {
       addReportEntry(msg.data);
       break;
     case 'analysis_complete':
-      state.running = false;
-      setRunningUI(false);
-      stopElapsed();
-      finishPipeline();
-      hideFastPreview();
-      state.lastDecision = msg.data.decision || '';
-      updateHeroChips();
-      renderResult(msg.data);
-      addEntry('done', '完成', msg.data.cancelled ? '分析已取消' : '分析完成');
-      $('pipelineStatus').textContent = msg.data.cancelled ? '已取消' : '已完成';
-      setConn('on', '已连接');
-      if (msg.data.report_id) loadReports();
+      finishAnalysis(msg.data || {}, 'completed');
+      clearActiveJob(jobId);
       break;
     case 'error':
-      state.running = false;
-      setRunningUI(false);
-      stopElapsed();
-      addEntry('error', '错误', msg.data.message || '未知错误');
-      if (msg.data.traceback) console.error(msg.data.traceback);
-      $('pipelineStatus').textContent = '失败';
-      switchTab('logs');
-      setConn('on', '已连接');
+      failAnalysis((msg.data && msg.data.message) || '未知错误', msg.data && msg.data.traceback, jobId);
       break;
   }
 }
 function setRunningUI(running) {
+  if (running) setStopPending(false);
   ['stopBtn', 'heroStopBtn'].forEach(id => {
     const btn = $(id);
     if (btn) btn.style.display = running ? 'inline-flex' : 'none';
@@ -2229,8 +2259,17 @@ function updatePipelineProgress(forceComplete = false) {
 /* ================= 标签页 / 配置面板 / Hero ================= */
 function switchTab(tab) {
   state.activeTab = tab;
-  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
-  document.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === 'tab-' + tab));
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    const active = b.dataset.tab === tab;
+    b.classList.toggle('active', active);
+    b.setAttribute('aria-selected', String(active));
+    b.tabIndex = active ? 0 : -1;
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => {
+    const active = p.id === 'tab-' + tab;
+    p.classList.toggle('active', active);
+    p.hidden = !active;
+  });
   if (tab === 'logs') {
     state.unreadLogs = 0;
     const badge = $('logBadge');
@@ -2238,6 +2277,20 @@ function switchTab(tab) {
     const body = $('logBody');
     if (body) body.scrollTop = body.scrollHeight;
   }
+}
+function handleTabKeydown(event) {
+  if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(event.key)) return;
+  const tabs = [...document.querySelectorAll('.tab-btn')];
+  const current = tabs.indexOf(document.activeElement);
+  if (current < 0) return;
+  event.preventDefault();
+  let next = current;
+  if (event.key === 'ArrowLeft') next = (current - 1 + tabs.length) % tabs.length;
+  if (event.key === 'ArrowRight') next = (current + 1) % tabs.length;
+  if (event.key === 'Home') next = 0;
+  if (event.key === 'End') next = tabs.length - 1;
+  switchTab(tabs[next].dataset.tab);
+  tabs[next].focus();
 }
 function toggleConfigPanel() {
   const grid = $('workbenchGrid'), panel = $('configPanel');
@@ -2388,7 +2441,9 @@ function renderPipelineFromConfig(cfg) {
   $('phaseDebate').checked = !!cfg.enable_debate;
   $('phaseTrader').checked = !!cfg.enable_trader;
   $('phaseRisk').checked = !!cfg.enable_risk;
-  $('phaseRisk').disabled = !cfg.enable_trader;
+  $('phaseRisk').disabled = state.running || !cfg.enable_trader;
+  if (cfg.max_debate_rounds !== undefined) $('maxDebateRounds').value = cfg.max_debate_rounds;
+  if (cfg.max_risk_discuss_rounds !== undefined) $('maxRiskRounds').value = cfg.max_risk_discuss_rounds;
   document.querySelectorAll('.check').forEach(l => l.classList.toggle('checked', l.querySelector('input').checked));
   updatePipeline();
 }
@@ -2595,6 +2650,7 @@ async function startAnalysis() {
   const strategies = selectedStrategies();
   if (!strategies.length) { showToast('至少选择一个策略', 'err'); return; }
 
+  clearActiveJob();
   state.running = true;
   state.startTime = Date.now();
   state.nodeStatus = {};
@@ -2615,7 +2671,6 @@ async function startAnalysis() {
   $('pipelineStatus').textContent = '分析中…';
   updatePipeline();
   loadKline();
-  // 保持页面原内容可见：不自动收起配置面板，用户可手动点击“分析设置”收起
   const main = document.querySelector('.main-panel');
   if (main) main.scrollTop = 0;
 
@@ -2635,33 +2690,225 @@ async function startAnalysis() {
     max_risk_discuss_rounds: parseInt($('maxRiskRounds').value) || 1,
     strategies,
   };
+  const failStart = message => {
+    state.running = false;
+    state.jobStatus = '';
+    setRunningUI(false);
+    stopElapsed();
+    clearActiveJob();
+    showToast(message, 'err');
+    addEntry('error', '错误', message);
+    $('pipelineStatus').textContent = '启动失败';
+  };
   try {
     const result = await apiFetch('/api/analyze', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload),
     });
-    if (!result.success) {
-      state.running = false;
-      setRunningUI(false);
-      stopElapsed();
+    if (!result.success || !result.job_id) {
       if (result.suggested_date) $('date').value = result.suggested_date;
-      showToast(result.message || '启动分析失败', 'err');
-      addEntry('error', '错误', result.message || '启动分析失败');
+      failStart(result.message || '启动分析失败：后端未返回任务 ID');
+      return;
     }
+    setActiveJob(result.job_id);
+    state.restoredJobId = String(result.job_id);
+    ensureJobPolling();
+    $('pipelineStatus').textContent = Number(result.queue_position) > 0 ? '排队中…' : '分析中…';
+    showToast(result.message || '分析任务已启动');
   } catch (e) {
-    state.running = false;
-    setRunningUI(false);
-    stopElapsed();
-    showToast('请求失败: ' + e.message, 'err');
+    failStart('请求失败: ' + e.message);
   }
 }
-async function stopAnalysis() {
-  $('stopBtn').disabled = true;
-  $('stopBtn').textContent = '停止中…';
+function readActiveJob() {
+  try { return localStorage.getItem('alphaagents.activeJob') || ''; } catch (e) { return ''; }
+}
+function writeActiveJob(jobId) {
+  const nextJobId = String(jobId || '');
+  if (state.activeJob !== nextJobId) state.restoredJobId = '';
+  state.activeJob = nextJobId;
+  state.jobStatus = state.activeJob ? 'queued' : '';
   try {
-    const result = await apiFetch('/api/stop', { method: 'POST' });
-    if (!result.success) { $('stopBtn').disabled = false; $('stopBtn').textContent = '停止'; }
+    if (state.activeJob) localStorage.setItem('alphaagents.activeJob', state.activeJob);
+    else localStorage.removeItem('alphaagents.activeJob');
+  } catch (e) {}
+}
+function stopJobPolling() {
+  if (state.jobPollTimer) { clearInterval(state.jobPollTimer); state.jobPollTimer = null; }
+}
+function setActiveJob(jobId) {
+  stopJobPolling();
+  writeActiveJob(jobId);
+}
+function clearActiveJob(jobId) {
+  if (jobId && state.activeJob && state.activeJob !== jobId) return;
+  setActiveJob('');
+}
+function ensureJobPolling() {
+  const jobId = state.activeJob || readActiveJob();
+  if (!jobId) return;
+  if (state.activeJob !== jobId) writeActiveJob(jobId);
+  if (state.jobPollTimer) return;
+  const poll = async () => {
+    if (state.jobPollInFlight || state.activeJob !== jobId) return;
+    state.jobPollInFlight = true;
+    try { await pollAnalysisJob(jobId); } finally { state.jobPollInFlight = false; }
+  };
+  state.jobPollTimer = setInterval(poll, 2000);
+  poll();
+}
+function resumeActiveJob() {
+  const jobId = state.activeJob || readActiveJob();
+  if (!jobId) return;
+  if (state.activeJob !== jobId) writeActiveJob(jobId);
+  ensureJobPolling();
+}
+function restoreRunningJob(job, restoring) {
+  state.running = true;
+  const started = Date.parse(job.started_at || job.created_at || '');
+  if (Number.isFinite(started)) state.startTime = started;
+  else if (!state.startTime) state.startTime = Date.now();
+  if (!state.elapsedTimer) startElapsed();
+  setRunningUI(true);
+  $('pipelineStatus').textContent = job.status === 'queued' ? '排队中…' : '运行中…';
+  if (state.connected) setConn('run', '分析中…');
+  if (!restoring) return;
+  if (job.company) $('company').value = job.company;
+  if (job.trade_date) $('date').value = job.trade_date;
+  const meta = asRecord(job.meta);
+  const payload = asRecord(meta.payload);
+  const request = asRecord(payload.request);
+  const pipeline = asRecord(meta.pipeline);
+  const cfg = Object.keys(pipeline).length ? pipeline : {};
+  ['analysts', 'enable_debate', 'enable_trader', 'enable_risk', 'max_debate_rounds', 'max_risk_discuss_rounds'].forEach(key => {
+    if (request[key] !== undefined) cfg[key] = request[key];
+  });
+  if (['analysts', 'enable_debate', 'enable_trader', 'enable_risk', 'max_debate_rounds', 'max_risk_discuss_rounds'].some(key => Object.prototype.hasOwnProperty.call(cfg, key))) {
+    renderPipelineFromConfig(cfg);
+  }
+  const preset = meta.pipeline_preset || request.pipeline_preset;
+  if (preset) {
+    state.pipelinePreset = preset;
+    updatePresetButtons();
+  }
+  const strategyKeys = [pipeline.strategy_keys, meta.strategies, request.strategies].find(Array.isArray);
+  if (strategyKeys) {
+    state.activeStrategies = strategyKeys.slice();
+    renderStrategyChecks(strategyKeys);
+    updateStrategyCount();
+  }
+  setRunningUI(true);
+  updateHeroIdentity();
+  updateHeroChips();
+  updatePipeline();
+  loadKline();
+  switchTab('progress');
+  state.restoredJobId = job.job_id || state.activeJob;
+  addEntry('system', '系统', `已恢复分析任务（${job.status === 'queued' ? '排队中' : '运行中'}）`);
+  showToast('已恢复上次的分析任务');
+}
+async function pollAnalysisJob(jobId) {
+  try {
+    const response = await apiFetch('/api/jobs/' + encodeURIComponent(jobId));
+    if (state.activeJob !== jobId) return;
+    if (!response.success || !response.job) throw new Error(response.message || '任务状态查询失败');
+    const job = response.job;
+    const status = String(job.status || '').toLowerCase();
+    state.jobStatus = status;
+    if (status === 'queued' || status === 'running') {
+      restoreRunningJob(job, state.restoredJobId !== jobId);
+      return;
+    }
+    if (status === 'failed') {
+      failAnalysis(job.error || '任务失败', '', jobId);
+      return;
+    }
+    if (status === 'completed' || status === 'cancelled') {
+      const resultResponse = await apiFetch('/api/jobs/' + encodeURIComponent(jobId) + '/result');
+      if (state.activeJob !== jobId) return;
+      if (resultResponse.success && resultResponse.result) {
+        finishAnalysis(resultResponse.result, status);
+        clearActiveJob(jobId);
+      } else if (status === 'cancelled') {
+        finishAnalysis({ cancelled: true, company: job.company, date: job.trade_date, decision_text: '分析已取消。' }, status);
+        clearActiveJob(jobId);
+      } else {
+        failAnalysis(resultResponse.message || '任务已完成但结果不可用', '', jobId);
+      }
+      return;
+    }
+    $('pipelineStatus').textContent = '任务状态：' + (status || '未知');
   } catch (e) {
-    $('stopBtn').disabled = false; $('stopBtn').textContent = '停止';
+    if (state.activeJob !== jobId) return;
+    if (e.status === 404) {
+      failAnalysis('分析任务不存在或已过期', '', jobId);
+      return;
+    }
+    if (!state.running) {
+      state.running = true;
+      setRunningUI(true);
+      startElapsed();
+    }
+    $('pipelineStatus').textContent = '任务恢复连接中断，正在重试…';
+    if (state.connected) setConn('run', '分析中…');
+  }
+}
+function finishAnalysis(data, status) {
+  const result = data || {};
+  const cancelled = result.cancelled || status === 'cancelled';
+  state.running = false;
+  state.jobStatus = cancelled ? 'cancelled' : (status || 'completed');
+  setRunningUI(false);
+  stopElapsed();
+  finishPipeline();
+  hideFastPreview();
+  state.lastDecision = directionalDecisionBlocked(reportView(result)) ? 'HOLD' : (result.decision || '');
+  updateHeroChips();
+  renderResult(result);
+  addEntry('done', '完成', cancelled ? '分析已取消' : '分析完成');
+  $('pipelineStatus').textContent = cancelled ? '已取消' : '已完成';
+  setConn(state.connected ? 'on' : '', state.connected ? '已连接' : '连接断开');
+  if (result.report_id) loadReports();
+}
+function failAnalysis(message, traceback, jobId) {
+  state.running = false;
+  state.jobStatus = 'failed';
+  setRunningUI(false);
+  stopElapsed();
+  clearActiveJob(jobId);
+  addEntry('error', '错误', message || '未知错误');
+  if (traceback) console.error(traceback);
+  $('pipelineStatus').textContent = '失败';
+  switchTab('logs');
+  setConn(state.connected ? 'on' : '', state.connected ? '已连接' : '连接断开');
+  showToast(message || '分析失败', 'err');
+}
+function setStopPending(pending) {
+  ['stopBtn', 'heroStopBtn'].forEach(id => {
+    const btn = $(id);
+    if (!btn) return;
+    btn.disabled = pending;
+    btn.textContent = pending ? '停止中…' : '停止';
+  });
+}
+async function stopAnalysis() {
+  const jobId = state.activeJob || readActiveJob();
+  setStopPending(true);
+  try {
+    let result;
+    if (jobId) {
+      try {
+        result = await apiFetch('/api/jobs/' + encodeURIComponent(jobId) + '/cancel', { method: 'POST' });
+      } catch (e) {
+        if (e.status !== 404 && e.status !== 405) throw e;
+        result = await apiFetch('/api/stop', { method: 'POST' });
+      }
+    } else {
+      result = await apiFetch('/api/stop', { method: 'POST' });
+    }
+    if (!result.success) throw new Error(result.message || '停止请求失败');
+    showToast(result.message || '已发送停止信号', 'ok');
+  } catch (e) {
+    setStopPending(false);
+    showToast('停止失败: ' + e.message, 'err');
   }
 }
 
@@ -2828,14 +3075,15 @@ function decisionPlanHtml(plan) {
   };
   const tip = key => tips[key] ? ` title="${escapeHtml(tips[key])}"` : '';
   return `<div class="decision-plan">
+    <div class="section-title">决策卡</div>
     <div class="plan-grid">
       <div class="plan-item"${tip('score')}><div class="k">综合参考分</div><div class="v ${scoreCls}">${score} / 100</div></div>
-      <div class="plan-item"${tip('confidence')}><div class="k">置信度</div><div class="v">${plan.confidence || 0}%</div></div>
+      <div class="plan-item"${tip('confidence')}><div class="k">置信度</div><div class="v">${escapeHtml(plan.confidence || 0)}%</div></div>
       <div class="plan-item"${tip('consensus')}><div class="k">策略共识</div><div class="v">${escapeHtml(plan.consensus || '中性')}</div></div>
-      <div class="plan-item"${tip('entry')}><div class="k">参考价</div><div class="v">${plan.entry || 0}</div></div>
-      <div class="plan-item"${tip('stop_loss')}><div class="k">止损参考</div><div class="v">${plan.stop_loss || 0}</div></div>
-      <div class="plan-item"${tip('take_profit')}><div class="k">目标参考</div><div class="v">${plan.take_profit || 0}</div></div>
-      <div class="plan-item"${tip('risk_reward')}><div class="k">风险收益比</div><div class="v">${plan.risk_reward || 0}</div></div>
+      <div class="plan-item"${tip('entry')}><div class="k">参考价</div><div class="v">${escapeHtml(plan.entry || 0)}</div></div>
+      <div class="plan-item"${tip('stop_loss')}><div class="k">止损参考</div><div class="v">${escapeHtml(plan.stop_loss || 0)}</div></div>
+      <div class="plan-item"${tip('take_profit')}><div class="k">目标参考</div><div class="v">${escapeHtml(plan.take_profit || 0)}</div></div>
+      <div class="plan-item"${tip('risk_reward')}><div class="k">风险收益比</div><div class="v">${escapeHtml(plan.risk_reward || 0)}</div></div>
       <div class="plan-item"${tip('position')}><div class="k">建议仓位</div><div class="v">${Math.round((plan.position_pct || 0) * 100)}%</div></div>
     </div>
     ${reasons ? `<ul class="plan-reasons">${reasons}</ul>` : ''}
@@ -2868,64 +3116,360 @@ function togglePlainText() {
   state.plainText = !state.plainText;
   renderResult(state.lastResult);
 }
+function asRecord(value) {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+}
+function asList(value) {
+  return Array.isArray(value) ? value : [];
+}
+function valueText(value) {
+  if (value === undefined || value === null) return '';
+  if (Array.isArray(value)) return value.map(valueText).filter(Boolean).join('；');
+  if (typeof value === 'object') {
+    try { return JSON.stringify(value); } catch (e) { return ''; }
+  }
+  return String(value);
+}
+function decisionValue(value) {
+  const record = asRecord(value);
+  return valueText(value && typeof value === 'object' ? (record.decision || record.label || value) : value);
+}
+function sameDecision(left, right) {
+  return String(left || '').trim().toUpperCase() === String(right || '').trim().toUpperCase();
+}
+function finiteNumber(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+function reportView(data) {
+  const source = asRecord(data);
+  const meta = asRecord(source.meta);
+  const reports = asRecord(source.reports);
+  const pick = key => source[key] !== undefined && source[key] !== null ? source[key] : meta[key];
+  return {
+    source, meta, reports,
+    decision: pick('decision'),
+    plain_summary: pick('plain_summary'),
+    decision_plan: pick('decision_plan'),
+    position_advice: pick('position_advice'),
+    decision_structured: pick('decision_structured'),
+    decision_diff: pick('decision_diff'),
+    decision_validation: pick('decision_validation'),
+    evidence_assessment: pick('evidence_assessment'),
+    model_decision: pick('model_decision'),
+    run_metrics: pick('run_metrics'),
+  };
+}
+function markdownContent(value) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value === 'string') return value;
+  const record = asRecord(value);
+  if (typeof record.markdown === 'string') return record.markdown;
+  try { return JSON.stringify(value, null, 2); } catch (e) { return ''; }
+}
+function directionalDecisionBlocked(view) {
+  const evidence = asRecord(view && view.evidence_assessment);
+  return evidence.level === 'blocked' || evidence.allow_directional === false;
+}
+function blockedDecisionText(view) {
+  const evidence = asRecord(view && view.evidence_assessment);
+  return valueText(evidence.summary) || '证据门禁未通过，本次不给出方向性决策，最终立场为 HOLD。';
+}
+function trustSummaryHtml(data) {
+  const view = reportView(data);
+  const evidence = asRecord(view.evidence_assessment);
+  const validation = asRecord(view.decision_validation);
+  const structured = asRecord(view.decision_structured);
+  const diff = asRecord(view.decision_diff);
+  const metrics = asRecord(view.run_metrics);
+  const totals = asRecord(metrics.totals);
+  const banners = [];
+  const blocks = [];
+  const listHtml = values => asList(values).map(value => `<li>${escapeHtml(valueText(value))}</li>`).join('');
+
+  if (Object.keys(evidence).length) {
+    const level = ['ok', 'warning', 'blocked'].includes(evidence.level) ? evidence.level : 'warning';
+    const blocked = level === 'blocked' || evidence.allow_directional === false;
+    const bannerLevel = blocked ? 'blocked' : level;
+    const label = { ok: '证据完整', warning: '证据需注意', blocked: '证据阻断' }[bannerLevel];
+    const fallback = blocked ? '证据不足，当前结论不能作为方向性依据。' : (level === 'ok' ? '本次分析所需证据已通过完整性检查。' : '部分证据可能影响结论稳定性。');
+    const directionNote = evidence.allow_directional === false ? ' 当前不允许据此给出方向性结论。' : '';
+    banners.push(`<div class="trust-banner ${bannerLevel}"><strong>${label}</strong><div>${escapeHtml(valueText(evidence.summary) || fallback)}${directionNote}</div></div>`);
+    const statusInfo = item => {
+      const record = asRecord(item);
+      const status = ['ok', 'warning', 'missing'].includes(record.status) ? record.status : 'missing';
+      return {
+        status,
+        label: valueText(record.label) || valueText(item) || '证据项',
+        detail: valueText(record.detail),
+        asOf: valueText(record.as_of),
+      };
+    };
+    const items = asList(evidence.items).map(item => {
+      const info = statusInfo(item);
+      const statusLabel = { ok: '完整', warning: '需注意', missing: '缺失' }[info.status];
+      return `<li class="trust-evidence-item"><strong>${escapeHtml(info.label)}</strong><span class="trust-status ${info.status}">${statusLabel}</span>${info.detail ? `<div class="detail">${escapeHtml(info.detail)}</div>` : ''}${info.asOf ? `<div class="trust-as-of">截至 ${escapeHtml(info.asOf)}</div>` : ''}</li>`;
+    }).join('');
+    const warnings = listHtml(evidence.warnings);
+    if (items || warnings) {
+      blocks.push(`<section class="trust-block"><h4>证据完整性</h4><ul class="trust-list">${items}${warnings ? `<li>${escapeHtml('警告')}：</li>${warnings}` : ''}</ul></section>`);
+    }
+  }
+
+  if (Object.keys(validation).length) {
+    const level = ['ok', 'warning', 'contradicted'].includes(validation.level) ? validation.level : 'warning';
+    const label = { ok: '结论校验通过', warning: '结论需注意', contradicted: '结论存在冲突' }[level];
+    const fallback = level === 'ok' ? '最终决策与决策卡、结构化结论未发现矛盾。' : (level === 'contradicted' ? '最终决策与相关来源存在冲突，请优先查看分歧说明。' : '结论校验发现需要人工复核的项目。');
+    banners.push(`<div class="trust-banner ${level}"><strong>${label}</strong><div>${escapeHtml(valueText(validation.summary) || fallback)}</div></div>`);
+    const mismatches = listHtml(validation.mismatches);
+    const warnings = listHtml(validation.warnings);
+    if (mismatches || warnings) {
+      blocks.push(`<section class="trust-block"><h4>结论校验明细</h4><ul class="trust-list">${mismatches}${warnings}</ul></section>`);
+    }
+  }
+
+  const preliminary = decisionValue(diff.preliminary_decision);
+  const finalDecision = directionalDecisionBlocked(view) ? 'HOLD' : (decisionValue(view.decision) || decisionValue(diff.final_decision));
+  const hasDiff = diff.has_diff === true || (!!preliminary && !!finalDecision && !sameDecision(preliminary, finalDecision));
+  if (Object.keys(diff).length && (hasDiff || preliminary || finalDecision || diff.note)) {
+    const known = !!preliminary || !!finalDecision || typeof diff.has_diff === 'boolean';
+    const title = hasDiff ? '规则初判与最终决策存在分歧' : (known ? '规则初判与最终决策一致' : '规则初判与最终决策：信息不足');
+    const comparison = preliminary || finalDecision ? `<div>规则初判 ${escapeHtml(preliminary || '未提供')} → 最终决策 ${escapeHtml(finalDecision || '未提供')}</div>` : '';
+    blocks.push(`<section class="trust-block ${hasDiff ? 'trust-warning' : ''}"><h4>规则初判 vs 最终决策</h4><p><strong>${title}</strong></p>${comparison}${diff.note ? `<p>${escapeHtml(valueText(diff.note))}</p>` : ''}</section>`);
+  }
+
+  const structuredWarnings = listHtml(structured.warnings);
+  const citations = asList(structured.citations).map(citation => `<li>${escapeHtml(valueText(citation))}</li>`).join('');
+  if (structuredWarnings || citations) {
+    blocks.push(`<section class="trust-block"><h4>结构化提示与引用</h4>${structuredWarnings ? `<p><strong>警告</strong></p><ul class="trust-list">${structuredWarnings}</ul>` : ''}${citations ? `<p><strong>引用</strong></p><ul class="trust-list">${citations}</ul>` : ''}</section>`);
+  }
+
+  const modelDecision = decisionValue(view.model_decision);
+  if (modelDecision && finalDecision && !sameDecision(modelDecision, finalDecision)) {
+    blocks.push(`<section class="trust-block trust-warning"><h4>模型原始决策已被门禁调整</h4><p>门禁前 ${escapeHtml(modelDecision)} → 门禁后 ${escapeHtml(finalDecision)}</p><p>页面最终决策以门禁后结果为准。</p></section>`);
+  }
+
+  const metricItems = [];
+  const duration = finiteNumber(metrics.duration_ms);
+  const callCount = finiteNumber(totals.call_count);
+  const totalTokens = finiteNumber(totals.total_tokens);
+  const estimatedCost = finiteNumber(totals.estimated_cost);
+  if (duration !== null && duration >= 0) metricItems.push(['耗时', `${duration} ms`]);
+  if (callCount !== null && callCount >= 0) metricItems.push(['调用次数', String(callCount)]);
+  if (totalTokens !== null && totalTokens >= 0) metricItems.push(['Token', String(totalTokens)]);
+  if (estimatedCost !== null) metricItems.push(['估算成本', `${estimatedCost}${metrics.currency ? ' ' + valueText(metrics.currency) : ''}`]);
+  const metricsHtml = metricItems.length ? `<div class="trust-metrics">${metricItems.map(([label, value]) => `<span class="trust-metric"><b>${label}</b>${escapeHtml(value)}</span>`).join('')}</div>` : '';
+
+  if (!banners.length && !blocks.length && !metricsHtml) return '';
+  return `<section class="trust-card" aria-label="可信度与决策分歧"><h3 class="trust-title">可信度与分歧</h3>${banners.join('')}${blocks.length ? `<div class="trust-grid">${blocks.join('')}</div>` : ''}${metricsHtml}</section>`;
+}
+function trustSummaryMarkdown(data) {
+  const view = reportView(data);
+  const evidence = asRecord(view.evidence_assessment);
+  const validation = asRecord(view.decision_validation);
+  const structured = asRecord(view.decision_structured);
+  const diff = asRecord(view.decision_diff);
+  const metrics = asRecord(view.run_metrics);
+  const totals = asRecord(metrics.totals);
+  let md = '';
+  const appendList = (title, values) => {
+    const items = asList(values).map(value => `- ${valueText(value)}`).join('\n');
+    if (items) md += `**${title}**\n\n${items}\n\n`;
+  };
+  if (Object.keys(evidence).length) {
+    const level = ['ok', 'warning', 'blocked'].includes(evidence.level) ? evidence.level : 'warning';
+    const blocked = level === 'blocked' || evidence.allow_directional === false;
+    const label = { ok: '证据完整', warning: '证据需注意', blocked: '证据阻断' }[blocked ? 'blocked' : level];
+    md += `## 可信度与证据\n\n**${label}**\n\n`;
+    if (typeof evidence.allow_directional === 'boolean') md += `允许方向性判断：${evidence.allow_directional ? '是' : '否'}\n\n`;
+    if (evidence.summary) md += `${valueText(evidence.summary)}\n\n`;
+    asList(evidence.items).forEach(item => {
+      const record = asRecord(item);
+      const status = { ok: '完整', warning: '需注意', missing: '缺失' }[record.status] || '未知';
+      const labelText = valueText(record.label) || valueText(item) || '证据项';
+      md += `- ${status}｜${labelText}`;
+      if (record.detail) md += `：${valueText(record.detail)}`;
+      if (record.as_of) md += `（截至 ${valueText(record.as_of)}）`;
+      md += '\n';
+    });
+    if (asList(evidence.items).length) md += '\n';
+    appendList('证据警告', evidence.warnings);
+  }
+  if (Object.keys(validation).length) {
+    const label = { ok: '结论校验通过', warning: '结论需注意', contradicted: '结论存在冲突' }[validation.level] || '结论需注意';
+    md += `## 结论校验\n\n**${label}**\n\n`;
+    if (validation.summary) md += `${valueText(validation.summary)}\n\n`;
+    appendList('决策不一致项', validation.mismatches);
+    appendList('校验警告', validation.warnings);
+  }
+  const preliminary = decisionValue(diff.preliminary_decision);
+  const finalDecision = directionalDecisionBlocked(view) ? 'HOLD' : (decisionValue(view.decision) || decisionValue(diff.final_decision));
+  const hasDiff = diff.has_diff === true || (!!preliminary && !!finalDecision && !sameDecision(preliminary, finalDecision));
+  if (Object.keys(diff).length && (hasDiff || preliminary || finalDecision || diff.note)) {
+    md += '## 规则初判与最终决策分歧\n\n';
+    md += `规则初判：${preliminary || '未提供'}\n\n最终决策：${finalDecision || '未提供'}\n\n`;
+    md += `是否存在分歧：${hasDiff ? '是' : '否'}\n\n`;
+    if (diff.note) md += `${valueText(diff.note)}\n\n`;
+  }
+  appendList('结构化警告', structured.warnings);
+  appendList('结构化引用', structured.citations);
+  const modelDecision = decisionValue(view.model_decision);
+  if (modelDecision && finalDecision && !sameDecision(modelDecision, finalDecision)) {
+    md += `## 模型原始决策与门禁调整\n\n门禁前：${modelDecision}\n\n门禁后：${finalDecision}\n\n页面最终决策以门禁后结果为准。\n\n`;
+  }
+  const metricItems = [];
+  const duration = finiteNumber(metrics.duration_ms);
+  const callCount = finiteNumber(totals.call_count);
+  const totalTokens = finiteNumber(totals.total_tokens);
+  const estimatedCost = finiteNumber(totals.estimated_cost);
+  if (duration !== null && duration >= 0) metricItems.push(`耗时：${duration} ms`);
+  if (callCount !== null && callCount >= 0) metricItems.push(`调用次数：${callCount}`);
+  if (totalTokens !== null && totalTokens >= 0) metricItems.push(`Token：${totalTokens}`);
+  if (estimatedCost !== null) metricItems.push(`估算成本：${estimatedCost}${metrics.currency ? ' ' + valueText(metrics.currency) : ''}`);
+  if (metricItems.length) md += `## 运行指标\n\n${metricItems.join('\n')}\n\n`;
+  return md;
+}
+function reportDetailsHtml(title, content, open = false, className = '') {
+  if (!content) return '';
+  return `<details class="report-section${className ? ' ' + className : ''}"${open ? ' open' : ''}><summary>${escapeHtml(title)}</summary><div class="report-section-body">${content}</div></details>`;
+}
+function plainSummaryMarkdown(summary) {
+  const record = asRecord(summary);
+  if (!Object.keys(record).length) return '';
+  const parts = [];
+  if (record.headline) parts.push(`**${valueText(record.headline)}**`);
+  if (record.action) parts.push(`该怎么做：${valueText(record.action)}`);
+  if (record.action_holding) parts.push(`持仓建议：${valueText(record.action_holding)}`);
+  const section = (title, values) => {
+    const items = asList(values).map(value => `- ${valueText(value)}`).join('\n');
+    if (items) parts.push(`**${title}**\n\n${items}`);
+  };
+  section('具体怎么做', record.do_list);
+  section('为什么', record.why);
+  section('要当心', record.risks);
+  if (asList(record.numbers).length) {
+    parts.push(asList(record.numbers).map(number => `- ${valueText(asRecord(number).label)}：${valueText(asRecord(number).value)} ${valueText(asRecord(number).plain)}`).join('\n'));
+  }
+  if (record.confidence_note) parts.push(`把握程度：${valueText(record.confidence_note)}`);
+  return parts.join('\n\n');
+}
+function plainSummarySectionHtml(view) {
+  if (directionalDecisionBlocked(view)) {
+    return `<div class="plain-card"><div class="plain-headline">最终立场：HOLD</div><div class="plain-action">${escapeHtml(blockedDecisionText(view))}</div><div class="plain-note">原始方向性人话结论未展示。</div></div>`;
+  }
+  const summary = view.plain_summary;
+  if (Object.keys(asRecord(summary)).length) return plainSummaryHtml(summary);
+  const text = markdownContent(view.reports.plain_summary) || markdownContent(summary);
+  return text ? reportDetailsHtml('人话结论', `<div class="md">${renderMarkdown(text)}</div>`, true, 'plain-details') : '';
+}
+function decisionSectionsHtml(view) {
+  if (directionalDecisionBlocked(view)) {
+    return `<div class="trust-banner blocked"><strong>方向性决策已阻断</strong><div>${escapeHtml(blockedDecisionText(view))} 决策卡与持仓建议未展示，最终立场为 HOLD。</div></div>`;
+  }
+  let html = '';
+  const plan = view.decision_plan;
+  if (Object.keys(asRecord(plan)).length) {
+    html += decisionPlanHtml(plan);
+  } else {
+    const text = markdownContent(view.reports.decision_plan) || markdownContent(plan);
+    html += reportDetailsHtml('决策卡', `<div class="md">${renderMarkdown(text)}</div>`, true);
+  }
+  const position = markdownContent(view.position_advice) || markdownContent(view.reports.position_advice);
+  html += reportDetailsHtml('持仓建议', `<div class="md">${renderMarkdown(position)}</div>`, true);
+  return html;
+}
+function finalDecisionSectionHtml(view, plainText = false) {
+  if (directionalDecisionBlocked(view)) {
+    return reportDetailsHtml('最终决策', `<div class="trust-banner blocked"><strong>最终决策：HOLD</strong><div>${escapeHtml(blockedDecisionText(view))}</div></div><div class="plain-note">原始最终决策文本未作为可执行结论展示。</div>`, true, 'final-decision blocked-decision');
+  }
+  const original = markdownContent(view.source.decision_text) || markdownContent(view.reports.final_trade_decision);
+  const plain = markdownContent(view.source.decision_text_plain);
+  const text = plainText ? original : (plain || original);
+  return reportDetailsHtml('最终决策', `<div class="md">${renderMarkdown(text)}</div>`, true, 'final-decision');
+}
+const ANALYST_REPORT_KEYS = ['market_report', 'strategy_report', 'news_report', 'fundamentals_report', 'sentiment_report', 'investment_plan', 'trader_investment_plan'];
+function analystSectionsHtml(view) {
+  const blocked = directionalDecisionBlocked(view);
+  return ANALYST_REPORT_KEYS.map(key => {
+    const text = markdownContent(view.reports[key]);
+    const title = blocked ? `${REPORT_TITLES[key]} · 原始分析，已被门禁阻断` : REPORT_TITLES[key];
+    return text ? reportDetailsHtml(title, `<div class="md">${renderMarkdown(text)}</div>`, false, blocked ? 'blocked-raw' : '') : '';
+  }).join('');
+}
+function structuredDecisionSectionHtml(view) {
+  const blocked = directionalDecisionBlocked(view);
+  const text = markdownContent(view.reports.decision_structured) || markdownContent(view.decision_structured);
+  const title = blocked ? '原始结构化块（已被门禁阻断）' : '原始结构化块';
+  return reportDetailsHtml(title, `<div class="md">${renderMarkdown(text)}</div>`, false, blocked ? 'raw-structured blocked-raw' : 'raw-structured');
+}
 function renderResult(data) {
   state.lastResult = data;
+  const view = reportView(data);
   const head = $('resultHead');
   if (head) head.style.display = 'flex';
   switchTab('result');
-  const decision = data.decision || 'HOLD';
+  const blocked = directionalDecisionBlocked(view);
+  const decision = blocked ? 'HOLD' : (view.decision || 'HOLD');
   const cls = decisionClass(decision);
   $('decisionBadge').className = 'decision ' + cls;
   $('decisionBadge').textContent = decisionLabel(decision);
 
-  const reports = data.reports || {};
-  const parts = [];
-  // 1) 人话结论：最上面，告诉用户"结论是什么、该做什么"
-  if (data.plain_summary) parts.push(plainSummaryHtml(data.plain_summary));
-  // 2) 结构化决策卡
-  if (data.decision_plan) parts.push(decisionPlanHtml(data.decision_plan));
-  // 3) 最终报告全文（可切换白话版）
-  const plainAvailable = !!(data.decision_text_plain && data.decision_text_plain.trim());
+  const plainAvailable = !blocked && !!(view.source.decision_text_plain && String(view.source.decision_text_plain).trim());
   const toggleBtn = $('textModeBtn');
   if (toggleBtn) {
     toggleBtn.style.display = plainAvailable ? '' : 'none';
     toggleBtn.textContent = state.plainText ? '看原版' : '看白话版';
   }
-  const finalText = (state.plainText && plainAvailable) ? data.decision_text_plain : (data.decision_text || '');
-  parts.push(`<div class="final-text"><div class="md">${renderMarkdown(finalText)}</div></div>`);
-  // 4) 各章节折叠块
-  Object.entries(REPORT_TITLES).forEach(([key, title]) => {
-    if (key === 'plain_summary') return;
-    const text = reports[key];
-    if (!text || String(text).trim() === '') return;
-    parts.push(`<div class="report">
-      <div class="report-head" onclick="this.parentElement.classList.toggle('collapsed')"><h4>${title}</h4><span class="chev">▼</span></div>
-      <div class="report-body md">${renderMarkdown(text)}</div>
-    </div>`);
-  });
-  $('resultBody').innerHTML = parts.join('');
-  $('tab-result').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  const parts = [
+    plainSummarySectionHtml(view),
+    trustSummaryHtml(data),
+    decisionSectionsHtml(view),
+    finalDecisionSectionHtml(view, state.plainText),
+    analystSectionsHtml(view),
+    structuredDecisionSectionHtml(view),
+  ];
+  $('resultBody').innerHTML = parts.filter(Boolean).join('');
+  const reducedMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  $('tab-result').scrollIntoView({ behavior: reducedMotion ? 'auto' : 'smooth', block: 'nearest' });
   updateProgress(100);
 }
-function exportResultMarkdown() {
-  if (!state.lastResult) return;
-  const d = state.lastResult;
-  let md = `# ${d.company || $('company').value} ${d.date || $('date').value} 分析报告\n\n`;
-  md += `**决策：${d.decision || 'HOLD'}**\n\n`;
-  const plainMd = (d.reports || {}).plain_summary;
-  if (plainMd) md += plainMd + "\n\n";
-  md += `${d.decision_text_plain || d.decision_text || ''}\n\n`;
-  const planMd = (d.reports || {}).decision_plan;
-  if (planMd) md += planMd + "\n\n";
-  Object.entries(REPORT_TITLES).forEach(([key, title]) => {
-    if (key === 'plain_summary') return;
-    const text = (d.reports || {})[key];
+function exportResultMarkdown(data = state.lastResult) {
+  const d = data || state.lastResult;
+  if (!d) return;
+  const view = reportView(d);
+  const blocked = directionalDecisionBlocked(view);
+  const company = view.source.company || view.source.ticker || $('company').value;
+  const date = view.source.date || view.source.trade_date || $('date').value;
+  let md = `# ${company} ${date} 分析报告\n\n`;
+  md += `**决策：${blocked ? 'HOLD' : (view.decision || 'HOLD')}**\n\n`;
+  const plainMd = markdownContent(view.reports.plain_summary) || plainSummaryMarkdown(view.plain_summary);
+  if (blocked) md += `## 人话结论\n\n最终立场：HOLD\n\n${blockedDecisionText(view)}\n\n原始方向性人话结论未展示。\n\n`;
+  else if (plainMd) md += `## 人话结论\n\n${plainMd}\n\n`;
+  md += trustSummaryMarkdown(d);
+  if (blocked) {
+    md += `## 中性提示\n\n方向性决策已阻断，决策卡与持仓建议未展示，最终立场为 HOLD。\n\n`;
+  } else {
+    const planMd = markdownContent(view.reports.decision_plan) || markdownContent(view.decision_plan);
+    if (planMd) md += `## 决策卡\n\n${planMd}\n\n`;
+    const positionMd = markdownContent(view.position_advice) || markdownContent(view.reports.position_advice);
+    if (positionMd) md += `## 持仓建议\n\n${positionMd}\n\n`;
+  }
+  const finalMd = blocked
+    ? `最终决策：HOLD\n\n${blockedDecisionText(view)}\n\n原始最终决策文本未作为可执行结论展示。`
+    : (markdownContent(view.source.decision_text_plain) || markdownContent(view.source.decision_text) || markdownContent(view.reports.final_trade_decision));
+  if (finalMd) md += `## 最终决策\n\n${finalMd}\n\n`;
+  ANALYST_REPORT_KEYS.forEach(key => {
+    const text = markdownContent(view.reports[key]);
+    const title = blocked ? `${REPORT_TITLES[key]} · 原始分析，已被门禁阻断` : REPORT_TITLES[key];
     if (text) md += `## ${title}\n\n${text}\n\n`;
   });
+  const structuredMd = markdownContent(view.reports.decision_structured) || markdownContent(view.decision_structured);
+  if (structuredMd) md += `## ${blocked ? '原始结构化块（已被门禁阻断）' : '原始结构化块'}\n\n${structuredMd}\n\n`;
   const blob = new Blob([md], { type: 'text/markdown;charset=utf-8' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `${d.company || 'analysis'}_${d.date || ''}.md`;
+  a.download = `${String(company || 'analysis').replace(/[\\/:*?"<>|]/g, '_')}_${date || ''}.md`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -4618,6 +5162,7 @@ async function openBriefing(id) {
     const data = await apiFetch(`/api/briefings/${id}`);
     if (!data.success) throw new Error(data.message || '简报不存在');
     const b = data.briefing;
+    state.modalReport = null;
     $('modalTitle').textContent = `每日简报 · ${b.briefing_date || b.as_of || ''}`;
     $('modalBody').innerHTML = `<div class="md">${renderMarkdown(b.markdown || '')}</div>`;
     $('modal').classList.add('show');
@@ -4649,6 +5194,9 @@ function renderReportsTable() {
   }).join('');
 }
 function reportMetricsHtml(r) {
+  if (directionalDecisionBlocked(reportView(r))) {
+    return '<div class="metric-strip"><div class="metric-card"><div class="k">最终立场</div><div class="v">HOLD</div></div><div class="metric-card"><div class="k">方向性决策</div><div class="v">已阻断</div><div class="p">以证据门禁结果为准</div></div></div>';
+  }
   const meta = r.meta || {};
   const plan = (meta.decision_plan && typeof meta.decision_plan === 'object') ? meta.decision_plan : {};
   const ps = (meta.plain_summary && typeof meta.plain_summary === 'object') ? meta.plain_summary : {};
@@ -4666,28 +5214,24 @@ async function openReport(id) {
     const data = await apiFetch(`/api/reports/${id}`);
     if (!data.success) throw new Error(data.message || '报告不存在');
     const r = data.report;
+    const view = reportView(r);
+    const displayDecision = directionalDecisionBlocked(view) ? 'HOLD' : (r.decision || '未知');
+    state.modalReport = r;
     $('modalTitle').textContent = `${r.ticker} · ${r.trade_date}`;
-    const sections = [
-      ['final_trade_decision', '最终决策'], ['decision_structured', '结构化决策块'],
-      ['decision_plan', '决策卡'],
-      ['market_report', '市场分析'], ['strategy_report', '策略信号'],
-      ['sentiment_report', '舆情分析'],
-      ['news_report', '新闻分析'],
-      ['fundamentals_report', '基本面分析'], ['investment_plan', '研究经理计划'],
-      ['trader_investment_plan', '交易员方案'],
-    ];
-    let html = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="pill ${decisionClass(r.decision)}">${escapeHtml(r.decision || '未知')}</span><span class="muted">${escapeHtml(r.created_at || '')}</span><span class="muted">来源 ${escapeHtml(r.source || '')}</span></div>`;
-    // 关键指标速览：先看结论与关键数字，再看正文
+    let html = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;"><span class="pill ${decisionClass(displayDecision)}">${escapeHtml(displayDecision)}</span><span class="muted">${escapeHtml(r.created_at || '')}</span><span class="muted">来源 ${escapeHtml(r.source || '')}</span><button class="icon-btn" onclick="exportResultMarkdown(state.modalReport)">导出 Markdown</button></div>`;
     html += reportMetricsHtml(r);
-    sections.forEach(([key, title]) => {
-      const text = (r.reports || {})[key];
-      if (text) html += `<details open class="report-section"><summary>${title}</summary><div class="md">${renderMarkdown(text)}</div></details>`;
-    });
-    // 人话结论放最后：作为可选的通俗解释，默认折叠
-    const plainMd = (r.reports || {}).plain_summary;
-    if (plainMd) {
-      html += `<details class="report-section plain-details"><summary>🗣 人话结论（通俗解释）</summary><div class="md">${renderMarkdown(plainMd)}</div></details>`;
+    const plainSummary = view.plain_summary || view.reports.plain_summary;
+    if (Object.keys(asRecord(plainSummary)).length) {
+      html += plainSummaryHtml(plainSummary);
+    } else if (plainSummary) {
+      html += reportDetailsHtml('人话结论', `<div class="md">${renderMarkdown(markdownContent(plainSummary))}</div>`, true, 'plain-details');
     }
+    html += trustSummaryHtml(r);
+    html += decisionSectionsHtml(view);
+    const finalTradeDecision = view.source.decision_text || view.reports.final_trade_decision;
+    if (directionalDecisionBlocked(view) || finalTradeDecision || view.source.decision_text_plain) html += finalDecisionSectionHtml(view);
+    html += analystSectionsHtml(view);
+    html += structuredDecisionSectionHtml(view);
     $('modalBody').innerHTML = html;
     $('modal').classList.add('show');
   } catch (e) { showToast('报告加载失败: ' + e, 'err'); }
@@ -4697,12 +5241,16 @@ async function deleteReport(id) {
   await apiFetch(`/api/reports/${id}`, { method: 'DELETE' });
   loadReports();
 }
-function closeModal() { $('modal').classList.remove('show'); }
+function closeModal() {
+  state.modalReport = null;
+  $('modal').classList.remove('show');
+}
 
 /* 访问密钥：仅保存在本机 localStorage，不上传服务器 */
 function saveApiKey() {
   const input = $('apiKeyInput');
   const value = (input.value || '').trim();
+  clearActiveJob();
   window.Core.setApiKey(value);
   showToast(value ? '访问密钥已保存到本机' : '访问密钥已清除', 'ok');
   // 重新建立 WebSocket，让鉴权立即生效
@@ -4710,6 +5258,7 @@ function saveApiKey() {
   connectWS();
 }
 function clearApiKey() {
+  clearActiveJob();
   window.Core.setApiKey('');
   $('apiKeyInput').value = '';
   showToast('访问密钥已清除', 'ok');
@@ -5706,6 +6255,7 @@ function setupScrollListener() {
   if ($('paperStart')) $('paperStart').value = localDateStr(new Date(Date.now() - 14 * 86400000));
   $('company').addEventListener('input', updateHeroIdentity);
   $('date').addEventListener('change', updateHeroIdentity);
+  document.querySelector('.tabs').addEventListener('keydown', handleTabKeydown);
   window.addEventListener('resize', () => {
     if (state.klineChartInstance) state.klineChartInstance.resize();
     if (state.sectorHistoryChart) state.sectorHistoryChart.resize();
@@ -5747,6 +6297,7 @@ function setupScrollListener() {
   switchTab('progress');
   loadWatchlist();
   loadKline();
+  resumeActiveJob();
   connectWS();
   setupScrollListener();
   switchView('workbench');

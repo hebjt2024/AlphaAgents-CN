@@ -1,5 +1,6 @@
 """P10：公告 / 研报一致预期 / 股东变化。"""
 
+import importlib
 import unittest
 from unittest.mock import patch
 
@@ -145,8 +146,17 @@ class DisclosureServiceTests(unittest.TestCase):
     def test_announcements_normalization(self):
         from tradingagents.dataflows.disclosure import get_announcements
 
-        with patch(
-            "akshare.stock_fundamental.stock_notice._stock_notice_report",
+        try:
+            notice_module = importlib.import_module(
+                "akshare.stock_fundamental.stock_notice"
+            )
+        except ModuleNotFoundError:
+            notice_module = importlib.import_module(
+                "akshare.stock.research.stock_notice"
+            )
+        with patch.object(
+            notice_module,
+            "_stock_notice_report",
             return_value=_announcements(),
         ):
             result = get_announcements("600519", curr_date="2026-11-15")

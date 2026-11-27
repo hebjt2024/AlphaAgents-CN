@@ -17,6 +17,13 @@ from tradingagents.storage import (
     purge_jobs,
     summarize_jobs,
 )
+from tradingagents.storage.job_store import (
+    cancel_requested_queued_jobs,
+    claim_job,
+    claim_next_job,
+    mark_job_cancelled,
+    request_cancel,
+)
 
 
 class JobStoreTests(unittest.TestCase):
@@ -67,6 +74,90 @@ class JobStoreTests(unittest.TestCase):
         self.assertTrue(delete_job(first))
         self.assertIsNone(get_job(first))
         self.assertIsNotNone(get_job(second))
+
+
+class JobTerminalStateTests(unittest.TestCase):
+    """终态不可被迟到的结果/失败/取消覆盖，取消请求会阻止认领。"""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.env = patch.dict(
+            os.environ,
+            {"TA_DB_PATH": os.path.join(self.tmp.name, "jobs.db")},
+        )
+        self.env.start()
+        self.addCleanup(self.env.stop)
+
+    def _running_job(self, status="completed"):
+        job_id = create_job("600519", "2026-11-11")
+        mark_job_running(job_id)
+        if status == "completed":
+            finish_job(job_id, {"decision": "BUY"})
+        else:
+            mark_job_cancelled(job_id, "用户取消")
+        return job_id
+
+    def test_finish_job_only_moves_running_to_terminal(self):
+        job_id = create_job("600519", "2026-11-11")
+        # queued 任务不能被 finish_job 直接写成 completed
+        finish_job(job_id, {"decision": "BUY"})
+        self.assertEqual(get_job(job_id)["status"], "queued")
+
+    def test_completed_job_is_not_overwritten_by_late_finish(self):
+        job_id = self._running_job("completed")
+        finish_job(job_id, {"decision": "SELL"}, status="failed")
+        job = get_job(job_id)
+        self.assertEqual(job["status"], "completed")
+        self.assertEqual(job["result"]["decision"], "BUY")
+
+    def test_cancelled_job_is_not_overwritten_by_failure(self):
+        job_id = self._running_job("cancelled")
+        fail_job(job_id, "late failure")
+        job = get_job(job_id)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertNotIn("late failure", job["error"])
+
+    def test_failed_job_is_not_overwritten_by_cancel(self):
+        job_id = create_job("000001", "2026-11-11")
+        mark_job_running(job_id)
+        fail_job(job_id, "boom")
+        mark_job_cancelled(job_id, "late cancel")
+        job = get_job(job_id)
+        self.assertEqual(job["status"], "failed")
+        self.assertIn("boom", job["error"])
+
+    def test_cancel_requested_job_cannot_be_claimed(self):
+        job_id = create_job("600519", "2026-11-11")
+        self.assertTrue(request_cancel(job_id))
+        self.assertFalse(claim_job(job_id))
+        self.assertIsNone(claim_next_job())
+        self.assertEqual(get_job(job_id)["status"], "queued")
+
+    def test_cancel_requested_queued_jobs_are_marked_cancelled(self):
+        job_id = create_job("600519", "2026-11-11")
+        request_cancel(job_id)
+        self.assertEqual(cancel_requested_queued_jobs(), [job_id])
+        job = get_job(job_id)
+        self.assertEqual(job["status"], "cancelled")
+        # 幂等：再次清理不会重复返回
+        self.assertEqual(cancel_requested_queued_jobs(), [])
+
+    def test_finish_job_rejects_illegal_terminal_status(self):
+        job_id = create_job("600519", "2026-11-11")
+        mark_job_running(job_id)
+        with self.assertRaises(ValueError):
+            finish_job(job_id, {}, status="running")
+
+    def test_queue_cancel_marks_db_queued_job_cancelled(self):
+        from tradingagents.services.job_queue import JobQueue
+
+        job_id = create_job("600519", "2026-11-11")
+        queue = JobQueue(worker_count=1)
+        self.assertTrue(queue.cancel(job_id))
+        job = get_job(job_id)
+        self.assertEqual(job["status"], "cancelled")
+        self.assertFalse(claim_job(job_id))
 
 
 class JobPurgeTests(unittest.TestCase):

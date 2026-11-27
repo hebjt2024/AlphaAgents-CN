@@ -199,6 +199,7 @@ import logging
 import os  # 并行开关/并发度环境变量
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from datetime import date, timedelta
 
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
@@ -430,6 +431,11 @@ def _call_prefetch_tool(tool, args: dict) -> str:
     return output if isinstance(output, str) else str(output)
 
 
+def _submit_with_context(executor, fn, *args):
+    """为每个线程任务复制独立上下文，传播分析日与 RunMetrics。"""
+    return executor.submit(copy_context().run, fn, *args)
+
+
 def _compact_prefetch(text: object, limit: int = 6000) -> str:
     value = str(text or "").strip()
     if len(value) > limit:
@@ -460,7 +466,7 @@ def _prefetch_analyst_material(analyst_type: str, state: dict, tool_node) -> str
             if tool is None:
                 results[name] = f"（工具 {name} 不可用）"
                 continue
-            futures[executor.submit(_call_prefetch_tool, tool, args)] = name
+            futures[_submit_with_context(executor, _call_prefetch_tool, tool, args)] = name
         try:
             for future in as_completed(futures, timeout=120):
                 name = futures[future]
@@ -954,7 +960,7 @@ class GraphSetup:
             results: dict[str, dict] = {}
             with ThreadPoolExecutor(max_workers=len(roles)) as pool:
                 futures = {
-                    pool.submit(node, copy.deepcopy(state)): role
+                    _submit_with_context(pool, node, copy.deepcopy(state)): role
                     for role, node in roles
                 }
                 for future in as_completed(futures):
@@ -1182,8 +1188,8 @@ class GraphSetup:
             started = time.perf_counter()
             with ThreadPoolExecutor(max_workers=parallel_workers) as pool:
                 futures = {
-                    pool.submit(
-                        _run_analyst, analyst_type, state, config
+                    _submit_with_context(
+                        pool, _run_analyst, analyst_type, state, config
                     ): analyst_type
                     for analyst_type in selected_analysts
                 }

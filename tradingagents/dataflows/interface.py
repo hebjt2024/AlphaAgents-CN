@@ -179,6 +179,7 @@ import logging
 import os
 import threading
 import time
+from concurrent.futures import Future
 from dataclasses import dataclass
 
 # 从 y_finance 模块导入 Yahoo Finance 供应商的具体实现函数。
@@ -813,7 +814,10 @@ _MEMO_ENABLED = os.getenv("DATA_RESULT_MEMO", "1").strip().lower() in (
 _MEMO_TTL = float(os.getenv("DATA_RESULT_MEMO_TTL", "60") or 60)
 _MEMO_MAX_ENTRIES = 512
 _memo_store: dict[tuple, tuple[float, object]] = {}
-_memo_lock = threading.Lock()
+_memo_inflight: dict[tuple, tuple[Future, int]] = {}
+_memo_generation = 0
+_memo_lock = threading.RLock()
+_MEMO_MISS = object()
 
 
 def _memo_cache_key(method: str, args: tuple, kwargs: dict) -> tuple:
@@ -830,29 +834,45 @@ def _memo_cache_key(method: str, args: tuple, kwargs: dict) -> tuple:
 
 def _memo_get(key: tuple):
     if not _MEMO_ENABLED or _MEMO_TTL <= 0:
-        return None
+        return _MEMO_MISS
     now = time.time()
     with _memo_lock:
         entry = _memo_store.get(key)
         if entry is None:
-            return None
+            return _MEMO_MISS
         stored_at, value = entry
         if now - stored_at > _MEMO_TTL:
             _memo_store.pop(key, None)
-            return None
+            return _MEMO_MISS
         return value
 
 
-def _memo_put(key: tuple, value) -> None:
+def _memo_claim(key: tuple) -> tuple[str, object, int]:
+    """返回 cached/waiter/leader，waiter 附带共享 Future。"""
+    if not _MEMO_ENABLED or _MEMO_TTL <= 0 or key[0] == "__unhashable__":
+        return "leader", None, _memo_generation
+    with _memo_lock:
+        cached = _memo_get(key)
+        if cached is not _MEMO_MISS:
+            return "cached", cached, _memo_generation
+        existing = _memo_inflight.get(key)
+        if existing is not None:
+            return "waiter", existing[0], existing[1]
+        future: Future = Future()
+        _memo_inflight[key] = (future, _memo_generation)
+        return "leader", future, _memo_generation
+
+
+def _memo_put(key: tuple, value, generation: int | None = None) -> None:
     if not _MEMO_ENABLED or _MEMO_TTL <= 0:
         return
     if key and key[0] == "__unhashable__":
         return
     now = time.time()
     with _memo_lock:
+        if generation is not None and generation != _memo_generation:
+            return
         if len(_memo_store) >= _MEMO_MAX_ENTRIES:
-            # 简单淘汰：清掉已过期的条目；仍然超限就整体清空（分析级缓存，
-            # 清空只影响性能，不影响正确性）。
             expired = [
                 item_key
                 for item_key, (stored_at, _) in _memo_store.items()
@@ -865,15 +885,42 @@ def _memo_put(key: tuple, value) -> None:
         _memo_store[key] = (now, value)
 
 
+def _memo_complete(
+    key: tuple,
+    future: Future,
+    generation: int,
+    *,
+    value: object = None,
+    error: BaseException | None = None,
+) -> None:
+    """释放在途注册并唤醒等待者，不阻塞网络调用线程。"""
+    with _memo_lock:
+        current = _memo_inflight.get(key)
+        if current is not None and current[0] is future:
+            _memo_inflight.pop(key, None)
+    if future.done():
+        return
+    try:
+        if error is not None:
+            future.set_exception(error)
+        else:
+            future.set_result(value)
+    except BaseException:
+        pass
+
+
 def reset_route_caches() -> None:
-    """清空结果复用缓存与熔断状态。
+    """清空结果复用缓存、在途注册与熔断状态。
 
     用途：
       - 测试隔离（避免上一个用例的缓存/熔断影响下一个）；
       - 手动排查时希望"立刻重新取一次"。
     """
+    global _memo_generation
     with _memo_lock:
         _memo_store.clear()
+        _memo_inflight.clear()
+        _memo_generation += 1
     vendor_health_reset()
 # 合成（离线演示）数据的识别。
 #
@@ -979,7 +1026,7 @@ def _looks_like_a_share(symbol: str) -> bool:
     return False
 
 
-def route_to_vendor(method: str, *args, **kwargs):
+def _route_to_vendor_uncached(method: str, *args, **kwargs):
     """
     将方法调用路由到合适的供应商实现，并支持自动降级（Fallback）。
 
@@ -1149,13 +1196,6 @@ def route_to_vendor(method: str, *args, **kwargs):
     # 记录因熔断冷却被跳过的数据源，便于在失败消息里如实说明
     cooled_down: list[str] = []
 
-    # 单次分析内的结果复用：4 个分析师会并发请求同一批数据，
-    # 相同参数的请求只真正打一次接口，大幅降低触发限流的概率。
-    memo_key = _memo_cache_key(method, args, kwargs)
-    cached = _memo_get(memo_key)
-    if cached is not None:
-        return cached
-
     for vendor in fallback_vendors:
         # 跳过映射表中不存在的供应商（防御性编程）
         # 防御性编程：即使配置写错了供应商名，也不会崩溃
@@ -1231,9 +1271,8 @@ def route_to_vendor(method: str, *args, **kwargs):
                 if is_synthetic and not result.lstrip().startswith("[SIMULATED"):
                     result = SyntheticPayload("[SIMULATED DATA] " + result)
 
-            # 成功：清除该数据源的熔断状态，并写入单次分析内的复用缓存
+            # 成功：清除该数据源的熔断状态
             vendor_mark_success(vendor, method)
-            _memo_put(memo_key, result)
             return result
         except SyntheticDataRefusedError:
             # 拒绝使用离线演示数据是显式的安全闸门，必须向上抛出，
@@ -1303,3 +1342,65 @@ def route_to_vendor(method: str, *args, **kwargs):
         message,
     )
     return message
+
+
+def route_to_vendor(method: str, *args, **kwargs):
+    """路由到供应商，并合并相同 memo key 的并发在途请求。
+
+    成功结果进入现有短 TTL 缓存；失败结果只通知当前等待者，不进入缓存。
+    全局锁只保护注册表，供应商网络调用始终在锁外执行。无论取数、错误判定、
+    缓存写入还是唤醒等待者哪一步抛异常，in-flight 注册都会在 finally 中清理，
+    后续请求可以重新成为 leader 重试。
+    """
+    memo_key = _memo_cache_key(method, args, kwargs)
+    role, payload, generation = _memo_claim(memo_key)
+    if role == "cached":
+        return payload
+    if role == "waiter":
+        return payload.result()
+
+    future = payload
+    if future is None:
+        return _route_to_vendor_uncached(method, *args, **kwargs)
+
+    result: object = None
+    error: BaseException | None = None
+    try:
+        try:
+            result = _route_to_vendor_uncached(method, *args, **kwargs)
+            failed, _reason = is_error_result(result)
+        except BaseException as exc:
+            error = exc
+            raise
+        if not failed:
+            try:
+                _memo_put(memo_key, result, generation)
+            except BaseException:
+                # 缓存写入属于后处理：失败不应中断取数，也不应让 waiter 挂起。
+                logger.warning("数据结果缓存写入失败", exc_info=True)
+        return result
+    finally:
+        try:
+            _memo_complete(
+                memo_key,
+                future,
+                generation,
+                value=result,
+                error=error,
+            )
+        except BaseException:
+            logger.debug("唤醒数据等待者失败", exc_info=True)
+            # _memo_complete 自身异常时也要清理在途注册并尽量唤醒等待者，
+            # 否则等待线程会永远挂在 future.result() 上。
+            with _memo_lock:
+                current = _memo_inflight.get(memo_key)
+                if current is not None and current[0] is future:
+                    _memo_inflight.pop(memo_key, None)
+            try:
+                if not future.done():
+                    if error is not None:
+                        future.set_exception(error)
+                    else:
+                        future.set_result(result)
+            except BaseException:
+                pass

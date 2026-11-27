@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import unittest
 
-from tradingagents.services.decision_schema import ALLOWED_DECISIONS
 from tradingagents.services.decision_validation import (
     direction_of,
     get_stored_decision,
